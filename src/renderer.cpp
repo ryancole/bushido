@@ -38,7 +38,7 @@ VkShaderModule createShaderModule(VkDevice device, const std::vector<char>& code
     return module;
 }
 
-void transitionImage(VkCommandBuffer cmd, VkImage image,
+void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
                      VkImageLayout oldLayout, VkImageLayout newLayout,
                      VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
                      VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
@@ -52,7 +52,7 @@ void transitionImage(VkCommandBuffer cmd, VkImage image,
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.subresourceRange = {aspect, 0, 1, 0, 1};
 
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = 1;
@@ -163,9 +163,68 @@ void Renderer::createSwapchain() {
         VkSemaphoreCreateInfo semInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCheck(vkCreateSemaphore(m_device.device, &semInfo, nullptr, &sem), "vkCreateSemaphore");
     }
+
+    createDepthResources();
+}
+
+void Renderer::createDepthResources() {
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = kDepthFormat;
+    imageInfo.extent = {m_swapchain.extent.width, m_swapchain.extent.height, 1};
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    vkCheck(vkCreateImage(m_device.device, &imageInfo, nullptr, &m_depthImage), "vkCreateImage");
+
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(m_device.device, m_depthImage, &requirements);
+
+    VkPhysicalDeviceMemoryProperties memProps{};
+    vkGetPhysicalDeviceMemoryProperties(m_physicalDevice.physical_device, &memProps);
+    uint32_t typeIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            typeIndex = i;
+            break;
+        }
+    }
+    if (typeIndex == UINT32_MAX) {
+        throw std::runtime_error("no device-local memory type for depth buffer");
+    }
+
+    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = requirements.size;
+    allocInfo.memoryTypeIndex = typeIndex;
+    vkCheck(vkAllocateMemory(m_device.device, &allocInfo, nullptr, &m_depthMemory),
+            "vkAllocateMemory");
+    vkCheck(vkBindImageMemory(m_device.device, m_depthImage, m_depthMemory, 0),
+            "vkBindImageMemory");
+
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = m_depthImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = kDepthFormat;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    vkCheck(vkCreateImageView(m_device.device, &viewInfo, nullptr, &m_depthView),
+            "vkCreateImageView");
+}
+
+void Renderer::destroyDepthResources() {
+    vkDestroyImageView(m_device.device, m_depthView, nullptr);
+    vkDestroyImage(m_device.device, m_depthImage, nullptr);
+    vkFreeMemory(m_device.device, m_depthMemory, nullptr);
+    m_depthView = VK_NULL_HANDLE;
+    m_depthImage = VK_NULL_HANDLE;
+    m_depthMemory = VK_NULL_HANDLE;
 }
 
 void Renderer::destroySwapchain() {
+    destroyDepthResources();
     for (VkSemaphore sem : m_renderFinished) {
         vkDestroySemaphore(m_device.device, sem, nullptr);
     }
@@ -188,6 +247,7 @@ void Renderer::recreateSwapchain() {
 
     vkDeviceWaitIdle(m_device.device);
 
+    destroyDepthResources();
     for (VkSemaphore sem : m_renderFinished) {
         vkDestroySemaphore(m_device.device, sem, nullptr);
     }
@@ -200,15 +260,15 @@ void Renderer::recreateSwapchain() {
 }
 
 void Renderer::createPipeline() {
-    auto vertCode = readFile(std::string(SHADER_DIR) + "/quad.vert.spv");
-    auto fragCode = readFile(std::string(SHADER_DIR) + "/quad.frag.spv");
+    auto vertCode = readFile(std::string(SHADER_DIR) + "/cube.vert.spv");
+    auto fragCode = readFile(std::string(SHADER_DIR) + "/cube.frag.spv");
     VkShaderModule vertModule = createShaderModule(m_device.device, vertCode);
     VkShaderModule fragModule = createShaderModule(m_device.device, fragCode);
 
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(QuadPush);
+    pushRange.size = sizeof(ObjectPush);
 
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layoutInfo.pushConstantRangeCount = 1;
@@ -244,6 +304,11 @@ void Renderer::createPipeline() {
     VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
     VkPipelineColorBlendAttachmentState blendAttachment{};
     blendAttachment.blendEnable = VK_TRUE;
     blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -268,6 +333,7 @@ void Renderer::createPipeline() {
     VkPipelineRenderingCreateInfo renderingInfo{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachmentFormats = &colorFormat;
+    renderingInfo.depthAttachmentFormat = kDepthFormat;
 
     VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pipelineInfo.pNext = &renderingInfo;
@@ -278,6 +344,7 @@ void Renderer::createPipeline() {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterization;
     pipelineInfo.pMultisampleState = &multisample;
+    pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlend;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = m_pipelineLayout;
@@ -317,11 +384,23 @@ bool Renderer::beginFrame() {
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkCheck(vkBeginCommandBuffer(frame.cmd, &beginInfo), "vkBeginCommandBuffer");
 
-    transitionImage(frame.cmd, m_swapchainImages[m_imageIndex],
+    transitionImage(frame.cmd, m_swapchainImages[m_imageIndex], VK_IMAGE_ASPECT_COLOR_BIT,
                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+
+    // The single depth image is shared by all frames in flight; the src scope
+    // orders this discard against the previous frame's depth writes.
+    transitionImage(frame.cmd, m_depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
 
     VkRenderingAttachmentInfo colorAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     colorAttachment.imageView = m_swapchainImageViews[m_imageIndex];
@@ -330,11 +409,19 @@ bool Renderer::beginFrame() {
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue.color = {{0.043f, 0.043f, 0.078f, 1.0f}};
 
+    VkRenderingAttachmentInfo depthAttachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depthAttachment.imageView = m_depthView;
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
     VkRenderingInfo renderingInfo{VK_STRUCTURE_TYPE_RENDERING_INFO};
     renderingInfo.renderArea = {{0, 0}, m_swapchain.extent};
     renderingInfo.layerCount = 1;
     renderingInfo.colorAttachmentCount = 1;
     renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = &depthAttachment;
     vkCmdBeginRendering(frame.cmd, &renderingInfo);
 
     VkViewport viewport{};
@@ -351,12 +438,12 @@ bool Renderer::beginFrame() {
     return true;
 }
 
-void Renderer::drawQuad(const QuadPush& quad) {
+void Renderer::drawBox(const ObjectPush& object) {
     Frame& frame = m_frames[m_frameIndex];
     vkCmdPushConstants(frame.cmd, m_pipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(QuadPush), &quad);
-    vkCmdDraw(frame.cmd, 6, 1, 0, 0);
+                       sizeof(ObjectPush), &object);
+    vkCmdDraw(frame.cmd, 36, 1, 0, 0);
 }
 
 void Renderer::endFrame() {
@@ -364,7 +451,7 @@ void Renderer::endFrame() {
 
     vkCmdEndRendering(frame.cmd);
 
-    transitionImage(frame.cmd, m_swapchainImages[m_imageIndex],
+    transitionImage(frame.cmd, m_swapchainImages[m_imageIndex], VK_IMAGE_ASPECT_COLOR_BIT,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

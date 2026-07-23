@@ -1,64 +1,59 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <exception>
 
+#include "camera.hpp"
+#include "game.hpp"
 #include "renderer.hpp"
 
-// Coordinates are Vulkan NDC for now: x right, y down, both in [-1, 1].
-namespace world {
-constexpr float kGroundTop = 0.7f;      // y of the ground surface
-constexpr float kGravity = 6.0f;        // units/s^2 (downward = +y)
-constexpr float kMoveSpeed = 1.2f;      // units/s
-constexpr float kJumpVelocity = -2.4f;  // units/s (upward = -y)
-constexpr float kArenaHalfWidth = 0.95f;
-} // namespace world
+namespace {
 
-struct Player {
-    float x = 0.0f;
-    float y = 0.0f; // y of the player's center
-    float vy = 0.0f;
-    bool grounded = true;
-    static constexpr float kHalfWidth = 0.05f;
-    static constexpr float kHalfHeight = 0.12f;
-};
+void drawBox(Renderer& renderer, const glm::mat4& viewProj, glm::vec3 center,
+             glm::vec3 size, glm::vec4 color) {
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
+    model = glm::scale(model, size);
+    renderer.drawBox({viewProj * model, color});
+}
 
-static void fixedUpdate(Player& player, GLFWwindow* window, float dt) {
-    float move = 0.0f;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
-        glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        move -= 1.0f;
-    }
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
-        glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        move += 1.0f;
-    }
-    player.x += move * world::kMoveSpeed * dt;
-    player.x = std::clamp(player.x, -world::kArenaHalfWidth + Player::kHalfWidth,
-                          world::kArenaHalfWidth - Player::kHalfWidth);
+PlayerInput readInput(GLFWwindow* window, int left, int right, int jump, int jumpAlt) {
+    PlayerInput in;
+    if (glfwGetKey(window, left) == GLFW_PRESS) in.move -= 1.0f;
+    if (glfwGetKey(window, right) == GLFW_PRESS) in.move += 1.0f;
+    in.jump = glfwGetKey(window, jump) == GLFW_PRESS ||
+              (jumpAlt != GLFW_KEY_UNKNOWN && glfwGetKey(window, jumpAlt) == GLFW_PRESS);
+    return in;
+}
 
-    bool jumpHeld = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ||
-                    glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS ||
-                    glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
-    if (player.grounded && jumpHeld) {
-        player.vy = world::kJumpVelocity;
-        player.grounded = false;
+void drawScene(Renderer& renderer, const glm::mat4& viewProj, const Game& game) {
+    // Arena floor.
+    drawBox(renderer, viewProj, {0.0f, -0.5f, 0.0f},
+            {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, 12.0f}, {0.16f, 0.15f, 0.13f, 1.0f});
+
+    // Background pillars for depth reference.
+    const float pillarX[] = {-14.0f, -7.0f, 0.0f, 7.0f, 14.0f};
+    const float pillarH[] = {4.5f, 3.2f, 5.5f, 3.8f, 4.8f};
+    for (int i = 0; i < 5; ++i) {
+        drawBox(renderer, viewProj, {pillarX[i], pillarH[i] * 0.5f, -6.0f},
+                {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
     }
 
-    if (!player.grounded) {
-        player.vy += world::kGravity * dt;
-        player.y += player.vy * dt;
-        float standingY = world::kGroundTop - Player::kHalfHeight;
-        if (player.y >= standingY) {
-            player.y = standingY;
-            player.vy = 0.0f;
-            player.grounded = true;
-        }
+    // Fighters.
+    const glm::vec4 colors[2] = {{0.80f, 0.16f, 0.16f, 1.0f}, {0.16f, 0.32f, 0.85f, 1.0f}};
+    for (int i = 0; i < 2; ++i) {
+        const Player& p = game.player(i);
+        drawBox(renderer, viewProj, {p.pos.x, p.pos.y, 0.0f},
+                {Player::kHalfWidth * 2.0f, Player::kHalfHeight * 2.0f, 0.6f}, colors[i]);
     }
 }
+
+} // namespace
 
 int main() {
     if (!glfwInit()) {
@@ -89,8 +84,8 @@ int main() {
         static_cast<Renderer*>(glfwGetWindowUserPointer(w))->onResize();
     });
 
-    Player player;
-    player.y = world::kGroundTop - Player::kHalfHeight;
+    Game game;
+    FramingCamera camera;
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -103,25 +98,26 @@ int main() {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
+        PlayerInput inputs[2] = {
+            readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_SPACE),
+            readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_UNKNOWN),
+        };
+
         auto now = std::chrono::steady_clock::now();
         float frameTime = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
         accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
         while (accumulator >= kFixedDt) {
-            fixedUpdate(player, window, kFixedDt);
+            game.update(inputs, kFixedDt);
             accumulator -= kFixedDt;
         }
 
+        camera.update(game.player(0).pos, game.player(1).pos, renderer.aspect(), frameTime);
+
         if (renderer.beginFrame()) {
-            // Ground.
-            renderer.drawQuad({{0.0f, (world::kGroundTop + 1.0f) * 0.5f},
-                               {1.0f, (1.0f - world::kGroundTop) * 0.5f},
-                               {0.18f, 0.16f, 0.14f, 1.0f}});
-            // Player.
-            renderer.drawQuad({{player.x, player.y},
-                               {Player::kHalfWidth, Player::kHalfHeight},
-                               {0.78f, 0.15f, 0.15f, 1.0f}});
+            glm::mat4 viewProj = camera.proj(renderer.aspect()) * camera.view();
+            drawScene(renderer, viewProj, game);
             renderer.endFrame();
         }
     }

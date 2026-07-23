@@ -35,7 +35,9 @@ FetchContent_MakeAvailable(glfw vk-bootstrap glm)
 
 add_executable(bushido
     src/main.cpp
-    src/renderer.cpp)
+    src/renderer.cpp
+    src/camera.cpp
+    src/game.cpp)
 
 target_link_libraries(bushido PRIVATE
     Vulkan::Vulkan
@@ -50,12 +52,14 @@ endif()
 # Dev-only: shaders are loaded from the build tree by absolute path. Replace
 # with a proper asset path scheme once there are real assets to ship.
 target_compile_definitions(bushido PRIVATE
-    SHADER_DIR="${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    SHADER_DIR="${CMAKE_CURRENT_BINARY_DIR}/shaders"
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 # Compile GLSL shaders to SPIR-V next to the executable.
 set(SHADER_SOURCES
-    shaders/quad.vert
-    shaders/quad.frag)
+    shaders/cube.vert
+    shaders/cube.frag)
 
 foreach(SHADER ${SHADER_SOURCES})
     get_filename_component(SHADER_NAME ${SHADER} NAME)

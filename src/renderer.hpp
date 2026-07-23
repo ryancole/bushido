@@ -3,17 +3,18 @@
 #include <vulkan/vulkan.h>
 #include <VkBootstrap.h>
 
+#include <glm/glm.hpp>
+
 #include <cstdint>
 #include <vector>
 
 struct GLFWwindow;
 
-// Push constant block shared by quad.vert / quad.frag. Layout must match the
-// shader: vec2 offset, vec2 scale, vec4 color (32 bytes).
-struct QuadPush {
-    float offset[2];
-    float scale[2];
-    float color[4];
+// Push constant block shared by cube.vert / cube.frag (80 bytes; the
+// guaranteed minimum push constant budget is 128).
+struct ObjectPush {
+    glm::mat4 mvp;
+    glm::vec4 color;
 };
 
 class Renderer {
@@ -24,18 +25,28 @@ public:
     // Acquires a swapchain image and starts recording. Returns false when the
     // frame must be skipped (swapchain rebuild, minimized window).
     bool beginFrame();
-    void drawQuad(const QuadPush& quad);
+    void drawBox(const ObjectPush& object);
     void endFrame();
 
     void onResize() { m_resizeRequested = true; }
+
+    float aspect() const {
+        return m_swapchain.extent.height == 0
+                   ? 1.0f
+                   : static_cast<float>(m_swapchain.extent.width) /
+                         static_cast<float>(m_swapchain.extent.height);
+    }
 
 private:
     void createSwapchain();
     void destroySwapchain();
     void recreateSwapchain();
+    void createDepthResources();
+    void destroyDepthResources();
     void createPipeline();
 
     static constexpr uint32_t kFramesInFlight = 2;
+    static constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -59,6 +70,10 @@ private:
     // One per swapchain image: signaled by the submit that renders to that
     // image, waited on by present.
     std::vector<VkSemaphore> m_renderFinished;
+
+    VkImage m_depthImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_depthMemory = VK_NULL_HANDLE;
+    VkImageView m_depthView = VK_NULL_HANDLE;
 
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
