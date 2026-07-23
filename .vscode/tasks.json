@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "options": {
+        "shell": {
+            "executable": "cmd.exe",
+            "args": ["/s", "/c"]
+        }
+    },
+    "tasks": [
+        {
+            "label": "configure",
+            "type": "shell",
+            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && set \"VULKAN_SDK=C:\\VulkanSDK\\1.4.350.0\" && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug\"",
+            "problemMatcher": []
+        },
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cmake --build build\"",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$msCompile"
+        },
+        {
+            "label": "run",
+            "type": "shell",
+            "command": "\"\"${workspaceFolder}\\build\\bushido.exe\"\"",
+            "dependsOn": "build",
+            "problemMatcher": []
+        }
+    ]
+}
