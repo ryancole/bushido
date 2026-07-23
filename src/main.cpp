@@ -22,33 +22,44 @@ void drawBox(Renderer& renderer, const glm::mat4& viewProj, glm::vec3 center,
     renderer.drawBox({viewProj * model, color});
 }
 
-PlayerInput readInput(GLFWwindow* window, int left, int right, int jump, int jumpAlt) {
+PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int toward,
+                      int jump) {
     PlayerInput in;
-    if (glfwGetKey(window, left) == GLFW_PRESS) in.move -= 1.0f;
-    if (glfwGetKey(window, right) == GLFW_PRESS) in.move += 1.0f;
-    in.jump = glfwGetKey(window, jump) == GLFW_PRESS ||
-              (jumpAlt != GLFW_KEY_UNKNOWN && glfwGetKey(window, jumpAlt) == GLFW_PRESS);
+    if (glfwGetKey(window, left) == GLFW_PRESS) in.move.x -= 1.0f;
+    if (glfwGetKey(window, right) == GLFW_PRESS) in.move.x += 1.0f;
+    if (glfwGetKey(window, away) == GLFW_PRESS) in.move.y -= 1.0f;   // into the screen (-z)
+    if (glfwGetKey(window, toward) == GLFW_PRESS) in.move.y += 1.0f; // toward the camera (+z)
+    in.jump = glfwGetKey(window, jump) == GLFW_PRESS;
     return in;
 }
 
 void drawScene(Renderer& renderer, const glm::mat4& viewProj, const Game& game) {
-    // Arena floor.
+    // Arena floor: covers the playable x/z area with some visual overhang.
     drawBox(renderer, viewProj, {0.0f, -0.5f, 0.0f},
-            {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, 12.0f}, {0.16f, 0.15f, 0.13f, 1.0f});
+            {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, Game::kArenaHalfDepth * 2.0f + 4.0f},
+            {0.16f, 0.15f, 0.13f, 1.0f});
 
-    // Background pillars for depth reference.
+    // Background pillars for depth reference, behind the playable area.
     const float pillarX[] = {-14.0f, -7.0f, 0.0f, 7.0f, 14.0f};
     const float pillarH[] = {4.5f, 3.2f, 5.5f, 3.8f, 4.8f};
     for (int i = 0; i < 5; ++i) {
-        drawBox(renderer, viewProj, {pillarX[i], pillarH[i] * 0.5f, -6.0f},
+        drawBox(renderer, viewProj, {pillarX[i], pillarH[i] * 0.5f, -Game::kArenaHalfDepth - 1.5f},
                 {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
+    }
+
+    // Blob shadows: without these, depth position is unreadable while airborne.
+    for (int i = 0; i < 2; ++i) {
+        const Player& p = game.player(i);
+        drawBox(renderer, viewProj, {p.pos.x, 0.03f, p.pos.z},
+                {Player::kHalfWidth * 2.2f, 0.02f, Player::kHalfWidth * 1.6f},
+                {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
     // Fighters.
     const glm::vec4 colors[2] = {{0.80f, 0.16f, 0.16f, 1.0f}, {0.16f, 0.32f, 0.85f, 1.0f}};
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        drawBox(renderer, viewProj, {p.pos.x, p.pos.y, 0.0f},
+        drawBox(renderer, viewProj, p.pos,
                 {Player::kHalfWidth * 2.0f, Player::kHalfHeight * 2.0f, 0.6f}, colors[i]);
     }
 }
@@ -99,8 +110,9 @@ int main() {
         }
 
         PlayerInput inputs[2] = {
-            readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_SPACE),
-            readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_UNKNOWN),
+            readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S, GLFW_KEY_SPACE),
+            readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN,
+                      GLFW_KEY_RIGHT_CONTROL),
         };
 
         auto now = std::chrono::steady_clock::now();

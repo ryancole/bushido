@@ -3,14 +3,14 @@
 #include <glm/glm.hpp>
 
 struct PlayerInput {
-    float move = 0.0f; // -1..1
+    glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
     bool jump = false;
 };
 
-// World: x right, y up, fighting plane at z = 0, ground surface at y = 0.
-// Units are meters-ish.
+// World: x right, y up, z toward the camera; ground surface at y = 0.
+// Units are meters-ish. Players move freely in the x/z ground plane.
 struct Player {
-    glm::vec2 pos{0.0f, 0.0f}; // center of the body box
+    glm::vec3 pos{0.0f, 0.0f, 0.0f}; // center of the body box
     float vy = 0.0f;
     bool grounded = true;
     float facing = 1.0f; // +1 toward +x; always faces the opponent
@@ -26,6 +26,7 @@ public:
     const Player& player(int i) const { return m_players[i]; }
 
     static constexpr float kArenaHalfWidth = 12.0f;
+    static constexpr float kArenaHalfDepth = 5.0f;
 
 private:
     Player m_players[2];

@@ -3,11 +3,12 @@
 #include <glm/glm.hpp>
 
 // Fighting-game camera: follows the midpoint of the two fighters and pulls
-// back along +Z just far enough that both stay on screen with a margin,
-// smoothed exponentially so it never snaps.
+// back along +Z just far enough that both stay on screen with a margin —
+// accounting for each fighter's depth (a fighter nearer the camera needs more
+// pull-back). Smoothed exponentially so it never snaps.
 class FramingCamera {
 public:
-    void update(const glm::vec2& p1, const glm::vec2& p2, float aspect, float dt);
+    void update(const glm::vec3& p1, const glm::vec3& p2, float aspect, float dt);
     glm::mat4 view() const;
     glm::mat4 proj(float aspect) const;
 

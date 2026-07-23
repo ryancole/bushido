@@ -5,19 +5,25 @@
 #include <algorithm>
 #include <cmath>
 
-void FramingCamera::update(const glm::vec2& p1, const glm::vec2& p2, float aspect,
+void FramingCamera::update(const glm::vec3& p1, const glm::vec3& p2, float aspect,
                            float dt) {
-    glm::vec2 mid = 0.5f * (p1 + p2);
-    float halfSpanX = 0.5f * std::abs(p1.x - p2.x) + kMargin;
-    float halfSpanY = 0.5f * std::abs(p1.y - p2.y) + kMargin;
-
-    // Distance at which a span just fits the frustum, per axis; take the worst.
+    glm::vec3 mid = 0.5f * (p1 + p2);
     float tanHalfFov = std::tan(kFovY * 0.5f);
-    float distance = std::max(kMinDistance,
-                              std::max(halfSpanX / (tanHalfFov * aspect),
-                                       halfSpanY / tanHalfFov));
 
-    glm::vec3 desiredTarget{mid.x, mid.y + kHeightBias, 0.0f};
+    // For a fighter at depth offset dz from the midpoint, the camera plane
+    // distance to them is (D - dz), so their lateral offset fits when
+    // |offset| + margin <= tanHalfFov * (D - dz)  (times aspect horizontally).
+    // Solve for the minimum D per fighter per axis and take the worst.
+    float distance = kMinDistance;
+    for (const glm::vec3& p : {p1, p2}) {
+        float dz = p.z - mid.z;
+        float spanX = std::abs(p.x - mid.x) + kMargin;
+        float spanY = std::abs(p.y - mid.y) + kMargin;
+        distance = std::max(distance, spanX / (tanHalfFov * aspect) + dz);
+        distance = std::max(distance, spanY / tanHalfFov + dz);
+    }
+
+    glm::vec3 desiredTarget{mid.x, mid.y + kHeightBias, mid.z};
     glm::vec3 desiredPosition = desiredTarget + glm::vec3(0.0f, 0.0f, distance);
 
     float blend = 1.0f - std::exp(-kSmoothing * dt);
