@@ -10,13 +10,13 @@
         {
             "label": "configure",
             "type": "shell",
-            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && set \"VULKAN_SDK=C:\\VulkanSDK\\1.4.350.0\" && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug\"",
+            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && set \"VULKAN_SDK=C:\\VulkanSDK\\1.4.350.0\" && cmake --preset msvc-debug\"",
             "problemMatcher": []
         },
         {
             "label": "build",
             "type": "shell",
-            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cmake --build build\"",
+            "command": "\"\"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat\" && cmake --build --preset msvc-debug\"",
             "group": {
                 "kind": "build",
                 "isDefault": true

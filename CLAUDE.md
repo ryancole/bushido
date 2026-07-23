@@ -4,10 +4,10 @@ Side-scrolling sword PvP game. C++20, Vulkan 1.3 (dynamic rendering, sync2), GLF
 
 ## Build (Windows, MSVC + Ninja)
 
-MSVC is not on PATH; chain through vcvars64:
+The toolchain is pinned to MSVC via CMakePresets.json (`msvc-debug` → `build/`, `msvc-release` → `build-release/`); CMakeLists errors out on any other Windows compiler. MSVC is not on PATH; chain through vcvars64:
 
 ```
-cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build'
+cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake --preset msvc-debug && cmake --build --preset msvc-debug'
 ```
 
 Run: `build\bushido.exe` (Esc quits, A/D move, Space/W jump).

@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.24)
 project(bushido LANGUAGES CXX)
 
+# This project is built with the MSVC toolchain; other compilers are untested.
+if(WIN32 AND NOT MSVC)
+    message(FATAL_ERROR
+        "bushido must be built with the MSVC build tools. "
+        "Configure with a preset (cmake --preset msvc-debug) from an "
+        "environment where vcvars64.bat has run.")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

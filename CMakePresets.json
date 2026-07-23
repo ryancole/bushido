@@ -1,0 +1,35 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "msvc-debug",
+            "displayName": "MSVC Debug (Ninja)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "cl",
+                "CMAKE_CXX_COMPILER": "cl"
+            }
+        },
+        {
+            "name": "msvc-release",
+            "displayName": "MSVC Release (Ninja)",
+            "inherits": "msvc-debug",
+            "binaryDir": "${sourceDir}/build-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "msvc-debug",
+            "configurePreset": "msvc-debug"
+        },
+        {
+            "name": "msvc-release",
+            "configurePreset": "msvc-release"
+        }
+    ]
+}
