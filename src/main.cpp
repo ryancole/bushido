@@ -12,14 +12,14 @@
 #include "camera.hpp"
 #include "game.hpp"
 #include "renderer.hpp"
+#include "samurai.hpp"
 
 namespace {
 
-void drawBox(Renderer& renderer, const glm::mat4& viewProj, glm::vec3 center,
-             glm::vec3 size, glm::vec4 color) {
+void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
     model = glm::scale(model, size);
-    renderer.drawBox({viewProj * model, color});
+    renderer.drawBox(model, color);
 }
 
 PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int toward,
@@ -33,9 +33,9 @@ PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int tow
     return in;
 }
 
-void drawScene(Renderer& renderer, const glm::mat4& viewProj, const Game& game) {
+void drawScene(Renderer& renderer, const Game& game, float time) {
     // Arena floor: covers the playable x/z area with some visual overhang.
-    drawBox(renderer, viewProj, {0.0f, -0.5f, 0.0f},
+    drawBox(renderer, {0.0f, -0.5f, 0.0f},
             {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, Game::kArenaHalfDepth * 2.0f + 4.0f},
             {0.16f, 0.15f, 0.13f, 1.0f});
 
@@ -43,24 +43,29 @@ void drawScene(Renderer& renderer, const glm::mat4& viewProj, const Game& game) 
     const float pillarX[] = {-14.0f, -7.0f, 0.0f, 7.0f, 14.0f};
     const float pillarH[] = {4.5f, 3.2f, 5.5f, 3.8f, 4.8f};
     for (int i = 0; i < 5; ++i) {
-        drawBox(renderer, viewProj, {pillarX[i], pillarH[i] * 0.5f, -Game::kArenaHalfDepth - 1.5f},
+        drawBox(renderer, {pillarX[i], pillarH[i] * 0.5f, -Game::kArenaHalfDepth - 1.5f},
                 {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
     }
 
     // Blob shadows: without these, depth position is unreadable while airborne.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        drawBox(renderer, viewProj, {p.pos.x, 0.03f, p.pos.z},
+        drawBox(renderer, {p.pos.x, 0.03f, p.pos.z},
                 {Player::kHalfWidth * 2.2f, 0.02f, Player::kHalfWidth * 1.6f},
                 {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
-    // Fighters.
-    const glm::vec4 colors[2] = {{0.80f, 0.16f, 0.16f, 1.0f}, {0.16f, 0.32f, 0.85f, 1.0f}};
+    // Fighters: crimson vs indigo samurai.
+    const SamuraiColors colors[2] = {
+        {{0.72f, 0.13f, 0.13f, 1.0f}, {0.17f, 0.15f, 0.17f, 1.0f}, {0.85f, 0.70f, 0.25f, 1.0f}},
+        {{0.15f, 0.28f, 0.72f, 1.0f}, {0.15f, 0.16f, 0.20f, 1.0f}, {0.80f, 0.78f, 0.70f, 1.0f}},
+    };
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        drawBox(renderer, viewProj, p.pos,
-                {Player::kHalfWidth * 2.0f, Player::kHalfHeight * 2.0f, 0.6f}, colors[i]);
+        float yaw = p.facing > 0.0f ? 0.0f : 3.14159265358979f;
+        glm::vec3 feet{p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
+        drawSamurai(renderer, feet, yaw, {p.animPhase, p.moveAmount, p.grounded, time},
+                    colors[i]);
     }
 }
 
@@ -100,6 +105,7 @@ int main() {
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
+    float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
 
     while (!glfwWindowShouldClose(window)) {
@@ -118,6 +124,7 @@ int main() {
         auto now = std::chrono::steady_clock::now();
         float frameTime = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
+        elapsed += frameTime;
         accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
         while (accumulator >= kFixedDt) {
@@ -128,8 +135,8 @@ int main() {
         camera.update(game.player(0).pos, game.player(1).pos, renderer.aspect(), frameTime);
 
         if (renderer.beginFrame()) {
-            glm::mat4 viewProj = camera.proj(renderer.aspect()) * camera.view();
-            drawScene(renderer, viewProj, game);
+            renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
+            drawScene(renderer, game, elapsed);
             renderer.endFrame();
         }
     }

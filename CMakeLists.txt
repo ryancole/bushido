@@ -37,7 +37,8 @@ add_executable(bushido
     src/main.cpp
     src/renderer.cpp
     src/camera.cpp
-    src/game.cpp)
+    src/game.cpp
+    src/samurai.cpp)
 
 target_link_libraries(bushido PRIVATE
     Vulkan::Vulkan

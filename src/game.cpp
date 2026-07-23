@@ -31,6 +31,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.pos.x += move.x * kMoveSpeed * dt;
         p.pos.z += move.y * kMoveSpeed * dt;
 
+        p.moveAmount = glm::length(move);
+        p.animPhase = std::fmod(p.animPhase + p.moveAmount * 12.0f * dt,
+                                2.0f * 3.14159265358979f);
+
         if (p.grounded && in.jump) {
             p.vy = kJumpVelocity;
             p.grounded = false;

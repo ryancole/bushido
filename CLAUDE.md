@@ -19,13 +19,14 @@ VS Code: `.vscode/` has a default build task (Ctrl+Shift+B), a `configure` task,
 - `src/main.cpp` — game loop (fixed 120 Hz timestep), input reading, scene drawing
 - `src/game.hpp/.cpp` — simulation: two `Player`s moving freely in the x/z ground plane, gravity/jump, radial body push-apart, arena clamp (±kArenaHalfWidth in x, ±kArenaHalfDepth in z)
 - `src/camera.hpp/.cpp` — `FramingCamera`: follows the fighters' midpoint, zooms out so both always fit the frustum (with margin), accounting for each fighter's depth; exponential smoothing
-- `src/renderer.hpp/.cpp` — all Vulkan state; API is `beginFrame` / `drawBox` / `endFrame`
+- `src/renderer.hpp/.cpp` — all Vulkan state; API is `beginFrame` / `setViewProj` / `drawBox(model, color)` / `endFrame`
+- `src/samurai.hpp/.cpp` — procedural samurai model: ~25 boxes (hakama legs, kimono torso, obi, sode, arms, head, kasa, sheathed katana) with stride/idle/jump animation driven by `SamuraiPose`
 - `shaders/` — GLSL, compiled to SPIR-V at build time by glslc into `build/shaders/`
 
 ## Current conventions (early, expected to change)
 
 - World space: x right, y **up**, z toward the camera, ground surface at y = 0, units ~meters. Camera looks down -Z from +Z; gameplay is side-focused but movement is full 3D.
 - GLM is compiled with `GLM_FORCE_DEPTH_ZERO_TO_ONE` + `GLM_FORCE_RADIANS`; `FramingCamera::proj` flips Y for Vulkan clip space.
-- Everything renders as a shaded unit cube generated in the vertex shader from `gl_VertexIndex` (translate+scale models only — normals assume no rotation). Per-object data goes in push constants (`ObjectPush { mat4 mvp; vec4 color; }` — must match `shaders/cube.vert`).
+- Everything renders as a shaded unit cube generated in the vertex shader from `gl_VertexIndex`; models may rotate (normal matrix travels in push constants). `ObjectPush` is exactly 128 bytes — the guaranteed push-constant minimum — and must match `shaders/cube.vert`; do not grow it.
 - Depth: single D32 depth image shared by frames in flight, transitioned from UNDEFINED each frame.
 - Shaders are loaded via the `SHADER_DIR` compile definition (absolute path into the build tree) — dev-only scheme.

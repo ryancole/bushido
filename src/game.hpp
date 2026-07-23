@@ -13,7 +13,9 @@ struct Player {
     glm::vec3 pos{0.0f, 0.0f, 0.0f}; // center of the body box
     float vy = 0.0f;
     bool grounded = true;
-    float facing = 1.0f; // +1 toward +x; always faces the opponent
+    float facing = 1.0f;     // +1 toward +x; always faces the opponent
+    float animPhase = 0.0f;  // walk-cycle phase in radians, advances with ground speed
+    float moveAmount = 0.0f; // 0..1 fraction of max ground speed this tick
 
     static constexpr float kHalfWidth = 0.45f;
     static constexpr float kHalfHeight = 0.9f;

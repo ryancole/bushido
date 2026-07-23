@@ -438,7 +438,15 @@ bool Renderer::beginFrame() {
     return true;
 }
 
-void Renderer::drawBox(const ObjectPush& object) {
+void Renderer::drawBox(const glm::mat4& model, const glm::vec4& color) {
+    glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(model)));
+    ObjectPush object{};
+    object.mvp = m_viewProj * model;
+    object.normal0 = glm::vec4(normalMat[0], 0.0f);
+    object.normal1 = glm::vec4(normalMat[1], 0.0f);
+    object.normal2 = glm::vec4(normalMat[2], 0.0f);
+    object.color = color;
+
     Frame& frame = m_frames[m_frameIndex];
     vkCmdPushConstants(frame.cmd, m_pipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

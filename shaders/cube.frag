@@ -2,6 +2,9 @@
 
 layout(push_constant) uniform Push {
     mat4 mvp;
+    vec4 n0;
+    vec4 n1;
+    vec4 n2;
     vec4 color;
 } pc;
 

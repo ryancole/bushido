@@ -10,10 +10,13 @@
 
 struct GLFWwindow;
 
-// Push constant block shared by cube.vert / cube.frag (80 bytes; the
-// guaranteed minimum push constant budget is 128).
+// Push constant block shared by cube.vert / cube.frag. Exactly 128 bytes —
+// the guaranteed minimum push constant budget; do not grow it.
 struct ObjectPush {
     glm::mat4 mvp;
+    glm::vec4 normal0; // columns of the normal matrix (inverse-transpose of
+    glm::vec4 normal1; // the model's upper 3x3), for correct lighting under
+    glm::vec4 normal2; // rotation and non-uniform scale
     glm::vec4 color;
 };
 
@@ -25,7 +28,9 @@ public:
     // Acquires a swapchain image and starts recording. Returns false when the
     // frame must be skipped (swapchain rebuild, minimized window).
     bool beginFrame();
-    void drawBox(const ObjectPush& object);
+    void setViewProj(const glm::mat4& viewProj) { m_viewProj = viewProj; }
+    // Draws a shaded unit cube under `model` (any translate/rotate/scale).
+    void drawBox(const glm::mat4& model, const glm::vec4& color);
     void endFrame();
 
     void onResize() { m_resizeRequested = true; }
@@ -78,6 +83,7 @@ private:
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
 
+    glm::mat4 m_viewProj{1.0f};
     Frame m_frames[kFramesInFlight];
     uint32_t m_frameIndex = 0;
     uint32_t m_imageIndex = 0;
