@@ -1,0 +1,11 @@
+{
+    // Drive CMake Tools from CMakePresets.json (msvc-debug / msvc-release)
+    // instead of kits, and inject the VS developer environment so `cl` and
+    // the Windows SDK resolve without launching from a developer prompt.
+    "cmake.useCMakePresets": "always",
+    "cmake.useVsDeveloperEnvironment": "always",
+    "cmake.configureOnOpen": false,
+    "cmake.environment": {
+        "VULKAN_SDK": "C:\\VulkanSDK\\1.4.350.0"
+    }
+}
