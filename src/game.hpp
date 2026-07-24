@@ -2,6 +2,7 @@
 
 #include "audio.hpp"     // Sfx ids for sound cues
 #include "character.hpp" // per-fighter stats
+#include "weapon.hpp"    // per-fighter sword loadout
 
 #include <glm/glm.hpp>
 
@@ -106,13 +107,18 @@ struct Player {
 
 class Game {
 public:
-    // A match is fully described by the two roster indices (see character.hpp);
-    // that's the whole setup a future netplay layer would need to agree on.
-    Game(int p0Character, int p1Character);
+    // A match is fully described by two (character, weapon) roster index
+    // pairs; that's the whole setup a future netplay layer would agree on.
+    Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon);
     ~Game();
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
     const CharacterDef& character(int i) const { return *m_defs[i]; }
+    const WeaponDef& weapon(int i) const { return *m_weapons[i]; }
+    // Effective per-fighter stats: the character's, with the weapon's swing
+    // scale, reach bonus, and knockback scale already applied. Everything
+    // outside Game (bot, rendering) should read these, not the raw roster.
+    const CharacterStats& stats(int i) const { return m_stats[i]; }
 
     // Match outcome: winner() is -1 while the duel is live, else the index
     // of the surviving player. overTime() is seconds since it was decided
@@ -143,7 +149,9 @@ private:
     float frand(); // 0..1
 
     Player m_players[2];
-    const CharacterDef* m_defs[2]; // roster entries; stats read every tick
+    const CharacterDef* m_defs[2];   // roster entries (colors, names)
+    const WeaponDef* m_weapons[2];   // armory entries (damage scale read on hit)
+    CharacterStats m_stats[2];       // character stats with the weapon applied
     std::vector<SeveredPiece> m_pieces;
     std::vector<SoundCue> m_soundCues;
     std::vector<BloodParticle> m_blood;

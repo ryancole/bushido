@@ -22,16 +22,28 @@
 #include "game.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
+#include "weapon.hpp"
 
 namespace {
 
 enum class AppState { Menu, CharacterSelect, Playing };
 enum class MenuAction { None, Play, Quit };
 
-// Character-select screen state: the roster index whose stats are being
-// previewed (the last tile the mouse hovered).
+// Select-screen state. Two stages on one screen: pick the fighter, then the
+// blade. `shown`/`shownWeapon` are the indices being previewed (the last tile
+// the mouse hovered); pickedCharacter latches once a fighter tile is clicked
+// and flips the screen to the weapon row.
 struct SelectScreen {
     int shown = 0;
+    int shownWeapon = 0;
+    int pickedCharacter = -1;
+};
+
+// A completed loadout pick, returned by drawCharacterSelect once the weapon
+// (the second stage) is clicked; character stays -1 until then.
+struct SelectResult {
+    int character = -1;
+    int weapon = -1;
 };
 
 // The default ImGui look is a grey debug tool; restyle it into a sparse
@@ -119,12 +131,46 @@ void drawStatBar(const char* label, int rating, ImU32 fill) {
     ImGui::Dummy({5 * (segW + gap), segH + 6.0f});
 }
 
-// Single-player select: a row of tiles driven by the mouse. Hovering a tile
-// previews that character's stats in the panel below; clicking one locks the
-// pick and starts the match (the caller draws the opponent at random).
-// Returns the clicked roster index, or -1 while still browsing.
-int drawCharacterSelect(SelectScreen& s) {
-    int picked = -1;
+// One select tile: a colored button face with luminance-aware name text and,
+// when previewed, the crimson frame. Returns true on click.
+bool drawSelectTile(const char* name, const glm::vec4& face, float tile,
+                    bool previewed) {
+    // Tile face brightens on hover.
+    ImVec4 base{face.r, face.g, face.b, 0.75f};
+    ImVec4 hot{base.x * 1.25f + 0.05f, base.y * 1.25f + 0.05f,
+               base.z * 1.25f + 0.05f, 0.9f};
+    ImGui::PushStyleColor(ImGuiCol_Button, base);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hot);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, hot);
+    // Dark name text on bright tiles (Kensei's undyed kimono, the wakizashi's
+    // pale steel), cream on the rest.
+    float lum = 0.2126f * base.x + 0.7152f * base.y + 0.0722f * base.z;
+    ImGui::PushStyleColor(ImGuiCol_Text, lum > 0.45f
+                                             ? ImVec4{0.15f, 0.13f, 0.11f, 1.0f}
+                                             : ImVec4{0.91f, 0.87f, 0.80f, 1.0f});
+    ImGui::PushFont(nullptr, 26.0f);
+    bool clicked = ImGui::Button(name, {tile, tile});
+    ImGui::PopFont();
+    ImGui::PopStyleColor(4);
+
+    if (previewed) {
+        ImVec2 mn = ImGui::GetItemRectMin();
+        ImVec2 mx = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRect(
+            {mn.x + 3.0f, mn.y + 3.0f}, {mx.x - 3.0f, mx.y - 3.0f},
+            IM_COL32(214, 44, 44, 255), 2.0f, 0, 2.5f);
+    }
+    return clicked;
+}
+
+// Single-player select, two stages on one screen, both mouse-driven: a row of
+// fighter tiles, then (once one is clicked) a row of weapon tiles. Hovering a
+// tile previews its stats in the panel below; clicking a weapon locks the
+// loadout and starts the match (the caller draws the opponent — fighter and
+// blade — at random). Returns character -1 while still browsing.
+SelectResult drawCharacterSelect(SelectScreen& s) {
+    SelectResult picked;
+    const bool weaponStage = s.pickedCharacter >= 0;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -134,79 +180,99 @@ int drawCharacterSelect(SelectScreen& s) {
                      ImGuiWindowFlags_NoSavedSettings);
 
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted("CHOOSE YOUR FIGHTER");
+    ImGui::TextUnformatted(weaponStage ? "CHOOSE YOUR BLADE" : "CHOOSE YOUR FIGHTER");
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
     const float tile = 132.0f;
     const float tileGap = 14.0f;
-    for (int i = 0; i < kCharacterCount; ++i) {
-        const CharacterDef& c = characterDef(i);
-        if (i > 0) {
-            ImGui::SameLine(0.0f, tileGap);
-        }
-        ImGui::PushID(i);
-        // Tile face: the character's kimono color, brightening on hover.
-        ImVec4 base{c.colors.kimono.r, c.colors.kimono.g, c.colors.kimono.b, 0.75f};
-        ImVec4 hot{base.x * 1.25f + 0.05f, base.y * 1.25f + 0.05f,
-                   base.z * 1.25f + 0.05f, 0.9f};
-        ImGui::PushStyleColor(ImGuiCol_Button, base);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hot);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, hot);
-        // Dark name text on bright tiles (Kensei's undyed kimono), cream on
-        // the rest.
-        float lum = 0.2126f * base.x + 0.7152f * base.y + 0.0722f * base.z;
-        ImGui::PushStyleColor(ImGuiCol_Text, lum > 0.45f
-                                                 ? ImVec4{0.15f, 0.13f, 0.11f, 1.0f}
-                                                 : ImVec4{0.91f, 0.87f, 0.80f, 1.0f});
-        ImGui::PushFont(nullptr, 26.0f);
-        if (ImGui::Button(c.name, {tile, tile})) {
-            picked = i;
-        }
-        ImGui::PopFont();
-        ImGui::PopStyleColor(4);
-        ImGui::PopID();
-        if (ImGui::IsItemHovered()) {
-            s.shown = i;
-        }
+    // The panel keeps the fighter row's width in both stages so the window
+    // (and the title above it) doesn't jump when the rows swap.
+    const float panelW = kCharacterCount * tile + (kCharacterCount - 1) * tileGap;
 
-        // The crimson frame follows the previewed character.
-        if (s.shown == i) {
-            ImVec2 mn = ImGui::GetItemRectMin();
-            ImVec2 mx = ImGui::GetItemRectMax();
-            ImGui::GetWindowDrawList()->AddRect(
-                {mn.x + 3.0f, mn.y + 3.0f}, {mx.x - 3.0f, mx.y - 3.0f},
-                IM_COL32(214, 44, 44, 255), 2.0f, 0, 2.5f);
+    if (!weaponStage) {
+        for (int i = 0; i < kCharacterCount; ++i) {
+            const CharacterDef& c = characterDef(i);
+            if (i > 0) {
+                ImGui::SameLine(0.0f, tileGap);
+            }
+            ImGui::PushID(i);
+            if (drawSelectTile(c.name, c.colors.kimono, tile, s.shown == i)) {
+                s.pickedCharacter = i;
+            }
+            ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                s.shown = i;
+            }
+        }
+    } else {
+        for (int i = 0; i < kWeaponCount; ++i) {
+            const WeaponDef& w = weaponDef(i);
+            if (i > 0) {
+                ImGui::SameLine(0.0f, tileGap);
+            }
+            ImGui::PushID(i);
+            if (drawSelectTile(w.name, w.tileColor, tile, s.shownWeapon == i)) {
+                picked = {s.pickedCharacter, i};
+            }
+            ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                s.shownWeapon = i;
+            }
         }
     }
     ImGui::Dummy({0.0f, 10.0f});
 
-    // Detail panel for the previewed character: name, epithet, stat bars.
-    // The menu style's roomy 16px item spacing would push the lower rows out
-    // of the fixed-height panel; tighten it locally.
+    // Detail panel for the previewed tile: name, epithet, stat bars. The menu
+    // style's roomy 16px item spacing would push the lower rows out of the
+    // fixed-height panel; tighten it locally.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 6.0f});
     const ImU32 kFill = IM_COL32(214, 44, 44, 255);
-    ImGui::BeginChild("stats", {kCharacterCount * tile + (kCharacterCount - 1) * tileGap,
-                                200.0f},
-                      ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
-    const CharacterDef& shown = characterDef(s.shown);
+    ImGui::BeginChild("stats", {panelW, 200.0f}, ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    const char* name;
+    const char* epithet;
+    if (weaponStage) {
+        const WeaponDef& w = weaponDef(s.shownWeapon);
+        name = w.name;
+        epithet = w.epithet;
+    } else {
+        const CharacterDef& c = characterDef(s.shown);
+        name = c.name;
+        epithet = c.epithet;
+    }
     ImGui::PushFont(nullptr, 30.0f);
-    ImGui::TextUnformatted(shown.name);
+    if (weaponStage) {
+        // Keep the chosen fighter on screen while browsing blades.
+        ImGui::Text("%s  -  %s", characterDef(s.pickedCharacter).name, name);
+    } else {
+        ImGui::TextUnformatted(name);
+    }
     ImGui::PopFont();
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextUnformatted(shown.epithet);
+    ImGui::TextUnformatted(epithet);
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::Dummy({0.0f, 2.0f});
-    drawStatBar("Speed", shown.rSpeed, kFill);
-    drawStatBar("Power", shown.rPower, kFill);
-    drawStatBar("Reach", shown.rReach, kFill);
-    drawStatBar("Weight", shown.rWeight, kFill);
+    if (weaponStage) {
+        const WeaponDef& w = weaponDef(s.shownWeapon);
+        drawStatBar("Speed", w.rSpeed, kFill);
+        drawStatBar("Damage", w.rDamage, kFill);
+        drawStatBar("Reach", w.rReach, kFill);
+    } else {
+        const CharacterDef& c = characterDef(s.shown);
+        drawStatBar("Speed", c.rSpeed, kFill);
+        drawStatBar("Power", c.rPower, kFill);
+        drawStatBar("Reach", c.rReach, kFill);
+        drawStatBar("Weight", c.rWeight, kFill);
+    }
     ImGui::Dummy({0.0f, 2.0f});
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextUnformatted("Click a fighter to begin - your opponent is drawn at random");
+    ImGui::TextUnformatted(weaponStage
+                               ? "Click a blade to begin - your opponent is drawn at random"
+                               : "Click a fighter to choose their blade");
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -238,12 +304,14 @@ void drawBloodBars(const Game& game) {
         }
         dl->AddRect(mn, mx, IM_COL32(232, 222, 204, 70), 3.0f, 0, 1.5f);
 
-        const char* name = game.character(i).name;
+        char label[64];
+        std::snprintf(label, sizeof(label), "%s - %s", game.character(i).name,
+                      game.weapon(i).name);
         ImFont* font = ImGui::GetFont();
         const float nameSize = 19.0f;
-        const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, name).x;
+        const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, label).x;
         dl->AddText(font, nameSize, {i == 0 ? x0 : mx.x - nameW, mx.y + 6.0f},
-                    IM_COL32(232, 222, 204, 200), name);
+                    IM_COL32(232, 222, 204, 200), label);
     }
 }
 
@@ -342,20 +410,20 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
                 {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
-    // Fighters, in their chosen character's colors and blade length.
+    // Fighters, in their chosen character's colors; the blade's length is the
+    // resolved reach (character + weapon) and its thickness the weapon's.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        const CharacterDef& def = game.character(i);
         float yaw = p.facing > 0.0f ? 0.0f : 3.14159265358979f;
         glm::vec3 feet{p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
-        SamuraiColors c = def.colors;
+        SamuraiColors c = game.character(i).colors;
         if (p.hitstun > 0.0f) {
             c.kimono = glm::mix(c.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
         }
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
-                     static_cast<int>(p.attackState), p.attackT, def.stats.reach,
-                     p.bodyRoll(), p.severed},
+                     static_cast<int>(p.attackState), p.attackT, game.stats(i).reach,
+                     game.weapon(i).stats.bladeWidth, p.bodyRoll(), p.severed},
                     c);
     }
 
@@ -413,14 +481,17 @@ int main() {
     Audio audio; // logs and stays silent if no device; the game runs regardless
     // The initial Game is just the arena diorama behind the menu; every
     // lock-in on the select screen replaces it with a fresh match.
-    auto game = std::make_unique<Game>(0, 1);
+    auto game = std::make_unique<Game>(0, 0, 1, 0);
     Bot bot; // drives player 2; re-seeded per match
     FramingCamera camera;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
     AppState state = AppState::Menu;
     SelectScreen select;
     std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
-    int matchChars[2] = {0, 1}; // roster indices of the current match (for rematch)
+    // The current match's loadout — (character, weapon) roster indices per
+    // player — kept outside Game so Rematch can rebuild the same pairing.
+    int matchChars[2] = {0, 1};
+    int matchWeapons[2] = {0, 0};
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -436,7 +507,8 @@ int main() {
     // button state keeps the click that started the match from reading as a
     // swing on the first frame.
     auto startMatch = [&] {
-        game = std::make_unique<Game>(matchChars[0], matchChars[1]);
+        game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
+                                      matchWeapons[1]);
         bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
         attackHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
@@ -446,10 +518,13 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // Esc backs out one level: match/select -> menu, menu -> quit.
+        // Esc backs out one level: blade stage -> fighter stage,
+        // match/select -> menu, menu -> quit.
         bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         if (escDown && !escHeld) {
-            if (state != AppState::Menu) {
+            if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
+                select.pickedCharacter = -1;
+            } else if (state != AppState::Menu) {
                 state = AppState::Menu;
             } else {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -510,7 +585,7 @@ int main() {
 
         MenuAction action = MenuAction::None;
         OverAction overAction = OverAction::None;
-        int picked = -1;
+        SelectResult picked;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
@@ -535,10 +610,13 @@ int main() {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
-        if (picked >= 0) {
-            matchChars[0] = picked;
+        if (picked.character >= 0) {
+            matchChars[0] = picked.character;
+            matchWeapons[0] = picked.weapon;
             matchChars[1] =
                 std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+            matchWeapons[1] =
+                std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
             startMatch();
         }
 

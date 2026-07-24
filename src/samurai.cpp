@@ -140,8 +140,9 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
             part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba);
             const float bladeTop = 0.755f;
             const float bladeTip = 1.36f - pose.reach;
+            const float bw = 0.05f * pose.bladeWidth;
             part(arm, {0.0f, (bladeTop + bladeTip) * 0.5f, s * 0.26f},
-                 {0.05f, (bladeTop - bladeTip) * 0.5f, 0.05f}, kSteel);
+                 {bw, (bladeTop - bladeTip) * 0.5f, bw}, kSteel);
         }
     }
 
