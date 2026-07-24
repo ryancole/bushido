@@ -43,6 +43,7 @@ public:
     }
 
 private:
+    void initImGui();
     void createSwapchain();
     void destroySwapchain();
     void recreateSwapchain();
@@ -82,6 +83,8 @@ private:
 
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
+
+    VkDescriptorPool m_imguiPool = VK_NULL_HANDLE;
 
     glm::mat4 m_viewProj{1.0f};
     Frame m_frames[kFramesInFlight];

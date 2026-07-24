@@ -37,6 +37,12 @@ FetchContent_Declare(miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
     GIT_TAG 0.11.23)
 
+# Dear ImGui ships no build system; its sources are compiled into a small
+# static lib below (core + GLFW/Vulkan backends).
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.1)
+
 # Jolt must use the dynamic CRT to match the rest of the build.
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
 set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
@@ -52,7 +58,17 @@ FetchContent_Declare(JoltPhysics
     GIT_TAG v5.6.0
     SOURCE_SUBDIR Build)
 
-FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics miniaudio)
+FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics miniaudio imgui)
+
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC Vulkan::Vulkan glfw)
 
 add_executable(bushido
     src/main.cpp
@@ -69,7 +85,8 @@ target_link_libraries(bushido PRIVATE
     vk-bootstrap::vk-bootstrap
     glm::glm
     Jolt
-    miniaudio)
+    miniaudio
+    imgui)
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

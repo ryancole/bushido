@@ -4,6 +4,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <imgui.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -17,6 +19,72 @@
 #include "samurai.hpp"
 
 namespace {
+
+enum class AppState { Menu, Playing };
+enum class MenuAction { None, Play, Quit };
+
+// The default ImGui look is a grey debug tool; restyle it into a sparse
+// menu that sits over the arena scene. Runs once, after the ImGui context
+// exists (renderer.init) and before the first frame.
+void setupMenuStyle() {
+    // A serif system font suits the theme better than ProggyClean; fall back
+    // silently if it's missing (font size is overridden per-widget anyway).
+    const char* fontPath = "C:/Windows/Fonts/georgia.ttf";
+    FILE* probe = nullptr;
+    if (fopen_s(&probe, fontPath, "rb") == 0 && probe) {
+        std::fclose(probe);
+        ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath, 20.0f);
+    }
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = {48.0f, 40.0f};
+    style.FramePadding = {0.0f, 14.0f};
+    style.ItemSpacing = {0.0f, 16.0f};
+    style.FrameRounding = 2.0f;
+    style.FrameBorderSize = 1.0f;
+    style.Colors[ImGuiCol_Text] = {0.91f, 0.87f, 0.80f, 1.0f};
+    style.Colors[ImGuiCol_Border] = {0.91f, 0.87f, 0.80f, 0.25f};
+    style.Colors[ImGuiCol_Button] = {0.0f, 0.0f, 0.0f, 0.35f};
+    style.Colors[ImGuiCol_ButtonHovered] = {0.55f, 0.09f, 0.09f, 0.85f};
+    style.Colors[ImGuiCol_ButtonActive] = {0.72f, 0.13f, 0.13f, 1.0f};
+    style.Colors[ImGuiCol_NavCursor] = {0.85f, 0.70f, 0.25f, 0.80f};
+}
+
+MenuAction drawMainMenu() {
+    MenuAction action = MenuAction::None;
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("main-menu", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(nullptr, 88.0f);
+    const float titleWidth = ImGui::CalcTextSize("BUSHIDO").x;
+    ImGui::TextUnformatted("BUSHIDO");
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 12.0f});
+
+    // Center the buttons under the title (which sets the window's width).
+    const float buttonWidth = 240.0f;
+    const float buttonX =
+        ImGui::GetStyle().WindowPadding.x + (titleWidth - buttonWidth) * 0.5f;
+
+    ImGui::PushFont(nullptr, 30.0f);
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Play", {buttonWidth, 0.0f})) {
+        action = MenuAction::Play;
+    }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Quit", {buttonWidth, 0.0f})) {
+        action = MenuAction::Quit;
+    }
+    ImGui::PopFont();
+
+    ImGui::End();
+    return action;
+}
 
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
@@ -133,10 +201,13 @@ int main() {
         static_cast<Renderer*>(glfwGetWindowUserPointer(w))->onResize();
     });
 
+    setupMenuStyle();
+
     Audio audio; // logs and stays silent if no device; the game runs regardless
     Game game;
     FramingCamera camera;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
+    AppState state = AppState::Menu;
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -146,43 +217,57 @@ int main() {
     // steps; latch them so a click landing on a zero-step frame is not lost.
     bool attackHeld[2] = {false, false};
     bool attackPending[2] = {false, false};
+    bool escHeld = false;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-        }
-
-        PlayerInput inputs[2] = {
-            readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S, GLFW_KEY_SPACE),
-            readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN,
-                      GLFW_KEY_RIGHT_CONTROL),
-        };
-
-        bool held[2] = {
-            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
-            glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS,
-        };
-        for (int i = 0; i < 2; ++i) {
-            if (held[i] && !attackHeld[i]) {
-                attackPending[i] = true;
+        // Esc backs out one level: match -> menu, menu -> quit.
+        bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (escDown && !escHeld) {
+            if (state == AppState::Playing) {
+                state = AppState::Menu;
+            } else {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
-            attackHeld[i] = held[i];
-            inputs[i].attack = attackPending[i];
         }
+        escHeld = escDown;
 
         auto now = std::chrono::steady_clock::now();
         float frameTime = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
         elapsed += frameTime;
-        accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
-        while (accumulator >= kFixedDt) {
-            game.update(inputs, kFixedDt);
-            accumulator -= kFixedDt;
-            attackPending[0] = attackPending[1] = false;
-            inputs[0].attack = inputs[1].attack = false;
+        if (state == AppState::Playing) {
+            PlayerInput inputs[2] = {
+                readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S,
+                          GLFW_KEY_SPACE),
+                readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN,
+                          GLFW_KEY_RIGHT_CONTROL),
+            };
+
+            bool held[2] = {
+                glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
+                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS,
+            };
+            for (int i = 0; i < 2; ++i) {
+                if (held[i] && !attackHeld[i]) {
+                    attackPending[i] = true;
+                }
+                attackHeld[i] = held[i];
+                inputs[i].attack = attackPending[i];
+            }
+
+            accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
+
+            while (accumulator >= kFixedDt) {
+                game.update(inputs, kFixedDt);
+                accumulator -= kFixedDt;
+                attackPending[0] = attackPending[1] = false;
+                inputs[0].attack = inputs[1].attack = false;
+            }
+        } else {
+            accumulator = 0.0f; // the sim freezes while the menu is up
         }
 
         // Play the sounds the sim raised this frame, panned by world x
@@ -201,10 +286,25 @@ int main() {
 
         camera.update(game.player(0).pos, game.player(1).pos, renderer.aspect(), frameTime);
 
+        MenuAction action = MenuAction::None;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, game, elapsed);
+            if (state == AppState::Menu) {
+                action = drawMainMenu();
+            }
             renderer.endFrame();
+        }
+
+        if (action == MenuAction::Play) {
+            state = AppState::Playing;
+            // Seed the attack latches from the live button state so the click
+            // on Play (or a held key) doesn't read as a swing next frame.
+            attackHeld[0] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            attackHeld[1] = glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            attackPending[0] = attackPending[1] = false;
+        } else if (action == MenuAction::Quit) {
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
     }
 
