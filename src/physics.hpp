@@ -31,8 +31,8 @@ public:
     // A debris body striking something (ground, wall, other debris) during the
     // last step() hard enough to be audible.
     struct DebrisImpact {
-        float x;     // world x of the contact point
-        float speed; // closing speed along the contact normal, m/s
+        glm::vec3 pos; // world-space contact point
+        float speed;   // closing speed along the contact normal, m/s
     };
     const std::vector<DebrisImpact>& debrisImpacts() const;
 

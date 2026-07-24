@@ -49,6 +49,15 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
                 {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
     }
 
+    // Blood splats staining the floor. Each mark carries its own y jitter and
+    // yaw so overlaps don't z-fight or look stamped from the same die.
+    for (const BloodMark& mark : game.bloodMarks()) {
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), mark.pos);
+        model = glm::rotate(model, mark.yaw, {0.0f, 1.0f, 0.0f});
+        model = glm::scale(model, {mark.radius * 2.0f, 0.012f, mark.radius * 1.3f});
+        renderer.drawBox(model, {0.32f, 0.02f, 0.02f, mark.alpha});
+    }
+
     // Blob shadows: without these, depth position is unreadable while airborne.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
@@ -80,6 +89,11 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
     for (const SeveredPiece& piece : game.severedPieces()) {
         drawSeveredLimb(renderer, game.severedPieceTransform(piece),
                         static_cast<int>(piece.limb), colors[piece.victim]);
+    }
+
+    // Blood droplets in flight.
+    for (const BloodParticle& drop : game.bloodParticles()) {
+        drawBox(renderer, drop.pos, glm::vec3{drop.size}, {0.48f, 0.03f, 0.03f, 1.0f});
     }
 }
 

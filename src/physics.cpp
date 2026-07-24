@@ -104,7 +104,9 @@ public:
         }
         JPH::RVec3 p = manifold.GetWorldSpaceContactPointOn1(0);
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_impacts.push_back({static_cast<float>(p.GetX()), speed});
+        m_impacts.push_back({{static_cast<float>(p.GetX()), static_cast<float>(p.GetY()),
+                              static_cast<float>(p.GetZ())},
+                             speed});
     }
 
     void clear() { m_impacts.clear(); }
