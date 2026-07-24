@@ -70,8 +70,14 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         }
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
-                     static_cast<int>(p.attackState), p.attackT},
+                     static_cast<int>(p.attackState), p.attackT, p.severed},
                     c);
+    }
+
+    // Severed limbs tumbling as physics debris, in their owner's colors.
+    for (const SeveredPiece& piece : game.severedPieces()) {
+        drawSeveredLimb(renderer, game.severedPieceTransform(piece),
+                        static_cast<int>(piece.limb), colors[piece.victim]);
     }
 }
 

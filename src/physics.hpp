@@ -24,9 +24,17 @@ public:
     // (gravity already integrated into velocity.y by the caller).
     MoveResult moveCharacter(int i, const glm::vec3& velocity, float dt);
 
-    // Steps the rigid-body world. Static-only today; kept in the loop so
-    // future dynamic bodies (ragdolls, debris) just work.
+    // Steps the rigid-body world (arena statics + severed-limb debris).
     void step(float dt);
+
+    // Spawns a dynamic box body for a severed limb. Debris collides with the
+    // arena and other debris but not with the fighters. Returns a handle for
+    // debrisTransform. `yaw` rotates about +Y (matches the fighter's facing).
+    int addDebris(const glm::vec3& center, float yaw, const glm::vec3& halfExtent,
+                  const glm::vec3& velocity, const glm::vec3& angularVelocity);
+
+    // Current world transform of a debris body, for rendering.
+    glm::mat4 debrisTransform(int id) const;
 
 private:
     struct Impl;

@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include <memory>
+#include <vector>
 
 class Physics;
 
@@ -14,6 +15,19 @@ struct PlayerInput {
 
 // Sword swing phases. Values double as the pose index handed to the model.
 enum class AttackState { None = 0, Windup = 1, Active = 2, Recovery = 3 };
+
+// Severable body parts. Values index Player::severed and match the limb
+// indices the samurai model exposes (samuraiLimbBounds / drawSeveredLimb).
+// "Front" is the model's +z side — the sword arm's side.
+enum class Limb { ArmFront = 0, ArmBack, LegFront, LegBack, Head };
+inline constexpr int kLimbCount = 5;
+
+// A limb that has been cut off and now tumbles as a physics debris body.
+struct SeveredPiece {
+    int victim;   // player index the limb came from (for colors)
+    Limb limb;
+    int debrisId; // handle into Physics' debris bodies
+};
 
 // World: x right, y up, z toward the camera; ground surface at y = 0.
 // Units are meters-ish. Players move freely in the x/z ground plane.
@@ -31,6 +45,7 @@ struct Player {
     bool attackLanded = false; // this swing already connected
     float hitstun = 0.0f;      // seconds of control lockout after being hit
     glm::vec2 kbVel{0.0f};     // knockback velocity in the ground plane
+    bool severed[kLimbCount] = {}; // dismembered parts stay lost for the match
 
     static constexpr float kHalfWidth = 0.45f;
     static constexpr float kHalfHeight = 0.9f;
@@ -43,10 +58,17 @@ public:
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
 
+    const std::vector<SeveredPiece>& severedPieces() const { return m_pieces; }
+    // World transform of a severed piece's debris body, for rendering.
+    glm::mat4 severedPieceTransform(const SeveredPiece& piece) const;
+
     static constexpr float kArenaHalfWidth = 12.0f;
     static constexpr float kArenaHalfDepth = 5.0f;
 
 private:
+    void severLimb(int victim, Limb limb, const glm::vec2& impulseDir);
+
     Player m_players[2];
+    std::vector<SeveredPiece> m_pieces;
     std::unique_ptr<Physics> m_physics; // collision & movement solver (Jolt)
 };

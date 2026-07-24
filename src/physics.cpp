@@ -19,13 +19,15 @@
 
 #include <algorithm>
 #include <thread>
+#include <vector>
 
 namespace {
 
 namespace Layers {
 constexpr JPH::ObjectLayer NON_MOVING = 0;
 constexpr JPH::ObjectLayer MOVING = 1;
-constexpr JPH::ObjectLayer NUM_LAYERS = 2;
+constexpr JPH::ObjectLayer DEBRIS = 2; // severed limbs: hit the world, not fighters
+constexpr JPH::ObjectLayer NUM_LAYERS = 3;
 } // namespace Layers
 
 namespace BroadPhaseLayers {
@@ -58,6 +60,7 @@ public:
         switch (layer1) {
             case Layers::NON_MOVING: return layer2 == BroadPhaseLayers::MOVING;
             case Layers::MOVING: return true;
+            case Layers::DEBRIS: return true;
             default: return false;
         }
     }
@@ -67,8 +70,9 @@ class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer layer1, JPH::ObjectLayer layer2) const override {
         switch (layer1) {
-            case Layers::NON_MOVING: return layer2 == Layers::MOVING;
-            case Layers::MOVING: return true;
+            case Layers::NON_MOVING: return layer2 != Layers::NON_MOVING;
+            case Layers::MOVING: return layer2 != Layers::DEBRIS; // fighters ignore limbs
+            case Layers::DEBRIS: return layer2 != Layers::MOVING;
             default: return false;
         }
     }
@@ -98,6 +102,7 @@ struct Physics::Impl {
     JPH::PhysicsSystem physicsSystem;
     JPH::CharacterVsCharacterCollisionSimple charVsChar;
     JPH::Ref<JPH::CharacterVirtual> characters[2];
+    std::vector<JPH::BodyID> debris;
 };
 
 Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB)
@@ -193,4 +198,36 @@ Physics::MoveResult Physics::moveCharacter(int i, const glm::vec3& velocity, flo
 void Physics::step(float dt) {
     m_impl->physicsSystem.Update(dt, 1, &m_impl->tempAllocator,
                                  m_impl->jobSystem.get());
+}
+
+int Physics::addDebris(const glm::vec3& center, float yaw, const glm::vec3& halfExtent,
+                       const glm::vec3& velocity, const glm::vec3& angularVelocity) {
+    Impl& im = *m_impl;
+    // Small convex radius so thin pieces (arms) are still valid boxes.
+    JPH::BodyCreationSettings settings(
+        new JPH::BoxShape({halfExtent.x, halfExtent.y, halfExtent.z}, 0.02f),
+        JPH::RVec3(center.x, center.y, center.z),
+        JPH::Quat::sRotation(JPH::Vec3::sAxisY(), yaw), JPH::EMotionType::Dynamic,
+        Layers::DEBRIS);
+    settings.mLinearVelocity = {velocity.x, velocity.y, velocity.z};
+    settings.mAngularVelocity = {angularVelocity.x, angularVelocity.y,
+                                 angularVelocity.z};
+    settings.mRestitution = 0.25f;
+    settings.mFriction = 0.7f;
+    JPH::BodyID id = im.physicsSystem.GetBodyInterface().CreateAndAddBody(
+        settings, JPH::EActivation::Activate);
+    im.debris.push_back(id);
+    return static_cast<int>(im.debris.size()) - 1;
+}
+
+glm::mat4 Physics::debrisTransform(int id) const {
+    Impl& im = *m_impl;
+    JPH::RMat44 xf =
+        im.physicsSystem.GetBodyInterface().GetWorldTransform(im.debris[id]);
+    glm::mat4 out;
+    for (int c = 0; c < 4; ++c) {
+        JPH::Vec4 col = xf.GetColumn4(c);
+        out[c] = {col.GetX(), col.GetY(), col.GetZ(), col.GetW()};
+    }
+    return out;
 }
