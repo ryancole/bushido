@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <random>
 
 #include "audio.hpp"
 #include "camera.hpp"
@@ -26,18 +27,10 @@ namespace {
 enum class AppState { Menu, CharacterSelect, Playing };
 enum class MenuAction { None, Play, Quit };
 
-// Character-select screen state. Both players browse and lock in
-// simultaneously, MK-style; a match starts once both are locked.
+// Character-select screen state: the roster index whose stats are being
+// previewed (the last tile the mouse hovered).
 struct SelectScreen {
-    int sel[2] = {0, 1};
-    bool locked[2] = {false, false};
-};
-
-// One frame's worth of select-screen key edges, per player.
-struct SelectNav {
-    bool left[2] = {};
-    bool right[2] = {};
-    bool confirm[2] = {};
+    int shown = 0;
 };
 
 // The default ImGui look is a grey debug tool; restyle it into a sparse
@@ -125,25 +118,12 @@ void drawStatBar(const char* label, int rating, ImU32 fill) {
     ImGui::Dummy({5 * (segW + gap), segH + 6.0f});
 }
 
-// MK-style select: a row of tiles both players highlight at once. P1 keeps a
-// crimson frame (inset), P2 an indigo one (outset), so a mirror pick shows
-// both. Mouse clicking a tile picks-and-locks for P1. Returns true when both
-// players have locked in and the match should start.
-bool drawCharacterSelect(SelectScreen& s, const SelectNav& nav) {
-    for (int p = 0; p < 2; ++p) {
-        if (s.locked[p]) {
-            continue;
-        }
-        if (nav.left[p]) {
-            s.sel[p] = (s.sel[p] + kCharacterCount - 1) % kCharacterCount;
-        }
-        if (nav.right[p]) {
-            s.sel[p] = (s.sel[p] + 1) % kCharacterCount;
-        }
-        if (nav.confirm[p]) {
-            s.locked[p] = true;
-        }
-    }
+// Single-player select: a row of tiles driven by the mouse. Hovering a tile
+// previews that character's stats in the panel below; clicking one locks the
+// pick and starts the match (the caller draws the opponent at random).
+// Returns the clicked roster index, or -1 while still browsing.
+int drawCharacterSelect(SelectScreen& s) {
+    int picked = -1;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -179,81 +159,60 @@ bool drawCharacterSelect(SelectScreen& s, const SelectNav& nav) {
                                                  ? ImVec4{0.15f, 0.13f, 0.11f, 1.0f}
                                                  : ImVec4{0.91f, 0.87f, 0.80f, 1.0f});
         ImGui::PushFont(nullptr, 26.0f);
-        if (ImGui::Button(c.name, {tile, tile}) && !s.locked[0]) {
-            s.sel[0] = i;
-            s.locked[0] = true;
+        if (ImGui::Button(c.name, {tile, tile})) {
+            picked = i;
         }
         ImGui::PopFont();
         ImGui::PopStyleColor(4);
         ImGui::PopID();
-
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 mn = ImGui::GetItemRectMin();
-        ImVec2 mx = ImGui::GetItemRectMax();
-        if (s.sel[0] == i) {
-            dl->AddRect({mn.x + 3.0f, mn.y + 3.0f}, {mx.x - 3.0f, mx.y - 3.0f},
-                        IM_COL32(214, 44, 44, 255), 2.0f, 0, s.locked[0] ? 5.0f : 2.5f);
+        if (ImGui::IsItemHovered()) {
+            s.shown = i;
         }
-        if (s.sel[1] == i) {
-            dl->AddRect({mn.x - 2.0f, mn.y - 2.0f}, {mx.x + 2.0f, mx.y + 2.0f},
-                        IM_COL32(64, 96, 224, 255), 2.0f, 0, s.locked[1] ? 5.0f : 2.5f);
+
+        // The crimson frame follows the previewed character.
+        if (s.shown == i) {
+            ImVec2 mn = ImGui::GetItemRectMin();
+            ImVec2 mx = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect(
+                {mn.x + 3.0f, mn.y + 3.0f}, {mx.x - 3.0f, mx.y - 3.0f},
+                IM_COL32(214, 44, 44, 255), 2.0f, 0, 2.5f);
         }
     }
     ImGui::Dummy({0.0f, 10.0f});
 
-    // Per-player detail panels: name, epithet, stat bars, ready/hint line.
+    // Detail panel for the previewed character: name, epithet, stat bars.
     // The menu style's roomy 16px item spacing would push the lower rows out
-    // of the fixed-height panels; tighten it locally.
+    // of the fixed-height panel; tighten it locally.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 6.0f});
-    const float panelW = (kCharacterCount * tile + (kCharacterCount - 1) * tileGap -
-                          tileGap) * 0.5f;
-    const ImU32 pFill[2] = {IM_COL32(214, 44, 44, 255), IM_COL32(64, 96, 224, 255)};
-    const char* pTag[2] = {"P1", "P2"};
-    const char* pHint[2] = {"A / D pick    Space lock", "< / > pick    R.Shift lock"};
-    for (int p = 0; p < 2; ++p) {
-        if (p > 0) {
-            ImGui::SameLine(0.0f, tileGap);
-        }
-        ImGui::BeginChild(pTag[p], {panelW, 200.0f}, ImGuiChildFlags_None,
-                          ImGuiWindowFlags_NoBackground);
-        const CharacterDef& c = characterDef(s.sel[p]);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(pFill[p]));
-        ImGui::PushFont(nullptr, 22.0f);
-        ImGui::TextUnformatted(pTag[p]);
-        ImGui::PopFont();
-        ImGui::PopStyleColor();
-        ImGui::SameLine(46.0f);
-        ImGui::PushFont(nullptr, 30.0f);
-        ImGui::TextUnformatted(c.name);
-        ImGui::PopFont();
-        ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
-        ImGui::PushFont(nullptr, 17.0f);
-        ImGui::TextUnformatted(c.epithet);
-        ImGui::PopFont();
-        ImGui::PopStyleColor();
-        ImGui::Dummy({0.0f, 2.0f});
-        drawStatBar("Speed", c.rSpeed, pFill[p]);
-        drawStatBar("Power", c.rPower, pFill[p]);
-        drawStatBar("Reach", c.rReach, pFill[p]);
-        drawStatBar("Weight", c.rWeight, pFill[p]);
-        ImGui::Dummy({0.0f, 2.0f});
-        ImGui::PushFont(nullptr, 17.0f);
-        if (s.locked[p]) {
-            ImGui::PushStyleColor(ImGuiCol_Text, {0.85f, 0.70f, 0.25f, 1.0f});
-            ImGui::TextUnformatted("READY");
-            ImGui::PopStyleColor();
-        } else {
-            ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
-            ImGui::TextUnformatted(pHint[p]);
-            ImGui::PopStyleColor();
-        }
-        ImGui::PopFont();
-        ImGui::EndChild();
-    }
+    const ImU32 kFill = IM_COL32(214, 44, 44, 255);
+    ImGui::BeginChild("stats", {kCharacterCount * tile + (kCharacterCount - 1) * tileGap,
+                                200.0f},
+                      ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    const CharacterDef& shown = characterDef(s.shown);
+    ImGui::PushFont(nullptr, 30.0f);
+    ImGui::TextUnformatted(shown.name);
+    ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 17.0f);
+    ImGui::TextUnformatted(shown.epithet);
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::Dummy({0.0f, 2.0f});
+    drawStatBar("Speed", shown.rSpeed, kFill);
+    drawStatBar("Power", shown.rPower, kFill);
+    drawStatBar("Reach", shown.rReach, kFill);
+    drawStatBar("Weight", shown.rWeight, kFill);
+    ImGui::Dummy({0.0f, 2.0f});
+    ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
+    ImGui::PushFont(nullptr, 17.0f);
+    ImGui::TextUnformatted("Click a fighter to begin - your opponent is drawn at random");
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
     ImGui::PopStyleVar();
 
     ImGui::End();
-    return s.locked[0] && s.locked[1];
+    return picked;
 }
 
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
@@ -383,13 +342,7 @@ int main() {
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
     AppState state = AppState::Menu;
     SelectScreen select;
-
-    // Select-screen navigation keys, edge-detected: {P1 left,right,confirm,
-    // P2 left,right,confirm}. Held state is re-seeded when the screen opens
-    // so the press that opened it can't navigate or lock.
-    const int kNavKeys[6] = {GLFW_KEY_A,    GLFW_KEY_D,     GLFW_KEY_SPACE,
-                             GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_RIGHT_SHIFT};
-    bool navHeld[6] = {};
+    std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -452,20 +405,6 @@ int main() {
             accumulator = 0.0f; // the sim freezes while the menu is up
         }
 
-        // Select-screen navigation edges (empty in every other state).
-        SelectNav nav;
-        if (state == AppState::CharacterSelect) {
-            for (int k = 0; k < 6; ++k) {
-                bool down = glfwGetKey(window, kNavKeys[k]) == GLFW_PRESS;
-                bool edge = down && !navHeld[k];
-                navHeld[k] = down;
-                int p = k / 3;
-                if (k % 3 == 0) nav.left[p] = edge;
-                if (k % 3 == 1) nav.right[p] = edge;
-                if (k % 3 == 2) nav.confirm[p] = edge;
-            }
-        }
-
         // Play the sounds the sim raised this frame, panned by world x
         // relative to the fighters' midpoint (~ the camera's framing center),
         // with a little pitch jitter so repeats don't sound stamped-out.
@@ -484,14 +423,14 @@ int main() {
                       frameTime);
 
         MenuAction action = MenuAction::None;
-        bool startMatch = false;
+        int picked = -1;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
             if (state == AppState::Menu) {
                 action = drawMainMenu();
             } else if (state == AppState::CharacterSelect) {
-                startMatch = drawCharacterSelect(select, nav);
+                picked = drawCharacterSelect(select);
             }
             renderer.endFrame();
         }
@@ -499,20 +438,16 @@ int main() {
         if (action == MenuAction::Play) {
             state = AppState::CharacterSelect;
             select = SelectScreen{};
-            // Seed the nav latches from the live key state so whatever press
-            // activated Play (Space, arrows) doesn't navigate or lock.
-            for (int k = 0; k < 6; ++k) {
-                navHeld[k] = glfwGetKey(window, kNavKeys[k]) == GLFW_PRESS;
-            }
         } else if (action == MenuAction::Quit) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
-        if (startMatch) {
-            game = std::make_unique<Game>(select.sel[0], select.sel[1]);
+        if (picked >= 0) {
+            int foe = std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+            game = std::make_unique<Game>(picked, foe);
             state = AppState::Playing;
             // Seed the attack latches from the live button state so the click
-            // that locked a character doesn't read as a swing next frame.
+            // that picked a character doesn't read as a swing next frame.
             attackHeld[0] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             attackHeld[1] = glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
             attackPending[0] = attackPending[1] = false;
