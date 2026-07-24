@@ -61,8 +61,12 @@ LimbBounds samuraiLimbBounds(int limb) {
 // matching the Player collision box.
 void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
                  const SamuraiPose& pose, const SamuraiColors& colors) {
-    const glm::mat4 base =
+    glm::mat4 base =
         glm::rotate(glm::translate(glm::mat4(1.0f), feet), yaw, glm::vec3(0.0f, 1.0f, 0.0f));
+    if (pose.bodyRoll != 0.0f) {
+        // Topple: the whole body tips about the feet toward ±z.
+        base = glm::rotate(base, pose.bodyRoll, glm::vec3(1.0f, 0.0f, 0.0f));
+    }
 
     auto part = [&](const glm::mat4& local, glm::vec3 center, glm::vec3 size,
                     const glm::vec4& color) {

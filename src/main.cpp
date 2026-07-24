@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -127,10 +128,13 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
     }
 
     // Blob shadows: without these, depth position is unreadable while airborne.
+    // A toppled body stretches its shadow toward the side it lies on.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        drawBox(renderer, {p.pos.x, 0.03f, p.pos.z},
-                {Player::kHalfWidth * 2.2f, 0.02f, Player::kHalfWidth * 1.6f},
+        float lieZ = p.facing * std::sin(p.bodyRoll());
+        drawBox(renderer, {p.pos.x, 0.03f, p.pos.z + lieZ * 0.8f},
+                {Player::kHalfWidth * 2.2f, 0.02f,
+                 Player::kHalfWidth * 1.6f + std::abs(lieZ) * 1.4f},
                 {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
@@ -149,7 +153,8 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         }
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
-                     static_cast<int>(p.attackState), p.attackT, p.severed},
+                     static_cast<int>(p.attackState), p.attackT, p.bodyRoll(),
+                     p.severed},
                     c);
     }
 

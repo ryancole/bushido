@@ -76,6 +76,21 @@ struct Player {
     glm::vec2 kbVel{0.0f};     // knockback velocity in the ground plane
     bool severed[kLimbCount] = {}; // dismembered parts stay lost for the match
 
+    // Toppling: a fighter missing a leg cannot stay standing. fallSide is the
+    // model-space z sign they tip toward (0 until a leg is lost); fallTilt is
+    // the roll about the local x axis at the feet, integrated like an inverted
+    // pendulum until the body lies on the ground, where it stays.
+    float fallTilt = 0.0f; // rad, 0 = upright
+    float fallVel = 0.0f;  // rad/s
+    float fallSide = 0.0f; // ±1 once toppling, toward the severed leg
+
+    bool downed() const {
+        return severed[static_cast<int>(Limb::LegFront)] ||
+               severed[static_cast<int>(Limb::LegBack)];
+    }
+    // Signed roll about the model's local +x axis (what the renderer applies).
+    float bodyRoll() const { return fallSide * fallTilt; }
+
     static constexpr float kHalfWidth = 0.45f;
     static constexpr float kHalfHeight = 0.9f;
 };

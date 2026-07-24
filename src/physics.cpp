@@ -19,6 +19,7 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <mutex>
 #include <thread>
@@ -143,6 +144,9 @@ struct Physics::Impl {
     JPH::PhysicsSystem physicsSystem;
     JPH::CharacterVsCharacterCollisionSimple charVsChar;
     JPH::Ref<JPH::CharacterVirtual> characters[2];
+    JPH::RefConst<JPH::Shape> standShape;
+    JPH::RefConst<JPH::Shape> proneShape;
+    bool prone[2] = {false, false};
     std::vector<JPH::BodyID> debris;
     DebrisContactListener contactListener;
 };
@@ -193,10 +197,20 @@ Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB
     // Character capsule matching the fighter's body box, origin at the feet.
     const float radius = Player::kHalfWidth;
     const float halfHeight = Player::kHalfHeight;
-    JPH::RefConst<JPH::Shape> capsule =
+    im.standShape =
         JPH::RotatedTranslatedShapeSettings(
             JPH::Vec3(0.0f, halfHeight, 0.0f), JPH::Quat::sIdentity(),
             new JPH::CapsuleShape(halfHeight - radius, radius))
+            .Create()
+            .Get();
+
+    // Squat capsule for a toppled fighter: same radius, roughly half the
+    // height, so standing opponents can jump clear over a body on the ground.
+    const float proneHalf = 0.5f;
+    im.proneShape =
+        JPH::RotatedTranslatedShapeSettings(
+            JPH::Vec3(0.0f, proneHalf, 0.0f), JPH::Quat::sIdentity(),
+            new JPH::CapsuleShape(proneHalf - radius, radius))
             .Create()
             .Get();
 
@@ -204,7 +218,7 @@ Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB
     for (int i = 0; i < 2; ++i) {
         JPH::Ref<JPH::CharacterVirtualSettings> settings =
             new JPH::CharacterVirtualSettings();
-        settings->mShape = capsule;
+        settings->mShape = im.standShape;
         settings->mMaxSlopeAngle = JPH::DegreesToRadians(50.0f);
         settings->mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -radius);
         im.characters[i] = new JPH::CharacterVirtual(
@@ -236,6 +250,21 @@ Physics::MoveResult Physics::moveCharacter(int i, const glm::vec3& velocity, flo
     return {{static_cast<float>(pos.GetX()), static_cast<float>(pos.GetY()),
              static_cast<float>(pos.GetZ())},
             ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround};
+}
+
+void Physics::setCharacterProne(int i, bool prone) {
+    Impl& im = *m_impl;
+    if (im.prone[i] == prone) {
+        return;
+    }
+    im.prone[i] = prone;
+    // FLT_MAX skips the penetration check: the prone shape only ever shrinks
+    // the standing one, so the swap can't wedge the character into geometry.
+    im.characters[i]->SetShape(
+        prone ? im.proneShape : im.standShape, FLT_MAX,
+        im.physicsSystem.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+        im.physicsSystem.GetDefaultLayerFilter(Layers::MOVING), {}, {},
+        im.tempAllocator);
 }
 
 void Physics::step(float dt) {

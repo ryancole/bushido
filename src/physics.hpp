@@ -25,6 +25,11 @@ public:
     // (gravity already integrated into velocity.y by the caller).
     MoveResult moveCharacter(int i, const glm::vec3& velocity, float dt);
 
+    // Swaps character i between the standing capsule and a squat prone one
+    // (a toppled fighter lying on the ground; opponents step over the body).
+    // Idempotent — safe to call every step.
+    void setCharacterProne(int i, bool prone);
+
     // Steps the rigid-body world (arena statics + severed-limb debris).
     void step(float dt);
 
