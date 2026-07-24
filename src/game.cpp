@@ -46,6 +46,17 @@ const glm::vec3 kLimbHitPad[kLimbCount] = {
 constexpr float kTorsoCenterY = 1.05f;
 const glm::vec3 kTorsoHalf{0.30f, 0.48f, 0.30f};
 
+// Blood. Droplets are lighter than fighters so they hang a touch longer;
+// most land (and splat) well before the mid-air fade kicks in.
+constexpr float kBloodGravity = 20.0f;    // m/s^2
+constexpr float kBloodLife = 1.1f;        // s, mid-air fade for strays
+constexpr int kHitBloodCount = 12;        // droplets per torso/glancing hit
+constexpr int kSeverBloodCount = 26;      // droplets when a limb comes off
+constexpr float kHitBloodSpeed = 3.2f;    // m/s burst speed
+constexpr float kSeverBloodSpeed = 4.6f;
+constexpr std::size_t kMaxBloodParticles = 600;
+constexpr std::size_t kMaxBloodMarks = 400;
+
 constexpr float kKnockbackSpeed = 8.0f; // m/s impulse on hit
 constexpr float kKnockbackPop = 3.0f;   // upward pop on hit
 constexpr float kKnockbackDecay = 6.0f; // 1/s exponential decay
@@ -175,10 +186,36 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
     // Severed limbs thudding on the ground (or walls/each other), loudness
     // scaled by how hard they hit. ~9 m/s is a limb's first landing; the
-    // 0.25-restitution bounce comes back much softer.
+    // 0.25-restitution bounce comes back much softer. Ground contacts also
+    // smear blood where the limb bounced, sized by how hard it landed.
     for (const Physics::DebrisImpact& impact : m_physics->debrisImpacts()) {
         m_soundCues.push_back(
-            {Sfx::Thud, impact.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
+            {Sfx::Thud, impact.pos.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
+        if (impact.pos.y < 0.15f) {
+            addBloodMark(impact.pos,
+                         std::clamp(0.08f + impact.speed * 0.03f, 0.10f, 0.34f));
+            spawnBlood({impact.pos.x, 0.08f, impact.pos.z}, {0.0f, 1.0f, 0.0f}, 3,
+                       std::min(2.5f, 0.3f * impact.speed));
+        }
+    }
+
+    // Blood droplets: straight ballistics against the bare ground plane —
+    // debris and fighters are too small/fast-moving to be worth testing.
+    for (std::size_t n = 0; n < m_blood.size();) {
+        BloodParticle& d = m_blood[n];
+        d.vel.y -= kBloodGravity * dt;
+        d.pos += d.vel * dt;
+        d.life -= dt;
+        if (d.pos.y <= d.size * 0.5f && d.vel.y < 0.0f) {
+            addBloodMark({d.pos.x, 0.0f, d.pos.z}, 0.05f + 0.10f * frand());
+            d = m_blood.back();
+            m_blood.pop_back();
+        } else if (d.life <= 0.0f) {
+            d = m_blood.back();
+            m_blood.pop_back();
+        } else {
+            ++n;
+        }
     }
 
     // Resolve sword hits after both players have moved. The blade is swept as
@@ -249,6 +286,19 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         foe.vy = std::max(foe.vy, kKnockbackPop);
         foe.grounded = false;
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
+
+        // Blood sprays from the wound, away from the attacker and upward;
+        // dismemberment gushes harder than a body hit.
+        glm::vec3 wound{foe.pos.x, foeFeetY + kTorsoCenterY, foe.pos.z};
+        if (hitLimb >= 0) {
+            LimbBounds wb = samuraiLimbBounds(hitLimb);
+            wound = {foe.pos.x + foe.facing * wb.center.x, foeFeetY + wb.center.y,
+                     foe.pos.z + foe.facing * wb.center.z};
+        }
+        glm::vec3 spray = glm::normalize(glm::vec3{dir.x, 1.2f, dir.y});
+        spawnBlood(wound, spray, hitLimb >= 0 ? kSeverBloodCount : kHitBloodCount,
+                   hitLimb >= 0 ? kSeverBloodSpeed : kHitBloodSpeed);
+
         if (hitLimb >= 0) {
             severLimb(1 - i, static_cast<Limb>(hitLimb), dir);
         }
@@ -288,4 +338,36 @@ void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
 
 glm::mat4 Game::severedPieceTransform(const SeveredPiece& piece) const {
     return m_physics->debrisTransform(piece.debrisId);
+}
+
+// Bursts `count` droplets from `pos`, biased along `dir` with random spread.
+void Game::spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count,
+                      float speed) {
+    for (int n = 0; n < count && m_blood.size() < kMaxBloodParticles; ++n) {
+        glm::vec3 spread{frand() - 0.5f, frand() - 0.35f, frand() - 0.5f};
+        glm::vec3 vel = dir * (speed * (0.4f + 0.8f * frand())) + spread * (1.1f * speed);
+        m_blood.push_back({pos + spread * 0.2f, vel,
+                           kBloodLife * (0.6f + 0.5f * frand()),
+                           0.04f + 0.05f * frand()});
+    }
+}
+
+void Game::addBloodMark(const glm::vec3& pos, float radius) {
+    // Each mark gets its own tiny y offset so overlapping splats don't
+    // z-fight; all stay below the blob shadows (y = 0.03).
+    BloodMark mark{{pos.x, 0.006f + 0.010f * frand(), pos.z},
+                   radius,
+                   frand() * 6.2831853f,
+                   0.55f + 0.35f * frand()};
+    if (m_bloodMarks.size() < kMaxBloodMarks) {
+        m_bloodMarks.push_back(mark);
+    } else {
+        m_bloodMarks[m_bloodMarkCursor] = mark;
+        m_bloodMarkCursor = (m_bloodMarkCursor + 1) % kMaxBloodMarks;
+    }
+}
+
+float Game::frand() {
+    m_rng = m_rng * 1664525u + 1013904223u;
+    return static_cast<float>(m_rng >> 8) * (1.0f / 16777216.0f);
 }

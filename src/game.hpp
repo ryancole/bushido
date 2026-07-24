@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -31,6 +32,24 @@ enum class AttackState { None = 0, Windup = 1, Active = 2, Recovery = 3 };
 // "Front" is the model's +z side — the sword arm's side.
 enum class Limb { ArmFront = 0, ArmBack, LegFront, LegBack, Head };
 inline constexpr int kLimbCount = 5;
+
+// A blood droplet in flight. Pure ballistics (no Jolt); a droplet that
+// reaches the ground leaves a BloodMark, the rest fade out mid-air.
+struct BloodParticle {
+    glm::vec3 pos;
+    glm::vec3 vel;
+    float life; // seconds left before it vanishes mid-air
+    float size; // cube edge length
+};
+
+// A blood splat on the ground. Marks last the whole match; once the cap is
+// hit the oldest are recycled.
+struct BloodMark {
+    glm::vec3 pos;  // y is pre-jittered slightly above the floor (z-fighting)
+    float radius;
+    float yaw;   // random orientation so repeats don't look stamped-out
+    float alpha;
+};
 
 // A limb that has been cut off and now tumbles as a physics debris body.
 struct SeveredPiece {
@@ -72,6 +91,9 @@ public:
     // World transform of a severed piece's debris body, for rendering.
     glm::mat4 severedPieceTransform(const SeveredPiece& piece) const;
 
+    const std::vector<BloodParticle>& bloodParticles() const { return m_blood; }
+    const std::vector<BloodMark>& bloodMarks() const { return m_bloodMarks; }
+
     // Sounds raised by update() since the last clear; main drains these.
     const std::vector<SoundCue>& soundCues() const { return m_soundCues; }
     void clearSoundCues() { m_soundCues.clear(); }
@@ -81,9 +103,16 @@ public:
 
 private:
     void severLimb(int victim, Limb limb, const glm::vec2& impulseDir);
+    void spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count, float speed);
+    void addBloodMark(const glm::vec3& pos, float radius);
+    float frand(); // 0..1
 
     Player m_players[2];
     std::vector<SeveredPiece> m_pieces;
     std::vector<SoundCue> m_soundCues;
+    std::vector<BloodParticle> m_blood;
+    std::vector<BloodMark> m_bloodMarks;
+    std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
+    std::uint32_t m_rng = 0x51ce00d5u;
     std::unique_ptr<Physics> m_physics; // collision & movement solver (Jolt)
 };
