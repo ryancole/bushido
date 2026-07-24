@@ -74,6 +74,7 @@ add_executable(bushido
     src/main.cpp
     src/renderer.cpp
     src/camera.cpp
+    src/character.cpp
     src/game.cpp
     src/physics.cpp
     src/samurai.cpp

@@ -17,6 +17,9 @@ struct SamuraiPose {
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
+    // Shoulder-to-tip length of the drawn katana, matching the character's
+    // reach stat so what connects is what the player sees.
+    float reach = 1.6f;
     // Signed topple roll about the local +x axis at the feet: a fighter who
     // has lost a leg tips toward ±z and ends up lying on the ground.
     float bodyRoll = 0.0f;

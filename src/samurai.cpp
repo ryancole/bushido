@@ -133,9 +133,15 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         part(arm, {0.0f, 1.10f, s * 0.26f}, {0.11f, 0.44f, 0.11f}, colors.kimono);
         part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin); // hand
         if (swordArm) {
-            // Drawn katana extending past the hand, parallel to the arm.
+            // Drawn katana extending past the hand, parallel to the arm. The
+            // blade runs from just past the guard down to the reach distance
+            // measured from the shoulder pivot (y 1.36), so its tip matches
+            // the gameplay sweep segment.
             part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba);
-            part(arm, {0.0f, 0.28f, s * 0.26f}, {0.05f, 0.95f, 0.05f}, kSteel);
+            const float bladeTop = 0.755f;
+            const float bladeTip = 1.36f - pose.reach;
+            part(arm, {0.0f, (bladeTop + bladeTip) * 0.5f, s * 0.26f},
+                 {0.05f, (bladeTop - bladeTip) * 0.5f, 0.05f}, kSteel);
         }
     }
 

@@ -10,24 +10,20 @@
 #include <utility>
 
 namespace {
-constexpr float kMoveSpeed = 6.0f;      // m/s
-constexpr float kGravity = 28.0f;       // m/s^2
-constexpr float kJumpVelocity = 10.0f;  // m/s
-
-constexpr float kWindupTime = 0.12f;
-constexpr float kActiveTime = 0.14f;
-constexpr float kRecoveryTime = 0.28f;
+// Fighter tuning that used to live here (move/jump speed, swing timings,
+// reach, knockback) is now per-character: see character.cpp's roster.
+constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 
 // Blade sweep, mirroring the model's Active-phase swing (samurai.cpp
 // swordArmAngle case 2): the arm pivots at the shoulder from overhead down to
-// in front, with the blade a segment along the arm direction.
+// in front, with the blade a segment along the arm direction. The tip's
+// distance from the shoulder is the character's reach stat.
 constexpr float kSwingStartAngle = 2.60f; // rad about the shoulder, 0 = hanging down
 constexpr float kSwingEndAngle = 0.55f;
 constexpr float kShoulderHeight = 1.36f;  // above the feet
 constexpr float kShoulderSide = 0.26f;    // sword arm's z offset from center
-constexpr float kBladeRoot = 0.45f;       // blade segment span, distance from shoulder
-constexpr float kBladeTip = 1.60f;
+constexpr float kBladeRoot = 0.45f;       // blade segment start, distance from shoulder
 
 // Forgiveness padding added around each limb's tight bounds for the hit test.
 // The head's z pad is deliberately small: the blade travels in a lane
@@ -69,8 +65,7 @@ constexpr float kMaxTilt = 1.35f;        // rad (~77°): lying on the ground
 constexpr float kProneShapeTilt = 0.7f;  // past this the capsule swaps to prone
 constexpr float kCrawlSpeed[3] = {0.10f, 0.20f, 0.30f}; // by remaining arms
 
-constexpr float kKnockbackSpeed = 8.0f; // m/s impulse on hit
-constexpr float kKnockbackPop = 3.0f;   // upward pop on hit
+constexpr float kKnockbackPop = 3.0f;   // upward pop on hit (divided by weight)
 constexpr float kKnockbackDecay = 6.0f; // 1/s exponential decay
 constexpr float kHitstunTime = 0.35f;
 
@@ -122,17 +117,19 @@ glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
     return {half.x, c * half.y + s * half.z, s * half.y + c * half.z};
 }
 
-float attackDuration(AttackState state) {
+float attackDuration(const CharacterStats& st, AttackState state) {
     switch (state) {
-        case AttackState::Windup: return kWindupTime;
-        case AttackState::Active: return kActiveTime;
-        case AttackState::Recovery: return kRecoveryTime;
+        case AttackState::Windup: return st.windupTime;
+        case AttackState::Active: return st.activeTime;
+        case AttackState::Recovery: return st.recoveryTime;
         default: return 1.0f;
     }
 }
 } // namespace
 
-Game::Game() {
+Game::Game(int p0Character, int p1Character) {
+    m_defs[0] = &characterDef(p0Character);
+    m_defs[1] = &characterDef(p1Character);
     m_players[0].pos = {-3.0f, Player::kHalfHeight, 0.0f};
     m_players[1].pos = {3.0f, Player::kHalfHeight, 0.0f};
     m_players[0].facing = 1.0f;
@@ -148,6 +145,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         Player& p = m_players[i];
         const PlayerInput& in = inputs[i];
+        const CharacterStats& st = m_defs[i]->stats;
 
         if (p.hitstun > 0.0f) {
             p.hitstun = std::max(0.0f, p.hitstun - dt);
@@ -180,11 +178,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 switch (p.attackState) {
                     case AttackState::Windup:
                         p.attackState = AttackState::Active;
-                        p.attackTimer = kActiveTime;
+                        p.attackTimer = st.activeTime;
                         break;
                     case AttackState::Active:
                         p.attackState = AttackState::Recovery;
-                        p.attackTimer = kRecoveryTime;
+                        p.attackTimer = st.recoveryTime;
                         break;
                     default:
                         p.attackState = AttackState::None;
@@ -200,15 +198,16 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.attackState == AttackState::None && p.hitstun <= 0.0f && in.attack &&
             canSwing) {
             p.attackState = AttackState::Windup;
-            p.attackTimer = kWindupTime;
+            p.attackTimer = st.windupTime;
             p.attackLanded = false;
             // The whoosh's swell is tuned to peak right as the blade goes active.
             m_soundCues.push_back({Sfx::Swing, p.pos.x});
         }
-        p.attackT = p.attackState == AttackState::None
-                        ? 0.0f
-                        : std::clamp(1.0f - p.attackTimer / attackDuration(p.attackState),
-                                     0.0f, 1.0f);
+        p.attackT =
+            p.attackState == AttackState::None
+                ? 0.0f
+                : std::clamp(1.0f - p.attackTimer / attackDuration(st, p.attackState),
+                             0.0f, 1.0f);
 
         // Movement: locked in hitstun, slowed while swinging.
         glm::vec2 move = p.hitstun > 0.0f ? glm::vec2{0.0f} : in.move;
@@ -226,7 +225,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 speedScale *= kCrawlSpeed[arms];
             }
         }
-        glm::vec2 planarVel = move * (kMoveSpeed * speedScale) + p.kbVel;
+        glm::vec2 planarVel = move * (st.moveSpeed * speedScale) + p.kbVel;
         p.kbVel *= std::exp(-kKnockbackDecay * dt);
 
         p.moveAmount = glm::length(move) * speedScale;
@@ -236,7 +235,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.grounded) {
             p.vy = 0.0f;
             if (in.jump && p.hitstun <= 0.0f && !p.downed()) {
-                p.vy = kJumpVelocity;
+                p.vy = st.jumpVelocity;
                 p.grounded = false;
             }
         } else {
@@ -291,6 +290,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         Player& p = m_players[i];
         Player& foe = m_players[1 - i];
+        const CharacterStats& st = m_defs[i]->stats;
+        const CharacterStats& foeSt = m_defs[1 - i]->stats;
         if (p.attackState != AttackState::Active || p.attackLanded) {
             continue;
         }
@@ -303,7 +304,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         const glm::vec3 pivot =
             modelToWorld(p, {0.0f, kShoulderHeight, swordSide * kShoulderSide});
         const float tCur = p.attackT;
-        const float tPrev = std::max(0.0f, tCur - dt / kActiveTime);
+        const float tPrev = std::max(0.0f, tCur - dt / st.activeTime);
 
         int hitLimb = -1;
         bool hitTorso = false;
@@ -314,7 +315,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             glm::vec3 dir = rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f});
             dir = {p.facing * dir.x, dir.y, p.facing * dir.z};
             glm::vec3 s0 = pivot + dir * kBladeRoot;
-            glm::vec3 s1 = pivot + dir * kBladeTip;
+            glm::vec3 s1 = pivot + dir * st.reach;
 
             // Of the limbs this sample crosses, cut the one whose depth lane
             // best matches the blade's.
@@ -351,8 +352,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         glm::vec2 dir{foe.pos.x - p.pos.x, foe.pos.z - p.pos.z};
         float dist = glm::length(dir);
         dir = dist > 1e-4f ? dir / dist : glm::vec2{p.facing, 0.0f};
-        foe.kbVel = dir * kKnockbackSpeed;
-        foe.vy = std::max(foe.vy, kKnockbackPop);
+        // Heavier characters shrug off more of the shove; harder hitters
+        // deal more of it. Both read straight from the roster stats.
+        foe.kbVel = dir * (st.knockback / foeSt.weight);
+        foe.vy = std::max(foe.vy, kKnockbackPop / foeSt.weight);
         foe.grounded = false;
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
 
