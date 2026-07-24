@@ -29,7 +29,7 @@ namespace {
 namespace Layers {
 constexpr JPH::ObjectLayer NON_MOVING = 0;
 constexpr JPH::ObjectLayer MOVING = 1;
-constexpr JPH::ObjectLayer DEBRIS = 2; // severed limbs: hit the world, not fighters
+constexpr JPH::ObjectLayer DEBRIS = 2; // severed limbs: hit the world and fighters
 constexpr JPH::ObjectLayer NUM_LAYERS = 3;
 } // namespace Layers
 
@@ -74,8 +74,10 @@ public:
     bool ShouldCollide(JPH::ObjectLayer layer1, JPH::ObjectLayer layer2) const override {
         switch (layer1) {
             case Layers::NON_MOVING: return layer2 != Layers::NON_MOVING;
-            case Layers::MOVING: return layer2 != Layers::DEBRIS; // fighters ignore limbs
-            case Layers::DEBRIS: return layer2 != Layers::MOVING;
+            // Fighters collide with limbs too: the CharacterVirtual update
+            // pushes the (much lighter) debris bodies out of its way.
+            case Layers::MOVING: return true;
+            case Layers::DEBRIS: return true;
             default: return false;
         }
     }
@@ -257,7 +259,12 @@ int Physics::addDebris(const glm::vec3& center, float yaw, const glm::vec3& half
     settings.mAngularVelocity = {angularVelocity.x, angularVelocity.y,
                                  angularVelocity.z};
     settings.mRestitution = 0.25f;
-    settings.mFriction = 0.7f;
+    // Comically nudgeable on purpose: near-zero mass so the 70 kg character
+    // launches pieces on the slightest touch, and low friction so they slide
+    // well past the point of contact instead of stopping dead.
+    settings.mFriction = 0.35f;
+    settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+    settings.mMassPropertiesOverride.mMass = 0.2f;
     JPH::BodyID id = im.physicsSystem.GetBodyInterface().CreateAndAddBody(
         settings, JPH::EActivation::Activate);
     im.debris.push_back(id);
