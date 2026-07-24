@@ -17,7 +17,26 @@ struct SamuraiPose {
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
+    // Optional [5] dismemberment flags, indexed like samuraiLimbBounds. Severed
+    // parts draw as stumps; if the +z (sword) arm is gone, the -z arm swings.
+    const bool* severed = nullptr;
 };
+
+// Severable body parts are indexed 0..4: 0 arm +z (sword side), 1 arm -z,
+// 2 leg +z, 3 leg -z, 4 head. Order must match game.hpp's Limb enum.
+// Bounds are the limb's tight AABB in model-local space (feet origin,
+// +x facing) — used for gameplay hit regions and debris collision shapes.
+struct LimbBounds {
+    glm::vec3 center;
+    glm::vec3 half;
+};
+LimbBounds samuraiLimbBounds(int limb);
+
+// Draws limb `limb` as a free-flying piece (with a blood-red cut cap), with
+// its boxes centered on samuraiLimbBounds(limb).center so `transform` can be
+// a rigid-body transform for a box of those half extents.
+void drawSeveredLimb(Renderer& renderer, const glm::mat4& transform, int limb,
+                     const SamuraiColors& colors);
 
 // Draws a samurai assembled procedurally from shaded boxes: hakama legs,
 // kimono torso, obi, sode shoulder plates, arms, head, straw kasa, and a
