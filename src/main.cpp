@@ -216,6 +216,81 @@ int drawCharacterSelect(SelectScreen& s) {
     return picked;
 }
 
+// In-match HUD: a blood bar per fighter in the top corners, draining toward
+// the outside as they take cuts (or bleed out from stumps). Drawn straight to
+// the foreground draw list — no window, so it never steals the mouse.
+void drawBloodBars(const Game& game) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const float w = std::min(420.0f, vp->Size.x * 0.34f);
+    const float h = 18.0f, pad = 24.0f, top = 20.0f;
+    for (int i = 0; i < 2; ++i) {
+        const Player& p = game.player(i);
+        const float frac = p.blood / Player::kMaxBlood;
+        const float x0 = i == 0 ? pad : vp->Size.x - pad - w;
+        const ImVec2 mn{x0, top}, mx{x0 + w, top + h};
+        dl->AddRectFilled(mn, mx, IM_COL32(0, 0, 0, 130), 3.0f);
+        if (frac > 0.0f) {
+            // Player 1's bar is anchored left, player 2's mirrored right.
+            ImVec2 fmn = i == 0 ? mn : ImVec2{mx.x - w * frac, top};
+            ImVec2 fmx = i == 0 ? ImVec2{x0 + w * frac, mx.y} : mx;
+            dl->AddRectFilled(fmn, fmx, IM_COL32(214, 44, 44, 220), 3.0f);
+        }
+        dl->AddRect(mn, mx, IM_COL32(232, 222, 204, 70), 3.0f, 0, 1.5f);
+
+        const char* name = game.character(i).name;
+        ImFont* font = ImGui::GetFont();
+        const float nameSize = 19.0f;
+        const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, name).x;
+        dl->AddText(font, nameSize, {i == 0 ? x0 : mx.x - nameW, mx.y + 6.0f},
+                    IM_COL32(232, 222, 204, 200), name);
+    }
+}
+
+// Post-match overlay, styled after the main menu. Shown once the kill has had
+// a moment to play out; Rematch reruns the same pairing with a fresh Game.
+enum class OverAction { None, Rematch, Select };
+
+OverAction drawWinOverlay(const Game& game) {
+    OverAction action = OverAction::None;
+    const char* title = game.winner() == 0 ? "VICTORY" : "SLAIN";
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("match-over", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(nullptr, 88.0f);
+    const float titleWidth = ImGui::CalcTextSize(title).x;
+    ImGui::TextUnformatted(title);
+    ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 22.0f);
+    ImGui::Text("%s takes the duel", game.character(game.winner()).name);
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::Dummy({0.0f, 12.0f});
+
+    const float buttonWidth = 240.0f;
+    const float buttonX = ImGui::GetStyle().WindowPadding.x +
+                          (std::max(titleWidth, buttonWidth) - buttonWidth) * 0.5f;
+    ImGui::PushFont(nullptr, 30.0f);
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+        action = OverAction::Rematch;
+    }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Character Select", {buttonWidth, 0.0f})) {
+        action = OverAction::Select;
+    }
+    ImGui::PopFont();
+
+    ImGui::End();
+    return action;
+}
+
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
     model = glm::scale(model, size);
@@ -345,6 +420,7 @@ int main() {
     AppState state = AppState::Menu;
     SelectScreen select;
     std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
+    int matchChars[2] = {0, 1}; // roster indices of the current match (for rematch)
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -355,6 +431,17 @@ int main() {
     bool attackHeld = false;
     bool attackPending = false;
     bool escHeld = false;
+
+    // Fresh match from matchChars. Seeding the attack latch from the live
+    // button state keeps the click that started the match from reading as a
+    // swing on the first frame.
+    auto startMatch = [&] {
+        game = std::make_unique<Game>(matchChars[0], matchChars[1]);
+        bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
+        state = AppState::Playing;
+        attackHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        attackPending = false;
+    };
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -392,7 +479,9 @@ int main() {
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
             while (accumulator >= kFixedDt) {
-                inputs[1] = bot.think(*game, kFixedDt);
+                // Once the match is decided the bot stands down; the human
+                // keeps control (walking off — or desecrating the corpse).
+                inputs[1] = game->over() ? PlayerInput{} : bot.think(*game, kFixedDt);
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
                 attackPending = false;
@@ -420,6 +509,7 @@ int main() {
                       frameTime);
 
         MenuAction action = MenuAction::None;
+        OverAction overAction = OverAction::None;
         int picked = -1;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
@@ -428,6 +518,12 @@ int main() {
                 action = drawMainMenu();
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
+            } else {
+                drawBloodBars(*game);
+                // Give the killing blow a beat to land before the overlay.
+                if (game->over() && game->overTime() > 1.2f) {
+                    overAction = drawWinOverlay(*game);
+                }
             }
             renderer.endFrame();
         }
@@ -440,14 +536,17 @@ int main() {
         }
 
         if (picked >= 0) {
-            int foe = std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
-            game = std::make_unique<Game>(picked, foe);
-            bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
-            state = AppState::Playing;
-            // Seed the attack latch from the live button state so the click
-            // that picked a character doesn't read as a swing next frame.
-            attackHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            attackPending = false;
+            matchChars[0] = picked;
+            matchChars[1] =
+                std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+            startMatch();
+        }
+
+        if (overAction == OverAction::Rematch) {
+            startMatch();
+        } else if (overAction == OverAction::Select) {
+            state = AppState::CharacterSelect;
+            select = SelectScreen{};
         }
     }
 
