@@ -37,8 +37,9 @@ public:
     const std::vector<DebrisImpact>& debrisImpacts() const;
 
     // Spawns a dynamic box body for a severed limb. Debris collides with the
-    // arena and other debris but not with the fighters. Returns a handle for
-    // debrisTransform. `yaw` rotates about +Y (matches the fighter's facing).
+    // arena, other debris, and the fighters (who kick pieces around by walking
+    // into them). Returns a handle for debrisTransform. `yaw` rotates about +Y
+    // (matches the fighter's facing).
     int addDebris(const glm::vec3& center, float yaw, const glm::vec3& halfExtent,
                   const glm::vec3& velocity, const glm::vec3& angularVelocity);
 
