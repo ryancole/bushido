@@ -1,5 +1,7 @@
 #include "game.hpp"
 
+#include "physics.hpp"
+
 #include <glm/geometric.hpp>
 
 #include <algorithm>
@@ -39,7 +41,12 @@ Game::Game() {
     m_players[1].pos = {3.0f, Player::kHalfHeight, 0.0f};
     m_players[0].facing = 1.0f;
     m_players[1].facing = -1.0f;
+    // Physics characters are positioned by their feet; ground surface is y = 0.
+    m_physics = std::make_unique<Physics>(kGravity, glm::vec3{-3.0f, 0.0f, 0.0f},
+                                          glm::vec3{3.0f, 0.0f, 0.0f});
 }
+
+Game::~Game() = default;
 
 void Game::update(const PlayerInput inputs[2], float dt) {
     for (int i = 0; i < 2; ++i) {
@@ -87,32 +94,30 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             move /= len; // diagonal movement is not faster
         }
         float speedScale = p.attackState != AttackState::None ? kAttackMoveScale : 1.0f;
-        p.pos.x += move.x * kMoveSpeed * speedScale * dt;
-        p.pos.z += move.y * kMoveSpeed * speedScale * dt;
+        glm::vec2 planarVel = move * (kMoveSpeed * speedScale) + p.kbVel;
+        p.kbVel *= std::exp(-kKnockbackDecay * dt);
 
         p.moveAmount = glm::length(move) * speedScale;
         p.animPhase = std::fmod(p.animPhase + p.moveAmount * 12.0f * dt,
                                 2.0f * 3.14159265358979f);
 
-        // Knockback decays exponentially.
-        p.pos.x += p.kbVel.x * dt;
-        p.pos.z += p.kbVel.y * dt;
-        p.kbVel *= std::exp(-kKnockbackDecay * dt);
-
-        if (p.grounded && in.jump && p.hitstun <= 0.0f) {
-            p.vy = kJumpVelocity;
-            p.grounded = false;
-        }
-        if (!p.grounded) {
-            p.vy -= kGravity * dt;
-            p.pos.y += p.vy * dt;
-            if (p.pos.y <= Player::kHalfHeight) {
-                p.pos.y = Player::kHalfHeight;
-                p.vy = 0.0f;
-                p.grounded = true;
+        if (p.grounded) {
+            p.vy = 0.0f;
+            if (in.jump && p.hitstun <= 0.0f) {
+                p.vy = kJumpVelocity;
+                p.grounded = false;
             }
+        } else {
+            p.vy -= kGravity * dt;
         }
+
+        // Jolt resolves the move against the arena and the other fighter.
+        Physics::MoveResult res = m_physics->moveCharacter(
+            i, {planarVel.x, p.vy, planarVel.y}, dt);
+        p.pos = {res.feetPos.x, res.feetPos.y + Player::kHalfHeight, res.feetPos.z};
+        p.grounded = res.onGround;
     }
+    m_physics->step(dt);
 
     // Resolve sword hits after both players have moved.
     for (int i = 0; i < 2; ++i) {
@@ -143,28 +148,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         foe.grounded = false;
     }
 
-    // Fighters are solid: push overlapping bodies apart in the ground plane.
+    // Body solidity and arena bounds are handled by Jolt: the characters
+    // collide with each other (CharacterVsCharacterCollision) and with the
+    // static arena walls.
     Player& a = m_players[0];
     Player& b = m_players[1];
-    glm::vec2 delta{b.pos.x - a.pos.x, b.pos.z - a.pos.z};
-    float dist = glm::length(delta);
-    float minDist = 2.0f * Player::kHalfWidth;
-    float dy = std::abs(b.pos.y - a.pos.y);
-    if (dist < minDist && dy < 2.0f * Player::kHalfHeight) {
-        glm::vec2 dir = dist > 1e-4f ? delta / dist : glm::vec2{1.0f, 0.0f};
-        glm::vec2 push = dir * ((minDist - dist) * 0.5f);
-        a.pos.x -= push.x;
-        a.pos.z -= push.y;
-        b.pos.x += push.x;
-        b.pos.z += push.y;
-    }
-
-    for (Player& p : m_players) {
-        p.pos.x = std::clamp(p.pos.x, -kArenaHalfWidth + Player::kHalfWidth,
-                             kArenaHalfWidth - Player::kHalfWidth);
-        p.pos.z = std::clamp(p.pos.z, -kArenaHalfDepth + Player::kHalfWidth,
-                             kArenaHalfDepth - Player::kHalfWidth);
-    }
 
     // Facing tracks the opponent, but locks while a swing is in progress.
     if (a.attackState == AttackState::None) {

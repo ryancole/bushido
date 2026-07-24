@@ -2,6 +2,10 @@
 
 #include <glm/glm.hpp>
 
+#include <memory>
+
+class Physics;
+
 struct PlayerInput {
     glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
     bool jump = false;
@@ -35,6 +39,7 @@ struct Player {
 class Game {
 public:
     Game();
+    ~Game();
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
 
@@ -43,4 +48,5 @@ public:
 
 private:
     Player m_players[2];
+    std::unique_ptr<Physics> m_physics; // collision & movement solver (Jolt)
 };

@@ -31,20 +31,37 @@ FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
     GIT_TAG 1.0.1)
 
-FetchContent_MakeAvailable(glfw vk-bootstrap glm)
+# Jolt must use the dynamic CRT to match the rest of the build.
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG v5.6.0
+    SOURCE_SUBDIR Build)
+
+FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics)
 
 add_executable(bushido
     src/main.cpp
     src/renderer.cpp
     src/camera.cpp
     src/game.cpp
+    src/physics.cpp
     src/samurai.cpp)
 
 target_link_libraries(bushido PRIVATE
     Vulkan::Vulkan
     glfw
     vk-bootstrap::vk-bootstrap
-    glm::glm)
+    glm::glm
+    Jolt)
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)
