@@ -17,6 +17,9 @@ struct SamuraiPose {
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
+    // Signed topple roll about the local +x axis at the feet: a fighter who
+    // has lost a leg tips toward ±z and ends up lying on the ground.
+    float bodyRoll = 0.0f;
     // Optional [5] dismemberment flags, indexed like samuraiLimbBounds. Severed
     // parts draw as stumps; if the +z (sword) arm is gone, the -z arm swings.
     const bool* severed = nullptr;

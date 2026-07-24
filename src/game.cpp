@@ -57,6 +57,18 @@ constexpr float kSeverBloodSpeed = 4.6f;
 constexpr std::size_t kMaxBloodParticles = 600;
 constexpr std::size_t kMaxBloodMarks = 400;
 
+// Toppling. Losing a leg loses the footing: the body tips about the feet
+// toward the missing leg's side like an inverted pendulum (gravity torque
+// grows with the lean), stopping just shy of flat so the model's boxes rest
+// on the floor instead of clipping through it. Once down, movement is a
+// crawl paced by how many arms are left; with none it's a wriggle.
+constexpr float kToppleAccel = 16.0f;    // rad/s^2 scale on sin(tilt)
+constexpr float kToppleBias = 0.15f;     // rad added inside sin() so 0 isn't stable
+constexpr float kToppleKick = 1.2f;      // rad/s initial push when the leg goes
+constexpr float kMaxTilt = 1.35f;        // rad (~77°): lying on the ground
+constexpr float kProneShapeTilt = 0.7f;  // past this the capsule swaps to prone
+constexpr float kCrawlSpeed[3] = {0.10f, 0.20f, 0.30f}; // by remaining arms
+
 constexpr float kKnockbackSpeed = 8.0f; // m/s impulse on hit
 constexpr float kKnockbackPop = 3.0f;   // upward pop on hit
 constexpr float kKnockbackDecay = 6.0f; // 1/s exponential decay
@@ -82,6 +94,32 @@ bool segmentHitsBox(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& c
         if (tmin > tmax) return false;
     }
     return true;
+}
+
+// Rotates a model-local vector by the player's topple roll (about local +x).
+glm::vec3 rollLocal(const Player& p, const glm::vec3& v) {
+    float roll = p.bodyRoll();
+    if (roll == 0.0f) {
+        return v;
+    }
+    float c = std::cos(roll), s = std::sin(roll);
+    return {v.x, v.y * c - v.z * s, v.y * s + v.z * c};
+}
+
+// Model-local point (feet origin, +x forward) to world space, applying the
+// topple roll and the facing mirror — must match drawSamurai's base transform.
+glm::vec3 modelToWorld(const Player& p, const glm::vec3& local) {
+    glm::vec3 v = rollLocal(p, local);
+    return {p.pos.x + p.facing * v.x, p.pos.y - Player::kHalfHeight + v.y,
+            p.pos.z + p.facing * v.z};
+}
+
+// AABB half extents of a model-local box after the topple roll (a lying
+// limb is long in z, not y).
+glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
+    float roll = p.bodyRoll();
+    float c = std::abs(std::cos(roll)), s = std::abs(std::sin(roll));
+    return {half.x, c * half.y + s * half.z, s * half.y + c * half.z};
 }
 
 float attackDuration(AttackState state) {
@@ -113,6 +151,26 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         if (p.hitstun > 0.0f) {
             p.hitstun = std::max(0.0f, p.hitstun - dt);
+        }
+
+        // Toppling: with a leg gone, gravity wins. Integrate the fall and,
+        // once the body is leaning far enough, swap the collision capsule to
+        // the squat prone shape so the opponent can step over the body.
+        if (p.downed()) {
+            if (p.fallTilt < kMaxTilt) {
+                p.fallVel += kToppleAccel * std::sin(p.fallTilt + kToppleBias) * dt;
+                p.fallTilt += p.fallVel * dt;
+                if (p.fallTilt >= kMaxTilt) {
+                    p.fallTilt = kMaxTilt;
+                    p.fallVel = 0.0f;
+                    // The body slaps the floor: thud + a smear under the chest.
+                    glm::vec3 chest = modelToWorld(p, {0.0f, kTorsoCenterY, 0.0f});
+                    m_soundCues.push_back({Sfx::Thud, chest.x, 0.9f});
+                    addBloodMark({chest.x, 0.0f, chest.z}, 0.30f);
+                    spawnBlood({chest.x, 0.15f, chest.z}, {0.0f, 1.0f, 0.0f}, 6, 2.0f);
+                }
+            }
+            m_physics->setCharacterProne(i, p.fallTilt > kProneShapeTilt);
         }
 
         // Attack phase machine.
@@ -159,6 +217,15 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             move /= len; // diagonal movement is not faster
         }
         float speedScale = p.attackState != AttackState::None ? kAttackMoveScale : 1.0f;
+        if (p.downed()) {
+            if (p.fallTilt < kMaxTilt) {
+                speedScale = 0.0f; // mid-fall: no footing at all
+            } else {
+                int arms = (p.severed[static_cast<int>(Limb::ArmFront)] ? 0 : 1) +
+                           (p.severed[static_cast<int>(Limb::ArmBack)] ? 0 : 1);
+                speedScale *= kCrawlSpeed[arms];
+            }
+        }
         glm::vec2 planarVel = move * (kMoveSpeed * speedScale) + p.kbVel;
         p.kbVel *= std::exp(-kKnockbackDecay * dt);
 
@@ -168,7 +235,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         if (p.grounded) {
             p.vy = 0.0f;
-            if (in.jump && p.hitstun <= 0.0f) {
+            if (in.jump && p.hitstun <= 0.0f && !p.downed()) {
                 p.vy = kJumpVelocity;
                 p.grounded = false;
             }
@@ -228,14 +295,15 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             continue;
         }
 
+        // Both the blade arc and the target boxes follow each body's topple
+        // roll: a downed attacker's chop becomes a sweep along the ground,
+        // and a downed defender is hit where the body actually lies.
         const float swordSide =
             p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
-        const glm::vec3 pivot{p.pos.x,
-                              p.pos.y - Player::kHalfHeight + kShoulderHeight,
-                              p.pos.z + p.facing * swordSide * kShoulderSide};
+        const glm::vec3 pivot =
+            modelToWorld(p, {0.0f, kShoulderHeight, swordSide * kShoulderSide});
         const float tCur = p.attackT;
         const float tPrev = std::max(0.0f, tCur - dt / kActiveTime);
-        const float foeFeetY = foe.pos.y - Player::kHalfHeight;
 
         int hitLimb = -1;
         bool hitTorso = false;
@@ -243,7 +311,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         for (int k = 1; k <= kSweepSamples && hitLimb < 0; ++k) {
             float t = glm::mix(tPrev, tCur, static_cast<float>(k) / kSweepSamples);
             float angle = glm::mix(kSwingStartAngle, kSwingEndAngle, t);
-            glm::vec3 dir{p.facing * std::sin(angle), -std::cos(angle), 0.0f};
+            glm::vec3 dir = rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f});
+            dir = {p.facing * dir.x, dir.y, p.facing * dir.z};
             glm::vec3 s0 = pivot + dir * kBladeRoot;
             glm::vec3 s1 = pivot + dir * kBladeTip;
 
@@ -255,10 +324,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                     continue;
                 }
                 LimbBounds b = samuraiLimbBounds(l);
-                glm::vec3 center{foe.pos.x + foe.facing * b.center.x,
-                                 foeFeetY + b.center.y,
-                                 foe.pos.z + foe.facing * b.center.z};
-                if (!segmentHitsBox(s0, s1, center, b.half + kLimbHitPad[l])) {
+                glm::vec3 center = modelToWorld(foe, b.center);
+                if (!segmentHitsBox(s0, s1, center,
+                                    rollHalfExtent(foe, b.half) + kLimbHitPad[l])) {
                     continue;
                 }
                 float dz = std::abs(center.z - s0.z);
@@ -268,8 +336,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 }
             }
             if (hitLimb < 0 && !hitTorso) {
-                glm::vec3 torsoCenter{foe.pos.x, foeFeetY + kTorsoCenterY, foe.pos.z};
-                hitTorso = segmentHitsBox(s0, s1, torsoCenter, kTorsoHalf);
+                glm::vec3 torsoCenter = modelToWorld(foe, {0.0f, kTorsoCenterY, 0.0f});
+                hitTorso = segmentHitsBox(s0, s1, torsoCenter,
+                                          rollHalfExtent(foe, kTorsoHalf));
             }
         }
         if (hitLimb < 0 && !hitTorso) {
@@ -289,11 +358,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         // Blood sprays from the wound, away from the attacker and upward;
         // dismemberment gushes harder than a body hit.
-        glm::vec3 wound{foe.pos.x, foeFeetY + kTorsoCenterY, foe.pos.z};
+        glm::vec3 wound = modelToWorld(foe, {0.0f, kTorsoCenterY, 0.0f});
         if (hitLimb >= 0) {
-            LimbBounds wb = samuraiLimbBounds(hitLimb);
-            wound = {foe.pos.x + foe.facing * wb.center.x, foeFeetY + wb.center.y,
-                     foe.pos.z + foe.facing * wb.center.z};
+            wound = modelToWorld(foe, samuraiLimbBounds(hitLimb).center);
         }
         glm::vec3 spray = glm::normalize(glm::vec3{dir.x, 1.2f, dir.y});
         spawnBlood(wound, spray, hitLimb >= 0 ? kSeverBloodCount : kHitBloodCount,
@@ -311,12 +378,21 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     Player& b = m_players[1];
 
     // Facing tracks the opponent, but locks while a swing is in progress.
-    if (a.attackState == AttackState::None) {
-        a.facing = b.pos.x >= a.pos.x ? 1.0f : -1.0f;
-    }
-    if (b.attackState == AttackState::None) {
-        b.facing = a.pos.x >= b.pos.x ? 1.0f : -1.0f;
-    }
+    // A toppled body must not swing around when facing flips: negating
+    // fallSide together with facing keeps the world-space lie direction
+    // (facing · fallSide) unchanged, so only the sword side mirrors.
+    auto faceToward = [](Player& self, const Player& other) {
+        if (self.attackState != AttackState::None) {
+            return;
+        }
+        float facing = other.pos.x >= self.pos.x ? 1.0f : -1.0f;
+        if (facing != self.facing && self.downed()) {
+            self.fallSide = -self.fallSide;
+        }
+        self.facing = facing;
+    };
+    faceToward(a, b);
+    faceToward(b, a);
 }
 
 // Marks the limb lost and launches it as a debris rigid body along the hit
@@ -325,10 +401,16 @@ void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
     Player& v = m_players[victim];
     v.severed[static_cast<int>(limb)] = true;
 
+    // Losing a leg starts the topple, toward the lost leg's side. If the
+    // other leg goes later the body is already down (or falling) — keep the
+    // direction it committed to.
+    if ((limb == Limb::LegFront || limb == Limb::LegBack) && v.fallSide == 0.0f) {
+        v.fallSide = limb == Limb::LegFront ? 1.0f : -1.0f;
+        v.fallVel = kToppleKick;
+    }
+
     LimbBounds b = samuraiLimbBounds(static_cast<int>(limb));
-    glm::vec3 center{v.pos.x + v.facing * b.center.x,
-                     v.pos.y - Player::kHalfHeight + b.center.y,
-                     v.pos.z + v.facing * b.center.z};
+    glm::vec3 center = modelToWorld(v, b.center);
     float yaw = v.facing > 0.0f ? 0.0f : 3.14159265358979f;
     glm::vec3 vel{impulseDir.x * 4.0f, 4.5f, impulseDir.y * 4.0f};
     glm::vec3 angVel{0.0f, 3.0f, -impulseDir.x * 12.0f};
