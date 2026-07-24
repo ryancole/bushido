@@ -3,6 +3,10 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
@@ -135,6 +139,48 @@ void Renderer::init(GLFWwindow* window) {
         vkCheck(vkCreateFence(m_device.device, &fenceInfo, nullptr, &frame.inFlight),
                 "vkCreateFence");
     }
+
+    initImGui();
+}
+
+void Renderer::initImGui() {
+    // ImGui allocates one descriptor set per font/user texture; a small pool
+    // with FREE_DESCRIPTOR_SET (the backend frees sets individually) suffices.
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.maxSets = 16;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    vkCheck(vkCreateDescriptorPool(m_device.device, &poolInfo, nullptr, &m_imguiPool),
+            "vkCreateDescriptorPool");
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr; // no imgui.ini next to the exe
+
+    ImGui_ImplGlfw_InitForVulkan(m_window, true);
+
+    ImGui_ImplVulkan_InitInfo initInfo{};
+    initInfo.ApiVersion = VK_API_VERSION_1_3;
+    initInfo.Instance = m_instance.instance;
+    initInfo.PhysicalDevice = m_physicalDevice.physical_device;
+    initInfo.Device = m_device.device;
+    initInfo.QueueFamily = m_graphicsQueueFamily;
+    initInfo.Queue = m_graphicsQueue;
+    initInfo.DescriptorPool = m_imguiPool;
+    initInfo.MinImageCount = 2;
+    initInfo.ImageCount = static_cast<uint32_t>(m_swapchainImages.size());
+    initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    initInfo.UseDynamicRendering = true;
+    initInfo.PipelineRenderingCreateInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    initInfo.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    // Points at the member so it stays valid if the backend rebuilds its
+    // pipeline later; the format itself is stable across swapchain recreates.
+    initInfo.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_swapchain.image_format;
+    initInfo.PipelineRenderingCreateInfo.depthAttachmentFormat = kDepthFormat;
+    initInfo.CheckVkResultFn = [](VkResult result) { vkCheck(result, "imgui vulkan backend"); };
+    ImGui_ImplVulkan_Init(&initInfo);
 }
 
 void Renderer::createSwapchain() {
@@ -435,6 +481,11 @@ bool Renderer::beginFrame() {
     vkCmdSetScissor(frame.cmd, 0, 1, &scissor);
 
     vkCmdBindPipeline(frame.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+
+    // UI is built between beginFrame and endFrame, alongside scene draws.
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
     return true;
 }
 
@@ -456,6 +507,9 @@ void Renderer::drawBox(const glm::mat4& model, const glm::vec4& color) {
 
 void Renderer::endFrame() {
     Frame& frame = m_frames[m_frameIndex];
+
+    ImGui::Render();
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.cmd);
 
     vkCmdEndRendering(frame.cmd);
 
@@ -505,6 +559,11 @@ void Renderer::endFrame() {
 
 void Renderer::shutdown() {
     vkDeviceWaitIdle(m_device.device);
+
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    vkDestroyDescriptorPool(m_device.device, m_imguiPool, nullptr);
 
     for (Frame& frame : m_frames) {
         vkDestroyFence(m_device.device, frame.inFlight, nullptr);
