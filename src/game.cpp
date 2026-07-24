@@ -136,9 +136,23 @@ float attackDuration(const CharacterStats& st, AttackState state) {
 }
 } // namespace
 
-Game::Game(int p0Character, int p1Character) {
+Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon) {
     m_defs[0] = &characterDef(p0Character);
     m_defs[1] = &characterDef(p1Character);
+    m_weapons[0] = &weaponDef(p0Weapon);
+    m_weapons[1] = &weaponDef(p1Weapon);
+    // Bake the weapon into the character's stats once; the sim (and the bot,
+    // via stats()) reads the resolved numbers and never re-applies the weapon.
+    for (int i = 0; i < 2; ++i) {
+        CharacterStats st = m_defs[i]->stats;
+        const WeaponStats& w = m_weapons[i]->stats;
+        st.windupTime *= w.swingScale;
+        st.activeTime *= w.swingScale;
+        st.recoveryTime *= w.swingScale;
+        st.reach += w.reachBonus;
+        st.knockback *= w.knockbackScale;
+        m_stats[i] = st;
+    }
     m_players[0].pos = {-3.0f, Player::kHalfHeight, 0.0f};
     m_players[1].pos = {3.0f, Player::kHalfHeight, 0.0f};
     m_players[0].facing = 1.0f;
@@ -155,7 +169,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         Player& p = m_players[i];
         // The dead take no input; the body still topples and gets shoved.
         const PlayerInput in = p.dead() ? PlayerInput{} : inputs[i];
-        const CharacterStats& st = m_defs[i]->stats;
+        const CharacterStats& st = m_stats[i];
 
         if (p.hitstun > 0.0f) {
             p.hitstun = std::max(0.0f, p.hitstun - dt);
@@ -317,8 +331,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         Player& p = m_players[i];
         Player& foe = m_players[1 - i];
-        const CharacterStats& st = m_defs[i]->stats;
-        const CharacterStats& foeSt = m_defs[1 - i]->stats;
+        const CharacterStats& st = m_stats[i];
+        const CharacterStats& foeSt = m_stats[1 - i];
         if (p.attackState != AttackState::Active || p.attackLanded) {
             continue;
         }
@@ -387,13 +401,16 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
 
         // The cut costs blood: a chunk for the torso, more for a limb, the
-        // whole pool for the head. Chopping at a corpse still severs and
-        // sprays but can't re-decide the match.
+        // whole pool for the head. The weapon's damage scale prices the first
+        // two, but never the head — beheading executes with any blade.
+        // Chopping at a corpse still severs and sprays but can't re-decide
+        // the match.
         const bool wasDead = foe.dead();
-        const float cost = hitTorso ? kTorsoHitBlood
+        const float dmg = m_weapons[i]->stats.damage;
+        const float cost = hitTorso ? kTorsoHitBlood * dmg
                            : hitLimb == static_cast<int>(Limb::Head)
                                ? Player::kMaxBlood
-                               : kSeverBloodCost;
+                               : kSeverBloodCost * dmg;
         foe.blood = std::max(0.0f, foe.blood - cost);
 
         // Blood sprays from the wound, away from the attacker and upward;

@@ -21,8 +21,10 @@ float Bot::frand() {
 PlayerInput Bot::think(const Game& game, float dt) {
     const Player& self = game.player(m_self);
     const Player& foe = game.player(1 - m_self);
-    const CharacterStats& st = game.character(m_self).stats;
-    const float foeReach = game.character(1 - m_self).stats.reach;
+    // Resolved stats (character + weapon) — the strike band must match the
+    // blade actually in hand, not the bare roster reach.
+    const CharacterStats& st = game.stats(m_self);
+    const float foeReach = game.stats(1 - m_self).reach;
 
     const float dx = foe.pos.x - self.pos.x;
     const float dz = foe.pos.z - self.pos.z;
