@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include <memory>
+#include <vector>
 
 // Thin wrapper around Jolt Physics. Owns the physics world (static ground +
 // arena walls) and one virtual character capsule per fighter. Gameplay stays
@@ -26,6 +27,14 @@ public:
 
     // Steps the rigid-body world (arena statics + severed-limb debris).
     void step(float dt);
+
+    // A debris body striking something (ground, wall, other debris) during the
+    // last step() hard enough to be audible.
+    struct DebrisImpact {
+        float x;     // world x of the contact point
+        float speed; // closing speed along the contact normal, m/s
+    };
+    const std::vector<DebrisImpact>& debrisImpacts() const;
 
     // Spawns a dynamic box body for a severed limb. Debris collides with the
     // arena and other debris but not with the fighters. Returns a handle for

@@ -133,6 +133,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.attackState = AttackState::Windup;
             p.attackTimer = kWindupTime;
             p.attackLanded = false;
+            // The whoosh's swell is tuned to peak right as the blade goes active.
+            m_soundCues.push_back({Sfx::Swing, p.pos.x});
         }
         p.attackT = p.attackState == AttackState::None
                         ? 0.0f
@@ -170,6 +172,14 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.grounded = res.onGround;
     }
     m_physics->step(dt);
+
+    // Severed limbs thudding on the ground (or walls/each other), loudness
+    // scaled by how hard they hit. ~9 m/s is a limb's first landing; the
+    // 0.25-restitution bounce comes back much softer.
+    for (const Physics::DebrisImpact& impact : m_physics->debrisImpacts()) {
+        m_soundCues.push_back(
+            {Sfx::Thud, impact.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
+    }
 
     // Resolve sword hits after both players have moved. The blade is swept as
     // a segment along the same arc the model animates; the first body part it
@@ -238,6 +248,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         foe.kbVel = dir * kKnockbackSpeed;
         foe.vy = std::max(foe.vy, kKnockbackPop);
         foe.grounded = false;
+        m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
         if (hitLimb >= 0) {
             severLimb(1 - i, static_cast<Limb>(hitLimb), dir);
         }

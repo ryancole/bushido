@@ -10,6 +10,7 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
@@ -18,6 +19,8 @@
 #include <Jolt/RegisterTypes.h>
 
 #include <algorithm>
+#include <cmath>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -78,6 +81,40 @@ public:
     }
 };
 
+// Records audible debris impacts (limb hits ground/wall/other debris). Only
+// rigid bodies raise contacts — the fighters are CharacterVirtuals and never
+// appear here. Jolt calls this from its job threads, hence the mutex. The
+// speed threshold keeps rolling/settling contacts quiet; with restitution
+// 0.25 a landed limb yields one solid thud and at most one soft bounce.
+class DebrisContactListener final : public JPH::ContactListener {
+public:
+    void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2,
+                        const JPH::ContactManifold& manifold,
+                        JPH::ContactSettings&) override {
+        if (body1.GetObjectLayer() != Layers::DEBRIS &&
+            body2.GetObjectLayer() != Layers::DEBRIS) {
+            return;
+        }
+        JPH::Vec3 rel = body1.GetLinearVelocity() - body2.GetLinearVelocity();
+        float speed = std::abs(rel.Dot(manifold.mWorldSpaceNormal));
+        if (speed < kMinAudibleSpeed) {
+            return;
+        }
+        JPH::RVec3 p = manifold.GetWorldSpaceContactPointOn1(0);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_impacts.push_back({static_cast<float>(p.GetX()), speed});
+    }
+
+    void clear() { m_impacts.clear(); }
+    const std::vector<Physics::DebrisImpact>& impacts() const { return m_impacts; }
+
+private:
+    static constexpr float kMinAudibleSpeed = 2.0f; // m/s along the normal
+
+    std::mutex m_mutex;
+    std::vector<Physics::DebrisImpact> m_impacts;
+};
+
 // Global Jolt state (allocator, RTTI factory, type registry) is process-wide
 // and intentionally never torn down.
 void ensureJoltInitialized() {
@@ -103,6 +140,7 @@ struct Physics::Impl {
     JPH::CharacterVsCharacterCollisionSimple charVsChar;
     JPH::Ref<JPH::CharacterVirtual> characters[2];
     std::vector<JPH::BodyID> debris;
+    DebrisContactListener contactListener;
 };
 
 Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB)
@@ -121,6 +159,7 @@ Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB
     im.physicsSystem.Init(kMaxBodies, 0, kMaxBodyPairs, kMaxContactConstraints,
                           im.bpLayerInterface, im.objVsBpFilter, im.objPairFilter);
     im.physicsSystem.SetGravity(JPH::Vec3(0.0f, -gravity, 0.0f));
+    im.physicsSystem.SetContactListener(&im.contactListener);
 
     JPH::BodyInterface& bodies = im.physicsSystem.GetBodyInterface();
     auto addStaticBox = [&bodies](const JPH::Vec3& halfExtent, const JPH::RVec3& pos) {
@@ -196,8 +235,13 @@ Physics::MoveResult Physics::moveCharacter(int i, const glm::vec3& velocity, flo
 }
 
 void Physics::step(float dt) {
+    m_impl->contactListener.clear();
     m_impl->physicsSystem.Update(dt, 1, &m_impl->tempAllocator,
                                  m_impl->jobSystem.get());
+}
+
+const std::vector<Physics::DebrisImpact>& Physics::debrisImpacts() const {
+    return m_impl->contactListener.impacts();
 }
 
 int Physics::addDebris(const glm::vec3& center, float yaw, const glm::vec3& halfExtent,

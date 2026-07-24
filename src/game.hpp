@@ -1,11 +1,21 @@
 #pragma once
 
+#include "audio.hpp" // Sfx ids for sound cues
+
 #include <glm/glm.hpp>
 
 #include <memory>
 #include <vector>
 
 class Physics;
+
+// A one-shot sound the sim wants played. The sim only raises these; main
+// drains them each frame and hands them to Audio (panned by world x).
+struct SoundCue {
+    Sfx sfx;
+    float x;           // world x of the sound's source
+    float gain = 1.0f; // 0..1 loudness scale (debris thuds scale with impact speed)
+};
 
 struct PlayerInput {
     glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
@@ -62,6 +72,10 @@ public:
     // World transform of a severed piece's debris body, for rendering.
     glm::mat4 severedPieceTransform(const SeveredPiece& piece) const;
 
+    // Sounds raised by update() since the last clear; main drains these.
+    const std::vector<SoundCue>& soundCues() const { return m_soundCues; }
+    void clearSoundCues() { m_soundCues.clear(); }
+
     static constexpr float kArenaHalfWidth = 12.0f;
     static constexpr float kArenaHalfDepth = 5.0f;
 
@@ -70,5 +84,6 @@ private:
 
     Player m_players[2];
     std::vector<SeveredPiece> m_pieces;
+    std::vector<SoundCue> m_soundCues;
     std::unique_ptr<Physics> m_physics; // collision & movement solver (Jolt)
 };

@@ -30,6 +30,12 @@ FetchContent_Declare(vk-bootstrap
 FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
     GIT_TAG 1.0.1)
+# Sound effects are synthesized at startup, so only the core engine is needed.
+set(MINIAUDIO_NO_EXTRA_NODES ON CACHE BOOL "" FORCE)
+
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.23)
 
 # Jolt must use the dynamic CRT to match the rest of the build.
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
@@ -46,7 +52,7 @@ FetchContent_Declare(JoltPhysics
     GIT_TAG v5.6.0
     SOURCE_SUBDIR Build)
 
-FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics)
+FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics miniaudio)
 
 add_executable(bushido
     src/main.cpp
@@ -54,14 +60,16 @@ add_executable(bushido
     src/camera.cpp
     src/game.cpp
     src/physics.cpp
-    src/samurai.cpp)
+    src/samurai.cpp
+    src/audio.cpp)
 
 target_link_libraries(bushido PRIVATE
     Vulkan::Vulkan
     glfw
     vk-bootstrap::vk-bootstrap
     glm::glm
-    Jolt)
+    Jolt
+    miniaudio)
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

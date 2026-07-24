@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 
+#include "audio.hpp"
 #include "camera.hpp"
 #include "game.hpp"
 #include "renderer.hpp"
@@ -117,8 +119,10 @@ int main() {
         static_cast<Renderer*>(glfwGetWindowUserPointer(w))->onResize();
     });
 
+    Audio audio; // logs and stays silent if no device; the game runs regardless
     Game game;
     FramingCamera camera;
+    std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -165,6 +169,20 @@ int main() {
             accumulator -= kFixedDt;
             attackPending[0] = attackPending[1] = false;
             inputs[0].attack = inputs[1].attack = false;
+        }
+
+        // Play the sounds the sim raised this frame, panned by world x
+        // relative to the fighters' midpoint (~ the camera's framing center),
+        // with a little pitch jitter so repeats don't sound stamped-out.
+        if (!game.soundCues().empty()) {
+            float midX = 0.5f * (game.player(0).pos.x + game.player(1).pos.x);
+            for (const SoundCue& cue : game.soundCues()) {
+                sfxSeed = sfxSeed * 1664525u + 1013904223u;
+                float jitter = static_cast<float>(sfxSeed >> 8) * (1.0f / 16777216.0f);
+                float pan = std::clamp((cue.x - midX) * 0.08f, -0.6f, 0.6f);
+                audio.play(cue.sfx, pan, 0.94f + 0.12f * jitter, cue.gain);
+            }
+            game.clearSoundCues();
         }
 
         camera.update(game.player(0).pos, game.player(1).pos, renderer.aspect(), frameTime);
