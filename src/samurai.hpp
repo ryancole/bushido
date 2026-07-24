@@ -15,6 +15,8 @@ struct SamuraiPose {
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed; scales the stride
     bool grounded = true;
     float time = 0.0f;       // seconds since start, for idle breathing
+    int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery
+    float attackT = 0.0f;    // 0..1 progress through the current attack phase
 };
 
 // Draws a samurai assembled procedurally from shaded boxes: hakama legs,

@@ -10,14 +10,14 @@ The toolchain is pinned to MSVC via CMakePresets.json (`msvc-debug` → `build/`
 cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake --preset msvc-debug && cmake --build --preset msvc-debug'
 ```
 
-Run: `build\bushido.exe`. Esc quits. P1: WASD moves in the ground plane (W/S = depth), Space jumps. P2: arrows move, Right Ctrl jumps.
+Run: `build\bushido.exe`. Esc quits. P1: WASD moves in the ground plane (W/S = depth), Space jumps, **left mouse button attacks**. P2: arrows move, Right Ctrl jumps, Right Shift attacks.
 
 VS Code: `.vscode/` has a default build task (Ctrl+Shift+B), a `configure` task, and F5 debug configs (`cppvsdbg`). IntelliSense reads `build/compile_commands.json`.
 
 ## Layout
 
 - `src/main.cpp` — game loop (fixed 120 Hz timestep), input reading, scene drawing
-- `src/game.hpp/.cpp` — simulation: two `Player`s moving freely in the x/z ground plane, gravity/jump, radial body push-apart, arena clamp (±kArenaHalfWidth in x, ±kArenaHalfDepth in z)
+- `src/game.hpp/.cpp` — simulation: two `Player`s moving freely in the x/z ground plane, gravity/jump, radial body push-apart, arena clamp (±kArenaHalfWidth in x, ±kArenaHalfDepth in z). Sword combat: `AttackState` machine (windup 0.12s → active 0.14s → recovery 0.28s), facing-directed AABB hitbox during active, hit ⇒ hitstun + planar knockback + upward pop + interrupts the victim's swing. Attack input is edge-triggered and latched in main so presses aren't lost between fixed steps (GLFW sticky input modes are on for the same reason).
 - `src/camera.hpp/.cpp` — `FramingCamera`: follows the fighters' midpoint, zooms out so both always fit the frustum (with margin), accounting for each fighter's depth; exponential smoothing
 - `src/renderer.hpp/.cpp` — all Vulkan state; API is `beginFrame` / `setViewProj` / `drawBox(model, color)` / `endFrame`
 - `src/samurai.hpp/.cpp` — procedural samurai model: ~25 boxes (hakama legs, kimono torso, obi, sode, arms, head, kasa, sheathed katana) with stride/idle/jump animation driven by `SamuraiPose`

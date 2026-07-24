@@ -64,8 +64,14 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         const Player& p = game.player(i);
         float yaw = p.facing > 0.0f ? 0.0f : 3.14159265358979f;
         glm::vec3 feet{p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
-        drawSamurai(renderer, feet, yaw, {p.animPhase, p.moveAmount, p.grounded, time},
-                    colors[i]);
+        SamuraiColors c = colors[i];
+        if (p.hitstun > 0.0f) {
+            c.kimono = glm::mix(c.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
+        }
+        drawSamurai(renderer, feet, yaw,
+                    {p.animPhase, p.moveAmount, p.grounded, time,
+                     static_cast<int>(p.attackState), p.attackT},
+                    c);
     }
 }
 
@@ -95,6 +101,11 @@ int main() {
         return 1;
     }
 
+    // Sticky input: a press+release that both arrive between two polls (very
+    // fast taps) still reads as PRESS once, so button edges are never dropped.
+    glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
+    glfwSetInputMode(window, GLFW_STICKY_KEYS, GLFW_TRUE);
+
     glfwSetWindowUserPointer(window, &renderer);
     glfwSetFramebufferSizeCallback(window, [](GLFWwindow* w, int, int) {
         static_cast<Renderer*>(glfwGetWindowUserPointer(w))->onResize();
@@ -107,6 +118,10 @@ int main() {
     float accumulator = 0.0f;
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
+    // Attack presses are edge-detected per render frame but consumed by fixed
+    // steps; latch them so a click landing on a zero-step frame is not lost.
+    bool attackHeld[2] = {false, false};
+    bool attackPending[2] = {false, false};
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -121,6 +136,18 @@ int main() {
                       GLFW_KEY_RIGHT_CONTROL),
         };
 
+        bool held[2] = {
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
+            glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS,
+        };
+        for (int i = 0; i < 2; ++i) {
+            if (held[i] && !attackHeld[i]) {
+                attackPending[i] = true;
+            }
+            attackHeld[i] = held[i];
+            inputs[i].attack = attackPending[i];
+        }
+
         auto now = std::chrono::steady_clock::now();
         float frameTime = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
@@ -130,6 +157,8 @@ int main() {
         while (accumulator >= kFixedDt) {
             game.update(inputs, kFixedDt);
             accumulator -= kFixedDt;
+            attackPending[0] = attackPending[1] = false;
+            inputs[0].attack = inputs[1].attack = false;
         }
 
         camera.update(game.player(0).pos, game.player(1).pos, renderer.aspect(), frameTime);
