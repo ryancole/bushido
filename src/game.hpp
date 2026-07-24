@@ -1,6 +1,7 @@
 #pragma once
 
-#include "audio.hpp" // Sfx ids for sound cues
+#include "audio.hpp"     // Sfx ids for sound cues
+#include "character.hpp" // per-fighter stats
 
 #include <glm/glm.hpp>
 
@@ -97,10 +98,13 @@ struct Player {
 
 class Game {
 public:
-    Game();
+    // A match is fully described by the two roster indices (see character.hpp);
+    // that's the whole setup a future netplay layer would need to agree on.
+    Game(int p0Character, int p1Character);
     ~Game();
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
+    const CharacterDef& character(int i) const { return *m_defs[i]; }
 
     const std::vector<SeveredPiece>& severedPieces() const { return m_pieces; }
     // World transform of a severed piece's debris body, for rendering.
@@ -123,6 +127,7 @@ private:
     float frand(); // 0..1
 
     Player m_players[2];
+    const CharacterDef* m_defs[2]; // roster entries; stats read every tick
     std::vector<SeveredPiece> m_pieces;
     std::vector<SoundCue> m_soundCues;
     std::vector<BloodParticle> m_blood;
