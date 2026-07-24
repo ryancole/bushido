@@ -65,6 +65,15 @@ constexpr float kMaxTilt = 1.35f;        // rad (~77°): lying on the ground
 constexpr float kProneShapeTilt = 0.7f;  // past this the capsule swaps to prone
 constexpr float kCrawlSpeed[3] = {0.10f, 0.20f, 0.30f}; // by remaining arms
 
+// Blood costs (the pool is Player::kMaxBlood = 100). Deliberately stingy:
+// attrition is a slow background pressure, not the way matches end — the
+// head is the execution, and beheading empties the pool outright. Stumps
+// bleed continuously, so a limbless fighter still dies eventually, but
+// you're meant to finish them, not wait them out.
+constexpr float kTorsoHitBlood = 3.0f;   // per clean torso hit (~34 to kill)
+constexpr float kSeverBloodCost = 8.0f;  // per limb taken
+constexpr float kBleedPerLimb = 0.25f;   // blood/s drained per missing limb
+
 constexpr float kKnockbackPop = 3.0f;   // upward pop on hit (divided by weight)
 constexpr float kKnockbackDecay = 6.0f; // 1/s exponential decay
 constexpr float kHitstunTime = 0.35f;
@@ -144,11 +153,29 @@ Game::~Game() = default;
 void Game::update(const PlayerInput inputs[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         Player& p = m_players[i];
-        const PlayerInput& in = inputs[i];
+        // The dead take no input; the body still topples and gets shoved.
+        const PlayerInput in = p.dead() ? PlayerInput{} : inputs[i];
         const CharacterStats& st = m_defs[i]->stats;
 
         if (p.hitstun > 0.0f) {
             p.hitstun = std::max(0.0f, p.hitstun - dt);
+        }
+
+        // Open stumps keep bleeding; this can decide a match on its own.
+        if (!p.dead()) {
+            int lost = 0;
+            for (bool s : p.severed) {
+                lost += s ? 1 : 0;
+            }
+            if (lost > 0) {
+                p.blood = std::max(0.0f, p.blood - lost * kBleedPerLimb * dt);
+                if (p.dead()) {
+                    if (m_winner < 0) {
+                        m_winner = 1 - i;
+                    }
+                    collapse(p);
+                }
+            }
         }
 
         // Toppling: with a leg gone, gravity wins. Integrate the fall and,
@@ -359,6 +386,16 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         foe.grounded = false;
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
 
+        // The cut costs blood: a chunk for the torso, more for a limb, the
+        // whole pool for the head. Chopping at a corpse still severs and
+        // sprays but can't re-decide the match.
+        const bool wasDead = foe.dead();
+        const float cost = hitTorso ? kTorsoHitBlood
+                           : hitLimb == static_cast<int>(Limb::Head)
+                               ? Player::kMaxBlood
+                               : kSeverBloodCost;
+        foe.blood = std::max(0.0f, foe.blood - cost);
+
         // Blood sprays from the wound, away from the attacker and upward;
         // dismemberment gushes harder than a body hit.
         glm::vec3 wound = modelToWorld(foe, {0.0f, kTorsoCenterY, 0.0f});
@@ -371,6 +408,12 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         if (hitLimb >= 0) {
             severLimb(1 - i, static_cast<Limb>(hitLimb), dir);
+        }
+        if (!wasDead && foe.dead()) {
+            if (m_winner < 0) {
+                m_winner = i;
+            }
+            collapse(foe);
         }
     }
 
@@ -396,6 +439,22 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     };
     faceToward(a, b);
     faceToward(b, a);
+
+    if (m_winner >= 0) {
+        m_overTime += dt;
+    }
+}
+
+// Death drops the fighter where they stand: any swing dies with them, and if
+// the body isn't already toppling it starts now (dead legs don't hold) — the
+// existing topple integrator carries it the rest of the way to the floor.
+void Game::collapse(Player& p) {
+    p.attackState = AttackState::None;
+    p.attackTimer = 0.0f;
+    if (p.fallSide == 0.0f) {
+        p.fallSide = frand() < 0.5f ? 1.0f : -1.0f;
+        p.fallVel = kToppleKick;
+    }
 }
 
 // Marks the limb lost and launches it as a debris rigid body along the hit
