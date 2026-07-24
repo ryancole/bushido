@@ -133,6 +133,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.attackState = AttackState::Windup;
             p.attackTimer = kWindupTime;
             p.attackLanded = false;
+            // The whoosh's swell is tuned to peak right as the blade goes active.
+            m_soundCues.push_back({Sfx::Swing, p.pos.x});
         }
         p.attackT = p.attackState == AttackState::None
                         ? 0.0f
@@ -238,6 +240,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         foe.kbVel = dir * kKnockbackSpeed;
         foe.vy = std::max(foe.vy, kKnockbackPop);
         foe.grounded = false;
+        m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
         if (hitLimb >= 0) {
             severLimb(1 - i, static_cast<Limb>(hitLimb), dir);
         }
