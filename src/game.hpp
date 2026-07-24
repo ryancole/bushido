@@ -13,7 +13,8 @@ class Physics;
 // drains them each frame and hands them to Audio (panned by world x).
 struct SoundCue {
     Sfx sfx;
-    float x; // world x of the sound's source
+    float x;           // world x of the sound's source
+    float gain = 1.0f; // 0..1 loudness scale (debris thuds scale with impact speed)
 };
 
 struct PlayerInput {

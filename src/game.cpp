@@ -173,6 +173,14 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     }
     m_physics->step(dt);
 
+    // Severed limbs thudding on the ground (or walls/each other), loudness
+    // scaled by how hard they hit. ~9 m/s is a limb's first landing; the
+    // 0.25-restitution bounce comes back much softer.
+    for (const Physics::DebrisImpact& impact : m_physics->debrisImpacts()) {
+        m_soundCues.push_back(
+            {Sfx::Thud, impact.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
+    }
+
     // Resolve sword hits after both players have moved. The blade is swept as
     // a segment along the same arc the model animates; the first body part it
     // crosses is where the cut lands, and severable parts come off there.

@@ -101,6 +101,24 @@ std::vector<float> synthDismember(float rate) {
     return pcm;
 }
 
+// Thud: a severed limb landing — dull, low, no crack. Duller and shorter than
+// a sword hit; play() scales its gain by impact speed so bounces trail off.
+std::vector<float> synthThud(float rate) {
+    std::vector<float> pcm(static_cast<std::size_t>(rate * 0.16f));
+    std::uint32_t rng = 0xf10c0f0eu;
+    float phase = 0.0f;
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        float t = static_cast<float>(i) / rate; // seconds
+        float freq = 55.0f + 45.0f * std::exp(-t * 35.0f);
+        phase += 2.0f * kPi * freq / rate;
+        float thump = std::sin(phase) * std::exp(-t * 24.0f);
+        float scuff = noise(rng) * std::exp(-t * 110.0f);
+        pcm[i] = thump + 0.25f * scuff;
+    }
+    normalizePeak(pcm, 0.60f);
+    return pcm;
+}
+
 } // namespace
 
 struct Audio::Impl {
@@ -131,6 +149,7 @@ Audio::Audio() : m_impl(std::make_unique<Impl>()) {
     m_impl->pcm[static_cast<int>(Sfx::Swing)] = synthSwing(rate);
     m_impl->pcm[static_cast<int>(Sfx::Hit)] = synthHit(rate);
     m_impl->pcm[static_cast<int>(Sfx::Dismember)] = synthDismember(rate);
+    m_impl->pcm[static_cast<int>(Sfx::Thud)] = synthThud(rate);
 
     for (int s = 0; s < kSfxCount; ++s) {
         for (int v = 0; v < kVoicesPerSfx; ++v) {
@@ -171,7 +190,7 @@ Audio::~Audio() {
     }
 }
 
-void Audio::play(Sfx sfx, float pan, float pitch) {
+void Audio::play(Sfx sfx, float pan, float pitch, float gain) {
     if (!m_impl->ok) {
         return;
     }
@@ -183,5 +202,6 @@ void Audio::play(Sfx sfx, float pan, float pitch) {
     ma_sound_seek_to_pcm_frame(&voice.sound, 0);
     ma_sound_set_pan(&voice.sound, std::clamp(pan, -1.0f, 1.0f));
     ma_sound_set_pitch(&voice.sound, pitch);
+    ma_sound_set_volume(&voice.sound, std::clamp(gain, 0.0f, 1.0f));
     ma_sound_start(&voice.sound);
 }

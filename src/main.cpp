@@ -180,7 +180,7 @@ int main() {
                 sfxSeed = sfxSeed * 1664525u + 1013904223u;
                 float jitter = static_cast<float>(sfxSeed >> 8) * (1.0f / 16777216.0f);
                 float pan = std::clamp((cue.x - midX) * 0.08f, -0.6f, 0.6f);
-                audio.play(cue.sfx, pan, 0.94f + 0.12f * jitter);
+                audio.play(cue.sfx, pan, 0.94f + 0.12f * jitter, cue.gain);
             }
             game.clearSoundCues();
         }
