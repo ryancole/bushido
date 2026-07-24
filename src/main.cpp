@@ -16,6 +16,7 @@
 #include <random>
 
 #include "audio.hpp"
+#include "bot.hpp"
 #include "camera.hpp"
 #include "character.hpp"
 #include "game.hpp"
@@ -338,6 +339,7 @@ int main() {
     // The initial Game is just the arena diorama behind the menu; every
     // lock-in on the select screen replaces it with a fresh match.
     auto game = std::make_unique<Game>(0, 1);
+    Bot bot; // drives player 2; re-seeded per match
     FramingCamera camera;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
     AppState state = AppState::Menu;
@@ -350,8 +352,8 @@ int main() {
     auto lastTime = std::chrono::steady_clock::now();
     // Attack presses are edge-detected per render frame but consumed by fixed
     // steps; latch them so a click landing on a zero-step frame is not lost.
-    bool attackHeld[2] = {false, false};
-    bool attackPending[2] = {false, false};
+    bool attackHeld = false;
+    bool attackPending = false;
     bool escHeld = false;
 
     while (!glfwWindowShouldClose(window)) {
@@ -377,29 +379,24 @@ int main() {
             PlayerInput inputs[2] = {
                 readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S,
                           GLFW_KEY_SPACE),
-                readInput(window, GLFW_KEY_LEFT, GLFW_KEY_RIGHT, GLFW_KEY_UP, GLFW_KEY_DOWN,
-                          GLFW_KEY_RIGHT_CONTROL),
+                {}, // player 2 is the bot, filled per fixed step below
             };
 
-            bool held[2] = {
-                glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
-                glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS,
-            };
-            for (int i = 0; i < 2; ++i) {
-                if (held[i] && !attackHeld[i]) {
-                    attackPending[i] = true;
-                }
-                attackHeld[i] = held[i];
-                inputs[i].attack = attackPending[i];
+            bool held = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (held && !attackHeld) {
+                attackPending = true;
             }
+            attackHeld = held;
+            inputs[0].attack = attackPending;
 
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
             while (accumulator >= kFixedDt) {
+                inputs[1] = bot.think(*game, kFixedDt);
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
-                attackPending[0] = attackPending[1] = false;
-                inputs[0].attack = inputs[1].attack = false;
+                attackPending = false;
+                inputs[0].attack = false;
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -445,12 +442,12 @@ int main() {
         if (picked >= 0) {
             int foe = std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
             game = std::make_unique<Game>(picked, foe);
+            bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
             state = AppState::Playing;
-            // Seed the attack latches from the live button state so the click
+            // Seed the attack latch from the live button state so the click
             // that picked a character doesn't read as a swing next frame.
-            attackHeld[0] = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            attackHeld[1] = glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
-            attackPending[0] = attackPending[1] = false;
+            attackHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            attackPending = false;
         }
     }
 
