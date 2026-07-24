@@ -1,6 +1,6 @@
 # bushido
 
-Side-view 3D sword PvP game (1v1). C++20, Vulkan 1.3 (dynamic rendering, sync2), GLFW, vk-bootstrap, GLM. Dependencies come in via CMake FetchContent; the Vulkan SDK is installed at `C:\VulkanSDK\1.4.350.0`.
+Side-view 3D sword PvP game (1v1). C++20, Vulkan 1.3 (dynamic rendering, sync2), GLFW, vk-bootstrap, GLM, Jolt Physics. Dependencies come in via CMake FetchContent; the Vulkan SDK is installed at `C:\VulkanSDK\1.4.350.0`.
 
 ## Build (Windows, MSVC + Ninja)
 
@@ -17,7 +17,8 @@ VS Code: `.vscode/` has a default build task (Ctrl+Shift+B), a `configure` task,
 ## Layout
 
 - `src/main.cpp` — game loop (fixed 120 Hz timestep), input reading, scene drawing
-- `src/game.hpp/.cpp` — simulation: two `Player`s moving freely in the x/z ground plane, gravity/jump, radial body push-apart, arena clamp (±kArenaHalfWidth in x, ±kArenaHalfDepth in z). Sword combat: `AttackState` machine (windup 0.12s → active 0.14s → recovery 0.28s), facing-directed AABB hitbox during active, hit ⇒ hitstun + planar knockback + upward pop + interrupts the victim's swing. Attack input is edge-triggered and latched in main so presses aren't lost between fixed steps (GLFW sticky input modes are on for the same reason).
+- `src/game.hpp/.cpp` — simulation: two `Player`s moving freely in the x/z ground plane. Gameplay stays authored (Game decides velocities: move speed, jump, gravity integration into `vy`, knockback); collision is delegated to `Physics` per fixed step, which returns resolved position + grounded. Sword combat: `AttackState` machine (windup 0.12s → active 0.14s → recovery 0.28s), facing-directed AABB hitbox during active (pure AABB test on `Player::pos`, not Jolt queries), hit ⇒ hitstun + planar knockback + upward pop + interrupts the victim's swing. Attack input is edge-triggered and latched in main so presses aren't lost between fixed steps (GLFW sticky input modes are on for the same reason).
+- `src/physics.hpp/.cpp` — Jolt wrapper (pimpl; Jolt headers only in the .cpp). Owns the `PhysicsSystem`, invisible static arena colliders (ground slab + 4 walls at the arena bounds — these replaced the old position clamp), and one `CharacterVirtual` capsule per fighter (radius = `kHalfWidth`, height = 2·`kHalfHeight`, origin at the feet; `Player::pos` is capsule pos + half height in y). Fighter-vs-fighter solidity comes from `CharacterVsCharacterCollisionSimple`. `moveCharacter` does `SetLinearVelocity` + `ExtendedUpdate`; `step` runs the rigid-body world (static-only today, kept for future ragdolls/debris). Jolt is pinned at v5.6.0, dynamic CRT, demos/tests off (see CMakeLists).
 - `src/camera.hpp/.cpp` — `FramingCamera`: follows the fighters' midpoint, zooms out so both always fit the frustum (with margin), accounting for each fighter's depth; exponential smoothing
 - `src/renderer.hpp/.cpp` — all Vulkan state; API is `beginFrame` / `setViewProj` / `drawBox(model, color)` / `endFrame`
 - `src/samurai.hpp/.cpp` — procedural samurai model: ~25 boxes (hakama legs, kimono torso, obi, sode, arms, head, kasa, sheathed katana) with stride/idle/jump animation driven by `SamuraiPose`
