@@ -19,6 +19,7 @@ struct SamuraiPose {
     int attackKind = 0;      // mirrors game AttackKind: 0 light, 1 heavy, 2 jab
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
     bool blocking = false;   // guard up: the sword arm holds the blade at the foe
+    float crouch = 0.0f;     // 0..1 duck depth: legs fold, upper body drops
     // Shoulder-to-tip length of the drawn katana, matching the fighter's
     // resolved reach (character + weapon) so what connects is what the
     // player sees. bladeWidth scales only the drawn blade's thickness —

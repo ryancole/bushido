@@ -84,11 +84,19 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
 
     const float pi = glm::pi<float>();
 
+    // Crouch: the legs fold — squashed toward the floor so the feet stay
+    // planted — and everything hip-up rides down with them. The drop and the
+    // 0.85 hip height must match game.cpp's kCrouchDrop/kHipHeight so the
+    // ducked hurtboxes sit where the body is drawn.
+    const float crouchDrop = pose.crouch * 0.45f;
+    const float legSquash = (0.85f - crouchDrop) / 0.85f;
+
     // Legs: opposite-phase stride while grounded, a fixed tuck in the air.
     for (float s : {-1.0f, 1.0f}) {
         if (isSevered(pose, s > 0.0f ? 2 : 3)) {
-            // Stump peeking out below the hip skirt.
-            part(glm::mat4(1.0f), {0.0f, 0.74f, s * 0.12f}, {0.18f, 0.10f, 0.20f}, kStump);
+            // Stump peeking out below the hip skirt (which drops with a crouch).
+            part(glm::mat4(1.0f), {0.0f, 0.74f - crouchDrop, s * 0.12f},
+                 {0.18f, 0.10f, 0.20f}, kStump);
             continue;
         }
         float swing;
@@ -97,9 +105,13 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         } else {
             swing = s > 0.0f ? 0.55f : -0.35f;
         }
-        glm::mat4 leg = pivotRotZ({0.0f, 0.85f, s * 0.12f}, swing);
-        part(leg, {0.0f, 0.44f, s * 0.12f}, {0.20f, 0.80f, 0.22f}, colors.hakama);
-        part(leg, {0.04f, 0.05f, s * 0.12f}, {0.26f, 0.10f, 0.16f}, kLacquer);
+        // Crouching splits the stance into a slight lunge so the folded legs
+        // read as bent knees rather than shrunken ones.
+        swing += pose.crouch * (s > 0.0f ? 0.30f : -0.30f);
+        glm::mat4 leg = pivotRotZ({0.0f, 0.85f * legSquash, s * 0.12f}, swing);
+        part(leg, {0.0f, 0.44f * legSquash, s * 0.12f},
+             {0.20f, 0.80f * legSquash, 0.22f}, colors.hakama);
+        part(leg, {0.04f, 0.05f * legSquash, s * 0.12f}, {0.26f, 0.10f, 0.16f}, kLacquer);
     }
 
     // Upper body: breathes at rest, bounces with the stride, leans into motion.
@@ -115,7 +127,8 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     } else if (pose.attackState == 2) {
         lean -= kDriveIn[pose.attackKind] * pose.attackT;
     }
-    glm::mat4 upper = glm::translate(glm::mat4(1.0f), {0.0f, bob, 0.0f}) *
+    lean -= 0.15f * pose.crouch; // hunch forward over the folded legs
+    glm::mat4 upper = glm::translate(glm::mat4(1.0f), {0.0f, bob - crouchDrop, 0.0f}) *
                       pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
 
     part(upper, {0.0f, 0.86f, 0.0f}, {0.44f, 0.28f, 0.36f}, colors.hakama); // hip skirt

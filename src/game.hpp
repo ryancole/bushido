@@ -31,6 +31,7 @@ struct PlayerInput {
     glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
     bool jump = false;
     bool block = false;  // held: keep the guard up (slows the walk, no swinging)
+    bool crouch = false; // held: duck low (slows the walk, no jumping)
     bool attack = false; // edge-triggered: true only on the tick(s) after a fresh press
     AttackKind attackKind = AttackKind::Light; // which attack, when attack is set
 };
@@ -86,6 +87,8 @@ struct Player {
     bool attackLanded = false; // this swing already connected
     float hitstun = 0.0f;      // seconds of control lockout after being hit
     bool blocking = false;     // guard is up this tick; catches attacks from the front
+    bool crouching = false;    // ducked this tick; crouchAmount chases it
+    float crouchAmount = 0.0f; // 0..1 smoothed crouch depth (pose + hurtboxes)
     float riposteTime = 0.0f;  // s left in the post-block counter window
     float attackWindupScale = 1.0f; // this swing's windup scale (a riposte snaps out)
     float attackBuffer = 0.0f; // s a pressed attack waits for the fighter to be able
