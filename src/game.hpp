@@ -20,10 +20,18 @@ struct SoundCue {
     float gain = 1.0f; // 0..1 loudness scale (debris thuds scale with impact speed)
 };
 
+// The three attacks. Values double as the pose index handed to the model.
+// Light is the baseline swing the character stats describe; Heavy and Jab
+// scale those stats via the tuning table in game.cpp. Jab is a thrust, not
+// a cut: it can never sever a limb (and so can never behead).
+enum class AttackKind { Light = 0, Heavy = 1, Jab = 2 };
+inline constexpr int kAttackKindCount = 3;
+
 struct PlayerInput {
     glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
     bool jump = false;
     bool attack = false; // edge-triggered: true only on the tick(s) after a fresh press
+    AttackKind attackKind = AttackKind::Light; // which attack, when attack is set
 };
 
 // Sword swing phases. Values double as the pose index handed to the model.
@@ -71,6 +79,7 @@ struct Player {
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed this tick
 
     AttackState attackState = AttackState::None;
+    AttackKind attackKind = AttackKind::Light; // which attack is in flight
     float attackTimer = 0.0f;  // seconds left in the current attack phase
     float attackT = 0.0f;      // 0..1 progress through the current attack phase
     bool attackLanded = false; // this swing already connected

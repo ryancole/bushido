@@ -15,12 +15,34 @@ namespace {
 constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 
+// Per-attack tuning, indexed by AttackKind. Each attack scales the wielder's
+// resolved stats (character + weapon) rather than replacing them, the same
+// contract weapons follow — a fast character jabs faster than a slow one.
+// The arc angles are about the shoulder (0 = hanging down, positive =
+// forward/up) and must mirror samurai.cpp's swordArmAngle so the cut lands
+// where the blade is drawn: light/heavy chop overhead-to-front, the jab
+// snaps a short arc to horizontal — a forward thrust.
+struct AttackTuning {
+    float windupScale, activeScale, recoveryScale; // on the character's phase times
+    float damageScale;    // on torso-hit and sever blood costs (never the beheading)
+    float knockbackScale; // on shove dealt and upward pop
+    float hitstunScale;   // on the victim's control lockout
+    float startAngle, endAngle; // rad, Active-phase blade arc
+    bool canSever;        // false = a limb/head connect lands as a torso hit
+};
+constexpr AttackTuning kAttackTuning[kAttackKindCount] = {
+    // Light: the baseline — exactly the pre-attack-types swing.
+    {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.60f, 0.55f, true},
+    // Heavy: wound up well past overhead, slow everywhere, ruinous on connect.
+    {1.9f, 1.25f, 1.6f, 2.4f, 1.9f, 1.4f, 2.95f, 0.45f, true},
+    // Jab: quick poke, cheap cut, barely a shove; can't dismember.
+    {0.45f, 0.55f, 0.55f, 0.5f, 0.35f, 0.6f, 1.20f, 1.55f, false},
+};
+
 // Blade sweep, mirroring the model's Active-phase swing (samurai.cpp
-// swordArmAngle case 2): the arm pivots at the shoulder from overhead down to
-// in front, with the blade a segment along the arm direction. The tip's
-// distance from the shoulder is the character's reach stat.
-constexpr float kSwingStartAngle = 2.60f; // rad about the shoulder, 0 = hanging down
-constexpr float kSwingEndAngle = 0.55f;
+// swordArmAngle case 2): the arm pivots at the shoulder along the attack's
+// arc (kAttackTuning angles), with the blade a segment along the arm
+// direction. The tip's distance from the shoulder is the character's reach.
 constexpr float kShoulderHeight = 1.36f;  // above the feet
 constexpr float kShoulderSide = 0.26f;    // sword arm's z offset from center
 constexpr float kBladeRoot = 0.45f;       // blade segment start, distance from shoulder
@@ -126,11 +148,12 @@ glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
     return {half.x, c * half.y + s * half.z, s * half.y + c * half.z};
 }
 
-float attackDuration(const CharacterStats& st, AttackState state) {
+float attackDuration(const CharacterStats& st, AttackKind kind, AttackState state) {
+    const AttackTuning& tun = kAttackTuning[static_cast<int>(kind)];
     switch (state) {
-        case AttackState::Windup: return st.windupTime;
-        case AttackState::Active: return st.activeTime;
-        case AttackState::Recovery: return st.recoveryTime;
+        case AttackState::Windup: return st.windupTime * tun.windupScale;
+        case AttackState::Active: return st.activeTime * tun.activeScale;
+        case AttackState::Recovery: return st.recoveryTime * tun.recoveryScale;
         default: return 1.0f;
     }
 }
@@ -219,11 +242,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 switch (p.attackState) {
                     case AttackState::Windup:
                         p.attackState = AttackState::Active;
-                        p.attackTimer = st.activeTime;
+                        p.attackTimer = attackDuration(st, p.attackKind, p.attackState);
                         break;
                     case AttackState::Active:
                         p.attackState = AttackState::Recovery;
-                        p.attackTimer = st.recoveryTime;
+                        p.attackTimer = attackDuration(st, p.attackKind, p.attackState);
                         break;
                     default:
                         p.attackState = AttackState::None;
@@ -239,16 +262,20 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.attackState == AttackState::None && p.hitstun <= 0.0f && in.attack &&
             canSwing) {
             p.attackState = AttackState::Windup;
-            p.attackTimer = st.windupTime;
+            p.attackKind = in.attackKind;
+            p.attackTimer = attackDuration(st, p.attackKind, p.attackState);
             p.attackLanded = false;
-            // The whoosh's swell is tuned to peak right as the blade goes active.
-            m_soundCues.push_back({Sfx::Swing, p.pos.x});
+            // The whoosh's swell is tuned to peak right as the blade goes
+            // active; the jab's is quieter to match the shorter cut.
+            m_soundCues.push_back(
+                {Sfx::Swing, p.pos.x,
+                 p.attackKind == AttackKind::Jab ? 0.7f : 1.0f});
         }
-        p.attackT =
-            p.attackState == AttackState::None
-                ? 0.0f
-                : std::clamp(1.0f - p.attackTimer / attackDuration(st, p.attackState),
-                             0.0f, 1.0f);
+        p.attackT = p.attackState == AttackState::None
+                        ? 0.0f
+                        : std::clamp(1.0f - p.attackTimer / attackDuration(
+                                                st, p.attackKind, p.attackState),
+                                     0.0f, 1.0f);
 
         // Movement: locked in hitstun, slowed while swinging.
         glm::vec2 move = p.hitstun > 0.0f ? glm::vec2{0.0f} : in.move;
@@ -340,19 +367,21 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // Both the blade arc and the target boxes follow each body's topple
         // roll: a downed attacker's chop becomes a sweep along the ground,
         // and a downed defender is hit where the body actually lies.
+        const AttackTuning& tun = kAttackTuning[static_cast<int>(p.attackKind)];
         const float swordSide =
             p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
         const glm::vec3 pivot =
             modelToWorld(p, {0.0f, kShoulderHeight, swordSide * kShoulderSide});
         const float tCur = p.attackT;
-        const float tPrev = std::max(0.0f, tCur - dt / st.activeTime);
+        const float tPrev =
+            std::max(0.0f, tCur - dt / (st.activeTime * tun.activeScale));
 
         int hitLimb = -1;
         bool hitTorso = false;
         constexpr int kSweepSamples = 4;
         for (int k = 1; k <= kSweepSamples && hitLimb < 0; ++k) {
             float t = glm::mix(tPrev, tCur, static_cast<float>(k) / kSweepSamples);
-            float angle = glm::mix(kSwingStartAngle, kSwingEndAngle, t);
+            float angle = glm::mix(tun.startAngle, tun.endAngle, t);
             glm::vec3 dir = rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f});
             dir = {p.facing * dir.x, dir.y, p.facing * dir.z};
             glm::vec3 s0 = pivot + dir * kBladeRoot;
@@ -386,27 +415,35 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (hitLimb < 0 && !hitTorso) {
             continue;
         }
+        // A thrust pierces instead of cutting: a jab that crosses a limb (or
+        // the head) still connects, but lands as a torso-grade hit — no
+        // dismemberment, and no cut-rate execution.
+        if (!tun.canSever && hitLimb >= 0) {
+            hitLimb = -1;
+            hitTorso = true;
+        }
         p.attackLanded = true;
-        foe.hitstun = kHitstunTime;
+        foe.hitstun = kHitstunTime * tun.hitstunScale;
         foe.attackState = AttackState::None; // a clean hit interrupts the foe's swing
         foe.attackTimer = 0.0f;
         glm::vec2 dir{foe.pos.x - p.pos.x, foe.pos.z - p.pos.z};
         float dist = glm::length(dir);
         dir = dist > 1e-4f ? dir / dist : glm::vec2{p.facing, 0.0f};
         // Heavier characters shrug off more of the shove; harder hitters
-        // deal more of it. Both read straight from the roster stats.
-        foe.kbVel = dir * (st.knockback / foeSt.weight);
-        foe.vy = std::max(foe.vy, kKnockbackPop / foeSt.weight);
+        // deal more of it. Both read straight from the roster stats, scaled
+        // by how much weight the attack itself carries.
+        foe.kbVel = dir * (st.knockback * tun.knockbackScale / foeSt.weight);
+        foe.vy = std::max(foe.vy, kKnockbackPop * tun.knockbackScale / foeSt.weight);
         foe.grounded = false;
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
 
         // The cut costs blood: a chunk for the torso, more for a limb, the
-        // whole pool for the head. The weapon's damage scale prices the first
-        // two, but never the head — beheading executes with any blade.
-        // Chopping at a corpse still severs and sprays but can't re-decide
-        // the match.
+        // whole pool for the head. The weapon's damage scale and the attack's
+        // price the first two, but never the head — beheading executes with
+        // any blade. Chopping at a corpse still severs and sprays but can't
+        // re-decide the match.
         const bool wasDead = foe.dead();
-        const float dmg = m_weapons[i]->stats.damage;
+        const float dmg = m_weapons[i]->stats.damage * tun.damageScale;
         const float cost = hitTorso ? kTorsoHitBlood * dmg
                            : hitLimb == static_cast<int>(Limb::Head)
                                ? Player::kMaxBlood

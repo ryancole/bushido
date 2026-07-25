@@ -422,7 +422,8 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         }
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
-                     static_cast<int>(p.attackState), p.attackT, game.stats(i).reach,
+                     static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
+                     p.attackT, game.stats(i).reach,
                      game.weapon(i).stats.bladeWidth, p.bodyRoll(), p.severed},
                     c);
     }
@@ -497,21 +498,32 @@ int main() {
     float accumulator = 0.0f;
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
-    // Attack presses are edge-detected per render frame but consumed by fixed
+    // Attack inputs are edge-detected per render frame but consumed by fixed
     // steps; latch them so a click landing on a zero-step frame is not lost.
-    bool attackHeld = false;
+    // The left button attacks on *release* — a tap is the normal swing, a
+    // hold past kHeavyHoldTime charges the heavy — so both can share the
+    // button. The right button jabs on press.
+    constexpr float kHeavyHoldTime = 0.28f; // s of LMB hold that makes it a heavy
+    bool lmbHeld = false;
+    bool rmbHeld = false;
+    bool lmbSuppressed = false; // ignore the release of a pre-match click
+    float lmbHoldTime = 0.0f;
     bool attackPending = false;
+    AttackKind pendingKind = AttackKind::Light;
     bool escHeld = false;
 
-    // Fresh match from matchChars. Seeding the attack latch from the live
-    // button state keeps the click that started the match from reading as a
-    // swing on the first frame.
+    // Fresh match from matchChars. Seeding the button latches from the live
+    // state keeps the click that started the match from reading as an attack:
+    // a held LMB is flagged so even its eventual release swings nothing.
     auto startMatch = [&] {
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1]);
         bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
-        attackHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        lmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        rmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+        lmbSuppressed = lmbHeld;
+        lmbHoldTime = 0.0f;
         attackPending = false;
     };
 
@@ -544,12 +556,34 @@ int main() {
                 {}, // player 2 is the bot, filled per fixed step below
             };
 
-            bool held = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            if (held && !attackHeld) {
+            // LMB: light on a tap's release, heavy on a long hold's release.
+            bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (lmb && !lmbHeld) {
+                lmbHoldTime = 0.0f; // fresh press: start the charge clock
+            }
+            if (lmb) {
+                lmbHoldTime += frameTime;
+            } else if (lmbHeld) { // release edge
+                if (lmbSuppressed) {
+                    lmbSuppressed = false; // the click that started the match
+                } else if (!attackPending) {
+                    pendingKind = lmbHoldTime >= kHeavyHoldTime ? AttackKind::Heavy
+                                                                : AttackKind::Light;
+                    attackPending = true;
+                }
+            }
+            lmbHeld = lmb;
+
+            // RMB: jab on press.
+            bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            if (rmb && !rmbHeld && !attackPending) {
+                pendingKind = AttackKind::Jab;
                 attackPending = true;
             }
-            attackHeld = held;
+            rmbHeld = rmb;
+
             inputs[0].attack = attackPending;
+            inputs[0].attackKind = pendingKind;
 
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
