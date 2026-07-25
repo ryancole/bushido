@@ -30,7 +30,8 @@ FetchContent_Declare(vk-bootstrap
 FetchContent_Declare(glm
     GIT_REPOSITORY https://github.com/g-truc/glm.git
     GIT_TAG 1.0.1)
-# Sound effects are synthesized at startup, so only the core engine is needed.
+# Sound effects are synthesized at startup and music is decoded from the WAVs
+# in assets/ — the core engine covers both, so the extra nodes stay off.
 set(MINIAUDIO_NO_EXTRA_NODES ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(miniaudio
@@ -117,12 +118,31 @@ if(MSVC)
     target_compile_options(bushido PRIVATE /W4)
 endif()
 
-# Dev-only: shaders are loaded from the build tree by absolute path. Replace
-# with a proper asset path scheme once there are real assets to ship.
+# Dev-only: shaders are loaded from the build tree and assets from the source
+# tree, both by absolute path. Replace with a proper asset path scheme (and a
+# copy-alongside-the-exe step) when the game ships.
 target_compile_definitions(bushido PRIVATE
     SHADER_DIR="${CMAKE_CURRENT_BINARY_DIR}/shaders"
+    ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
     GLM_FORCE_RADIANS
     GLM_FORCE_DEPTH_ZERO_TO_ONE)
+
+# The music generator: renders assets/music/*.wav from the composition code in
+# tools/musicgen.cpp. Deliberately *not* wired into the build — the WAVs are
+# committed, so this is run by hand when a track changes:
+#
+#     build\musicgen.exe
+#
+# It's built with everything else (it costs one small translation unit) so it
+# can't quietly rot, but nothing depends on its output at build time.
+add_executable(musicgen tools/musicgen.cpp)
+target_include_directories(musicgen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(musicgen PRIVATE
+    MUSIC_OUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/music")
+
+if(MSVC)
+    target_compile_options(musicgen PRIVATE /W4)
+endif()
 
 # Compile GLSL shaders to SPIR-V next to the executable.
 set(SHADER_SOURCES

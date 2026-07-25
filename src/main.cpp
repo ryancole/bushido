@@ -38,9 +38,10 @@ enum class MenuAction { None, Play, Options, Quit };
 // exactly one step per frame, so the window stays responsive and the bar
 // advances on real completions rather than on a timer. `weight` is the step's
 // measured cost in milliseconds (debug build, one machine) — the steps are
-// wildly uneven, a single music loop being ~25 s of synthesized audio against
-// a level prewarm that rounds to nothing, so a bar driven by step *count*
-// would sit still and then leap. The numbers only have to hold their ratios:
+// wildly uneven, opening the audio device costing several times what every
+// other step costs put together while a level prewarm rounds to nothing, so a
+// bar driven by step *count* would sit still and then leap. The numbers only
+// have to hold their ratios:
 // they're a shape for the bar, not a promise about the clock.
 struct LoadStep {
     const char* label;
@@ -861,24 +862,25 @@ int main() {
     OptionsScreen options;
 
     // Everything that has to happen before the menu can come up, one step per
-    // frame. Nothing here is busywork padding a bar: the audio steps are the
-    // synthesis that used to stall inside Audio's constructor, and the last two
-    // pull the first match's one-time costs forward out of the first match.
+    // frame. Nothing here is busywork padding a bar: the audio steps open the
+    // device, synthesize the effects and load the theme the menu comes up
+    // playing, and the last two pull one-time costs out of the first match.
     const LoadStep loadSteps[] = {
         {"Opening the hall", 25.0f, [&] { audio.initDevice(); }},
         {"Reading your settings", 0.5f,
          [&] {
              loadConfig(settings);
-             // Safe this early: the levels are stored either way and seated on
-             // the tracks when their voices are built a few steps down.
+             // Safe this early: the levels are stored either way, and each
+             // track picks the music one up as it loads — the menu's a step
+             // down, a battleground's not until its match.
              audio.setMusicVolume(settings.audio.music);
              audio.setSfxVolume(settings.audio.sfx);
          }},
         {"Forging the blades", 3.0f, [&] { audio.initSfx(); }},
-        {"Tuning the koto", 81.0f, [&] { audio.initMusic(Music::Menu); }},
-        {"Beating the taiko", 87.0f, [&] { audio.initMusic(Music::Dojo); }},
-        {"Scattering the petals", 124.0f, [&] { audio.initMusic(Music::Hanami); }},
-        {"Taking up the voices", 0.5f, [&] { audio.initVoices(); }},
+        // Only the front-end theme: a battleground's is loaded with its match,
+        // where one decode is lost in the noise of building the arena.
+        {"Tuning the koto", 4.5f, [&] { audio.loadMusic(Music::Menu); }},
+        {"Taking up the voices", 0.05f, [&] { audio.initVoices(); }},
         {"Raising the battlegrounds", 0.5f,
          [&] {
              // Each level's static geometry is generated once, on the first
@@ -931,6 +933,11 @@ int main() {
     // state keeps the click that started the match from reading as an attack:
     // a held LMB is flagged so even its eventual release swings nothing.
     auto startMatch = [&] {
+        // The battleground's theme, decoded now rather than at startup — the
+        // level is what says which track is wanted, and this is the frame
+        // that's already paying for a new arena. A no-op on a rematch, or on
+        // any level whose track has been in memory since an earlier match.
+        audio.loadMusic(levelMusic(matchLevel));
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1], matchLevel);
         bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
