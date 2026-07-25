@@ -5,7 +5,7 @@
 #include <Jolt/Jolt.h>
 
 #include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
+#include <Jolt/Core/JobSystemSingleThreaded.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -24,7 +24,6 @@
 #include <cfloat>
 #include <cmath>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -139,7 +138,7 @@ void ensureJoltInitialized() {
 
 struct Physics::Impl {
     JPH::TempAllocatorImpl tempAllocator{4 * 1024 * 1024};
-    std::unique_ptr<JPH::JobSystemThreadPool> jobSystem;
+    std::unique_ptr<JPH::JobSystemSingleThreaded> jobSystem;
     BPLayerInterfaceImpl bpLayerInterface;
     ObjectVsBroadPhaseLayerFilterImpl objVsBpFilter;
     ObjectLayerPairFilterImpl objPairFilter;
@@ -163,9 +162,14 @@ Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
     Impl& im = *m_impl;
     im.water = water;
 
-    im.jobSystem = std::make_unique<JPH::JobSystemThreadPool>(
-        JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
-        std::max(1, static_cast<int>(std::thread::hardware_concurrency()) - 1));
+    // Single-threaded on purpose. Jolt only promises determinism for the same
+    // binary run with the same thread count, and a pool sized from
+    // hardware_concurrency() is exactly the thing that differs between two
+    // machines trying to run the same match — different job counts reorder
+    // contact resolution, and the divergence works its way back into gameplay
+    // through debrisImpacts(). The sim is two capsules and a handful of limb
+    // boxes; there is nothing here a pool would win.
+    im.jobSystem = std::make_unique<JPH::JobSystemSingleThreaded>(JPH::cMaxPhysicsJobs);
 
     constexpr JPH::uint kMaxBodies = 1024;
     constexpr JPH::uint kMaxBodyPairs = 1024;
@@ -354,6 +358,23 @@ int Physics::addDebris(const glm::vec3& center, float yaw, const glm::vec3& half
         settings, JPH::EActivation::Activate);
     im.debris.push_back(id);
     return static_cast<int>(im.debris.size()) - 1;
+}
+
+void Physics::debrisStates(std::vector<DebrisState>& out) const {
+    Impl& im = *m_impl;
+    const JPH::BodyInterface& bodies = im.physicsSystem.GetBodyInterface();
+    out.clear();
+    out.reserve(im.debris.size());
+    for (const JPH::BodyID& id : im.debris) {
+        JPH::RVec3 p = bodies.GetPosition(id);
+        JPH::Quat q = bodies.GetRotation(id);
+        JPH::Vec3 v = bodies.GetLinearVelocity(id);
+        JPH::Vec3 w = bodies.GetAngularVelocity(id);
+        out.push_back({{p.GetX(), p.GetY(), p.GetZ()},
+                       {q.GetX(), q.GetY(), q.GetZ(), q.GetW()},
+                       {v.GetX(), v.GetY(), v.GetZ()},
+                       {w.GetX(), w.GetY(), w.GetZ()}});
+    }
 }
 
 glm::mat4 Physics::debrisTransform(int id) const {

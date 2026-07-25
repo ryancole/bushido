@@ -1,5 +1,7 @@
 #include "bot.hpp"
 
+#include "input.hpp" // quantizeAxis: the bot may only press what a player could
+
 #include <algorithm>
 #include <cmath>
 
@@ -71,11 +73,16 @@ PlayerInput Bot::think(const Game& game, float dt) {
         in.move.x = -toFoe; // too close for the arc — step back out
     }
 
-    // z: steer into the foe's depth lane; strafing jinks instead.
+    // z: steer into the foe's depth lane; strafing jinks instead. Quantized
+    // because the bot only gets to press what a player could press — an analog
+    // lean would be an input no recording or netplay peer can carry, and the
+    // rounding would land somewhere the bot never chose. The 0.5 threshold
+    // quantizeAxis applies leaves a ~0.25 m deadzone in the lane, which is
+    // close enough to lined up to swing.
     if (m_mode == Mode::Strafe) {
         in.move.y = m_strafeSign;
     } else {
-        in.move.y = std::clamp(dz * 2.0f, -1.0f, 1.0f);
+        in.move.y = quantizeAxis(std::clamp(dz * 2.0f, -1.0f, 1.0f));
     }
 
     if (m_jumpQueued && self.grounded && !self.downed()) {

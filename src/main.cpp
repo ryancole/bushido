@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <iterator>
@@ -26,6 +27,7 @@
 #include "game.hpp"
 #include "input.hpp"
 #include "levels/level.hpp"
+#include "netplay/replay.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
 #include "weapons/weapon.hpp"
@@ -795,7 +797,45 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // Developer flags, all three for the determinism harness (netplay/replay.hpp).
+    //   --record <file>  write every match played this run to <file>
+    //   --replay <file>  skip the menus, re-run the recorded match, check it
+    //   --auto           skip the menus, play a fixed pairing, quit when it ends
+    // --auto is what makes recording scriptable: nobody has to click through a
+    // select screen, and the bot supplies a whole match of hits, dismemberment
+    // and debris against a player who never moves.
+    //   bushido --record run.bsdr --auto   then   bushido --replay run.bsdr
+    const char* recordPath = nullptr;
+    const char* replayPath = nullptr;
+    bool autoMatch = false;
+    for (int i = 1; i < argc; ++i) {
+        bool wantsArg = std::strcmp(argv[i], "--record") == 0 ||
+                        std::strcmp(argv[i], "--replay") == 0;
+        if (wantsArg && i + 1 >= argc) {
+            std::fprintf(stderr, "%s needs a file path\n", argv[i]);
+            return 1;
+        }
+        if (std::strcmp(argv[i], "--record") == 0) {
+            recordPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--replay") == 0) {
+            replayPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--auto") == 0) {
+            autoMatch = true;
+        } else {
+            std::fprintf(stderr, "unknown argument '%s'\n", argv[i]);
+            return 1;
+        }
+    }
+    if (recordPath && replayPath) {
+        std::fprintf(stderr, "--record and --replay are mutually exclusive\n");
+        return 1;
+    }
+    if (replayPath && autoMatch) {
+        std::fprintf(stderr, "--replay already runs one match and quits; drop --auto\n");
+        return 1;
+    }
+
     if (!glfwInit()) {
         std::fprintf(stderr, "glfwInit failed\n");
         return 1;
@@ -889,7 +929,12 @@ int main() {
         loadTotal += s.weight;
     }
     float loadShown = 0.0f; // the drawn bar, easing toward loadDone/loadTotal
-    std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
+    // Opponent draw on the select screen, and the seed handed to each new Bot.
+    // --auto is a fixture rather than a play session, so it seeds from a
+    // constant: two auto runs then play the identical match and their
+    // recordings compare byte for byte, which checks the whole pipeline from
+    // construction outward rather than just the replay of one run.
+    std::mt19937 rng{autoMatch ? 0x5eed0f21u : std::random_device{}()};
     // The current match's loadout — (character, weapon) roster indices per
     // player — kept outside Game so Rematch can rebuild the same pairing.
     int matchChars[2] = {0, 1};
@@ -915,6 +960,14 @@ int main() {
     auto localKeys = [&](int) -> const Keybinds& { return settings.keybinds; };
     bool escHeld = false;
 
+    // The determinism harness (--record / --replay). Both are inert unless the
+    // matching flag was passed. Replaying drives the sim from the log instead
+    // of from matchSources, and checks the sim's checksum every step.
+    Recorder recorder;
+    Replayer replayer;
+    bool desynced = false;
+    bool warnedLossy = false;
+
     // Fresh match from matchChars. Seeding the button latches from the live
     // state keeps the click that started the match from reading as an attack:
     // a held LMB is flagged so even its eventual release swings nothing.
@@ -935,6 +988,17 @@ int main() {
             if (slot >= 0) {
                 localInputs[slot].beginMatch(window, localKeys(slot));
             }
+        }
+        // A recording covers one match; starting another (or a rematch)
+        // replaces it, so what's on disk is always the match just played.
+        if (recordPath) {
+            MatchSetup setup;
+            for (int i = 0; i < 2; ++i) {
+                setup.chars[i] = matchChars[i];
+                setup.weapons[i] = matchWeapons[i];
+            }
+            setup.level = matchLevel;
+            recorder.open(recordPath, setup);
         }
     };
 
@@ -990,7 +1054,42 @@ int main() {
                 loadDone += loadSteps[loadStep].weight;
                 ++loadStep;
             } else if (loadShown > 0.995f) {
-                state = AppState::Menu;
+                // --replay skips the front end: the log names the match, so
+                // there is nothing left to pick.
+                if (!replayPath && autoMatch) {
+                    // Nobody picks, so the pairing is fixed. Hanami rather
+                    // than Dojo: carved ground, solid stones and water mean
+                    // strictly more physics for two runs to disagree about.
+                    matchLevel = kLevelCount > 1 ? 1 : 0;
+                    startMatch();
+                } else if (!replayPath) {
+                    state = AppState::Menu;
+                } else if (!replayer.open(replayPath)) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
+                } else {
+                    const MatchSetup& setup = replayer.setup();
+                    // The roster indices come off disk, so they get checked
+                    // before they reach a table lookup.
+                    bool sane = setup.level >= 0 && setup.level < kLevelCount;
+                    for (int i = 0; i < 2; ++i) {
+                        sane = sane && setup.chars[i] >= 0 &&
+                               setup.chars[i] < kCharacterCount &&
+                               setup.weapons[i] >= 0 && setup.weapons[i] < kWeaponCount;
+                    }
+                    if (!sane) {
+                        std::fprintf(stderr,
+                                     "replay: setup names a fighter, blade or "
+                                     "battleground this build does not have\n");
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    } else {
+                        for (int i = 0; i < 2; ++i) {
+                            matchChars[i] = setup.chars[i];
+                            matchWeapons[i] = setup.weapons[i];
+                        }
+                        matchLevel = setup.level;
+                        startMatch();
+                    }
+                }
             }
             continue; // nothing below this exists yet
         }
@@ -1025,7 +1124,28 @@ int main() {
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
             while (accumulator >= kFixedDt) {
-                PlayerInput inputs[2] = {stepInput(0), stepInput(1)};
+                PlayerInput inputs[2];
+                std::uint32_t expected = 0;
+                bool checked = false;
+                if (replayer.active()) {
+                    // Replaying: the log is the only input source, and every
+                    // step is checked against the state the recording had.
+                    if (!replayer.next(inputs, expected)) {
+                        if (!desynced) {
+                            std::fprintf(stderr,
+                                         "replay: %lld steps replayed, no desync\n",
+                                         static_cast<long long>(replayer.frame()));
+                        }
+                        replayer.close();
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                        break;
+                    }
+                    checked = true;
+                } else {
+                    inputs[0] = stepInput(0);
+                    inputs[1] = stepInput(1);
+                }
+
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
                 for (int i = 0; i < 2; ++i) {
@@ -1034,6 +1154,41 @@ int main() {
                         localInputs[slot].consumeAttack();
                     }
                 }
+
+                // Only walked when the harness is on; a normal match never
+                // pays for the hash.
+                if (checked || recorder.active()) {
+                    // A source emitting something the wire format can't carry
+                    // would have the sim play one input and the log keep
+                    // another — a desync with no cause anywhere near where it
+                    // surfaces. Said once, at the step that does it.
+                    for (int i = 0; i < 2 && !warnedLossy; ++i) {
+                        if (!(unpackInput(packInput(inputs[i])) == inputs[i])) {
+                            warnedLossy = true;
+                            std::fprintf(stderr,
+                                         "replay: player %d's input does not survive "
+                                         "packInput — quantize it at the source "
+                                         "(quantizeAxis, input.hpp)\n",
+                                         i);
+                        }
+                    }
+                    std::uint32_t sum = game->checksum();
+                    if (checked && sum != expected && !desynced) {
+                        // First mismatch only. Everything after it is
+                        // downstream of the same divergence and would bury it.
+                        desynced = true;
+                        dumpDesync(*game, replayer.frame(), expected, sum);
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    }
+                    recorder.step(packInput(inputs[0]), packInput(inputs[1]), sum);
+                }
+            }
+
+            // --auto is hands-off: once the match is decided and the debris
+            // has had a moment to settle, leave. The recorder's destructor
+            // reports the step count on the way out.
+            if (autoMatch && game->over() && game->overTime() > 2.0f) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1079,7 +1234,9 @@ int main() {
             } else {
                 drawBloodBars(*game);
                 // Give the killing blow a beat to land before the overlay.
-                if (game->over() && game->overTime() > 1.2f) {
+                // Not while replaying: Rematch would rebuild the Game out from
+                // under the log and report a desync that is purely the click's.
+                if (!replayer.active() && game->over() && game->overTime() > 1.2f) {
                     overAction = drawWinOverlay(*game);
                 }
             }

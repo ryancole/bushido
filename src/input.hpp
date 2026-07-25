@@ -3,7 +3,31 @@
 #include "config.hpp" // Keybinds
 #include "game.hpp"   // PlayerInput, AttackKind
 
+#include <cstdint>
+
 struct GLFWwindow;
+
+// A PlayerInput in ten bits. This is the replay record *and* the eventual
+// netplay wire format, defined once so a recorded match and a transmitted one
+// can never drift apart. move.x/move.y only ever take -1, 0 or +1 (readHeld
+// builds each from two opposed buttons), so two bits apiece is lossless — and
+// saying so here is what keeps a non-canonical float out of the input path,
+// where it would be a desync waiting to happen.
+//
+// Layout: [1:0] move.x + 1, [3:2] move.y + 1, [4] jump, [5] block,
+//         [6] crouch, [7] attack, [9:8] attackKind.
+std::uint16_t packInput(const PlayerInput& in);
+PlayerInput unpackInput(std::uint16_t bits);
+
+// Round a movement axis to one of the three states the wire format carries.
+//
+// This is a *contract on every input source*, not a detail of the packer. An
+// input that does not survive packInput unchanged is one the sim plays and a
+// recording — or a netplay peer — never sees: the source moved at 0.4 and
+// everyone else replayed it at 1. So a source that naturally thinks in
+// continuous values (the bot steering into a depth lane) quantizes here, at
+// the point it decides, rather than being silently rounded downstream.
+float quantizeAxis(float v);
 
 // Where a fighter's input comes from for the current match. The sim takes two
 // PlayerInputs and has no idea which is which (see Game::update), so a match is

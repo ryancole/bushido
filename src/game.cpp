@@ -11,6 +11,24 @@
 #include <utility>
 
 namespace {
+// FNV-1a, for Game::checksum. Floats go in as their bits: a determinism check
+// wants bit-exactness, and hashing the value would let 0.0f and -0.0f — or two
+// NaNs from different arithmetic — read as agreement.
+struct Hasher {
+    std::uint32_t h = 2166136261u;
+    void bytes(const void* p, std::size_t n) {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (std::size_t i = 0; i < n; ++i) {
+            h = (h ^ b[i]) * 16777619u;
+        }
+    }
+    void f(float v) { bytes(&v, sizeof v); }
+    void u(std::uint32_t v) { bytes(&v, sizeof v); }
+    void i(int v) { u(static_cast<std::uint32_t>(v)); }
+    void b(bool v) { u(v ? 1u : 0u); }
+    void v3(const glm::vec3& v) { f(v.x); f(v.y); f(v.z); }
+};
+
 // Fighter tuning that used to live here (move/jump speed, swing timings,
 // reach, knockback) is now per-character: see character.cpp's roster.
 constexpr float kGravity = 28.0f;         // m/s^2
@@ -461,7 +479,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         d.pos += d.vel * dt;
         d.life -= dt;
         if (d.pos.y <= d.size * 0.5f && d.vel.y < 0.0f) {
-            addBloodMark({d.pos.x, 0.0f, d.pos.z}, 0.05f + 0.10f * frand());
+            addBloodMark({d.pos.x, 0.0f, d.pos.z}, 0.05f + 0.10f * cfrand());
             d = m_blood.back();
             m_blood.pop_back();
         } else if (d.life <= 0.0f) {
@@ -687,11 +705,11 @@ glm::mat4 Game::severedPieceTransform(const SeveredPiece& piece) const {
 void Game::spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count,
                       float speed) {
     for (int n = 0; n < count && m_blood.size() < kMaxBloodParticles; ++n) {
-        glm::vec3 spread{frand() - 0.5f, frand() - 0.35f, frand() - 0.5f};
-        glm::vec3 vel = dir * (speed * (0.4f + 0.8f * frand())) + spread * (1.1f * speed);
+        glm::vec3 spread{cfrand() - 0.5f, cfrand() - 0.35f, cfrand() - 0.5f};
+        glm::vec3 vel = dir * (speed * (0.4f + 0.8f * cfrand())) + spread * (1.1f * speed);
         m_blood.push_back({pos + spread * 0.2f, vel,
-                           kBloodLife * (0.6f + 0.5f * frand()),
-                           0.04f + 0.05f * frand()});
+                           kBloodLife * (0.6f + 0.5f * cfrand()),
+                           0.04f + 0.05f * cfrand()});
     }
 }
 
@@ -701,10 +719,10 @@ void Game::addBloodMark(const glm::vec3& pos, float radius) {
     }
     // Each mark gets its own tiny y offset so overlapping splats don't
     // z-fight; all stay below the blob shadows (y = 0.03).
-    BloodMark mark{{pos.x, 0.006f + 0.010f * frand(), pos.z},
+    BloodMark mark{{pos.x, 0.006f + 0.010f * cfrand(), pos.z},
                    radius,
-                   frand() * 6.2831853f,
-                   0.55f + 0.35f * frand()};
+                   cfrand() * 6.2831853f,
+                   0.55f + 0.35f * cfrand()};
     if (m_bloodMarks.size() < kMaxBloodMarks) {
         m_bloodMarks.push_back(mark);
     } else {
@@ -713,7 +731,67 @@ void Game::addBloodMark(const glm::vec3& pos, float radius) {
     }
 }
 
+std::uint32_t Game::checksum() const {
+    Hasher hs;
+    for (const Player& p : m_players) {
+        hs.v3(p.pos);
+        hs.f(p.vy);
+        hs.b(p.grounded);
+        hs.f(p.facing);
+        hs.f(p.animPhase);
+        hs.f(p.moveAmount);
+        hs.i(static_cast<int>(p.attackState));
+        hs.i(static_cast<int>(p.attackKind));
+        hs.f(p.attackTimer);
+        hs.f(p.attackT);
+        hs.b(p.attackLanded);
+        hs.f(p.hitstun);
+        hs.b(p.blocking);
+        hs.b(p.crouching);
+        hs.f(p.crouchAmount);
+        hs.f(p.riposteTime);
+        hs.f(p.attackWindupScale);
+        hs.f(p.attackBuffer);
+        hs.i(static_cast<int>(p.bufferedKind));
+        hs.f(p.kbVel.x);
+        hs.f(p.kbVel.y);
+        for (bool s : p.severed) {
+            hs.b(s);
+        }
+        hs.f(p.blood);
+        hs.f(p.fallTilt);
+        hs.f(p.fallVel);
+        hs.f(p.fallSide);
+    }
+    hs.u(m_rng);
+    hs.u(m_cosmeticRng);
+    hs.i(m_winner);
+    hs.f(m_overTime);
+    // Debris is created only by severLimb, so two runs that agree up to here
+    // have the same pieces in the same order and the lists line up index for
+    // index. A piece drifting apart shows up here a long time before it can
+    // change a blood mark and drag the cosmetic rng with it.
+    std::vector<Physics::DebrisState> debris;
+    m_physics->debrisStates(debris);
+    hs.i(static_cast<int>(debris.size()));
+    for (const Physics::DebrisState& d : debris) {
+        hs.v3(d.pos);
+        hs.f(d.rot.x);
+        hs.f(d.rot.y);
+        hs.f(d.rot.z);
+        hs.f(d.rot.w);
+        hs.v3(d.vel);
+        hs.v3(d.angVel);
+    }
+    return hs.h;
+}
+
 float Game::frand() {
     m_rng = m_rng * 1664525u + 1013904223u;
     return static_cast<float>(m_rng >> 8) * (1.0f / 16777216.0f);
+}
+
+float Game::cfrand() {
+    m_cosmeticRng = m_cosmeticRng * 1664525u + 1013904223u;
+    return static_cast<float>(m_cosmeticRng >> 8) * (1.0f / 16777216.0f);
 }
