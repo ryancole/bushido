@@ -77,12 +77,13 @@ struct SelectScreen {
     int shownLevel = 0;
     int pickedCharacter = -1;
     int pickedWeapon = -1;
-    // Local versus runs this screen once per human. `player` is who is picking
-    // (0-based, titles only), `versus` puts their number on the titles, and
-    // `pickLevel` is false for the second of them — the first already chose the
-    // ground, so their last click is the blade and it starts the match.
+    // Who is picking and what for. `player` is 0-based and only reaches the
+    // titles (local versus runs this screen once per human); `mode` decides
+    // what the last click leads to, which is the one thing the hint line has
+    // to be honest about; `pickLevel` is false for whoever picks into a ground
+    // someone else already settled, making their blade the final click.
     int player = 0;
-    bool versus = false;
+    SetupMode mode = SetupMode::Solo;
     bool pickLevel = true;
 };
 
@@ -292,7 +293,11 @@ NetSetupResult drawNetSetup(NetScreen& s) {
         ImGui::PushFont(nullptr, 22.0f);
         ImGui::SetNextItemWidth(fieldW);
         ImGui::InputText("##field", buf, cap);
-        ImGui::SameLine(labelW);
+        // Next line, aligned under the field — not SameLine, which would put
+        // the button on top of the box the player is typing in. Both this and
+        // SameLine's offset are measured from the window position rather than
+        // the content start, so the same labelW lines them up.
+        ImGui::SetCursorPosX(labelW);
         const bool clicked = ImGui::Button(button, {fieldW, 0.0f});
         ImGui::PopFont();
         ImGui::PopID();
@@ -687,7 +692,9 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                         : weaponStage ? "CHOOSE YOUR BLADE"
                                       : "CHOOSE YOUR FIGHTER";
     ImGui::PushFont(nullptr, 50.0f);
-    if (s.versus) {
+    if (s.mode == SetupMode::LocalVersus) {
+        // Only local versus needs the number: it is the one mode where two
+        // people take turns at the same screen.
         ImGui::Text("PLAYER %d - %s", s.player + 1, stage);
     } else {
         ImGui::TextUnformatted(stage);
@@ -811,13 +818,23 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::Dummy({0.0f, 2.0f});
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextUnformatted(
-        levelStage ? (s.versus ? "Click a battleground to hand over to player 2"
-                               : "Click a battleground to begin - your opponent "
-                                 "is drawn at random")
-        : weaponStage ? (s.pickLevel ? "Click a blade to choose the battleground"
-                                     : "Click a blade to enter the arena")
-                      : "Click a fighter to choose their blade");
+    // What the next click actually does, which differs per mode — a netplay
+    // host's opponent is not drawn at random, they are a person still picking.
+    const char* hint;
+    if (levelStage) {
+        hint = s.mode == SetupMode::LocalVersus
+                   ? "Click a battleground to hand over to player 2"
+               : s.mode == SetupMode::NetHost
+                   ? "Click a battleground, then wait for your opponent"
+                   : "Click a battleground to begin - your opponent is drawn at random";
+    } else if (weaponStage) {
+        hint = s.pickLevel ? "Click a blade to choose the battleground"
+               : s.mode == SetupMode::NetClient ? "Click a blade to join the host"
+                                                : "Click a blade to enter the arena";
+    } else {
+        hint = "Click a fighter to choose their blade";
+    }
+    ImGui::TextUnformatted(hint);
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -1213,7 +1230,7 @@ int main(int argc, char** argv) {
         setupMode = mode;
         selectingPlayer = player;
         select = SelectScreen{};
-        select.versus = mode == SetupMode::LocalVersus;
+        select.mode = mode;
         select.player = player;
         select.pickLevel = chooseLevel;
     };

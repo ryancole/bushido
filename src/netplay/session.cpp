@@ -103,9 +103,19 @@ void Session::pump(float dt) {
     }
     receiveAll();
 
+    // A host still in the handshake is *advertising*, not waiting on anyone in
+    // particular, so it waits as long as the player leaves it up — timing that
+    // out would mean a lobby that quietly dies while you walk to the other
+    // machine. Everyone else has someone specific they expect to hear from: a
+    // client is talking to an address that may be wrong, and a running match
+    // has a peer that was there a moment ago.
     m_sinceHeard += dt;
-    if (m_sinceHeard > kTimeout) {
-        setState(State::Lost, "the opponent stopped responding");
+    const bool expectingSomeone =
+        m_state == State::Running || m_role == Role::Client;
+    if (expectingSomeone && m_sinceHeard > kTimeout) {
+        setState(State::Lost, m_state == State::Running
+                                  ? "the opponent stopped responding"
+                                  : "could not reach the host");
         return;
     }
 
