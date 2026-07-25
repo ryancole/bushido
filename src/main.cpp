@@ -1114,7 +1114,9 @@ int main(int argc, char** argv) {
     // LAN or a forwarded port, no NAT traversal:
     //   --host <port>          pick a match as usual, then wait for an opponent
     //   --join <host:port>     skip the menus, take the match the host sends
-    //   --steam                play over Steam's relay instead of direct IP
+    // Steam's relay is the default when it is available; these force the issue:
+    //   --steam                fail rather than quietly fall back to direct IP
+    //   --no-steam             direct IP even where Steam would work
     //   --netsim <l[,j[,loss]]>  imitate a worse link (ms, ms, percent)
     //   --delay <frames>       pin the input delay; default is to measure it
     // --auto is what makes recording scriptable: nobody has to click through a
@@ -1128,7 +1130,8 @@ int main(int argc, char** argv) {
     bool netHost = false;
     std::uint16_t hostPort = 0;
     bool netSim = false;
-    bool steamMode = false;
+    bool steamForced = false;  // --steam: fail rather than fall back
+    bool steamRefused = false; // --no-steam: direct IP even if Steam is there
     SimulatedLink::Conditions simConditions;
     int inputDelay = 0; // 0 = measure the link and choose; --delay pins it
     for (int i = 1; i < argc; ++i) {
@@ -1159,7 +1162,9 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--join") == 0) {
             joinTarget = argv[++i];
         } else if (std::strcmp(argv[i], "--steam") == 0) {
-            steamMode = true;
+            steamForced = true;
+        } else if (std::strcmp(argv[i], "--no-steam") == 0) {
+            steamRefused = true;
         } else if (std::strcmp(argv[i], "--netsim") == 0) {
             if (!parseConditions(argv[++i], simConditions)) {
                 std::fprintf(stderr, "--netsim wants latencyMs[,jitterMs[,loss%%]], "
@@ -1204,8 +1209,9 @@ int main(int argc, char** argv) {
     std::string joinHost;
     std::uint16_t joinPort = 0;
     // Under --steam the target is a person, not an endpoint, so there is
-    // nothing here to resolve.
-    if (joinTarget && !steamMode && !parseEndpoint(joinTarget, joinHost, joinPort)) {
+    // nothing here to resolve. Without it, --join means direct IP whether or
+    // not Steam is available, so the address has to parse.
+    if (joinTarget && !steamForced && !parseEndpoint(joinTarget, joinHost, joinPort)) {
         std::fprintf(stderr, "--join wants host:port, e.g. 192.168.1.20:7777\n");
         return 1;
     }
@@ -1330,13 +1336,36 @@ int main(int argc, char** argv) {
 
     UdpTransport transport;
     SteamTransport steamTransport;
-    // --steam swaps direct IP for Steam's relay. Opt-in rather than the
-    // default because it cannot be tested from one machine — one Steam client
-    // is one person, so two peers here would both be you.
-    if (steamMode && !steamTransport.start()) {
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1; // it said why
+    // Steam's relay is the default now that it has carried a real match: it
+    // needs no port forwarded and addresses a person rather than a machine.
+    // Three things fall back to direct IP — --no-steam, a build without the
+    // SDK, or a Steam client that is not running — and none of them is an
+    // error. Giving --host or --join *without* --steam also means direct IP,
+    // since a port and an address are not things Steam has.
+    const bool wantDirect =
+        steamRefused || ((netHost || joinTarget) && !steamForced);
+    bool steamMode = false;
+    if (!wantDirect) {
+        if (!SteamTransport::available()) {
+            if (steamForced) {
+                std::fprintf(stderr, "--steam, but this build has no Steam support: "
+                                     "configure with -DSTEAM_SDK_DIR=<sdk path>\n");
+                glfwDestroyWindow(window);
+                glfwTerminate();
+                return 1;
+            }
+        } else if (steamTransport.start()) {
+            steamMode = true;
+        } else if (steamForced) {
+            std::fprintf(stderr, "--steam, but Steam did not answer: is the client "
+                                 "running, and is steam_appid.txt in the working "
+                                 "directory?\n");
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        } else {
+            std::fprintf(stderr, "steam: not running - Online will use direct IP\n");
+        }
     }
     Transport& baseLink =
         steamMode ? static_cast<Transport&>(steamTransport) : transport;

@@ -70,9 +70,10 @@ bool SteamTransport::start() {
     if (m_impl->up) {
         return true;
     }
+    // Silent on failure: Steam is tried on every launch now, so "not running"
+    // is an ordinary answer rather than an error. The caller decides whether
+    // it was worth complaining about.
     if (!SteamAPI_Init()) {
-        std::fprintf(stderr, "steam: could not reach Steam - is the client running, "
-                             "and is there a steam_appid.txt beside the exe?\n");
         return false;
     }
     m_impl->hooks = std::make_unique<Impl::Hooks>(m_impl.get());
@@ -165,11 +166,7 @@ SteamTransport::~SteamTransport() = default;
 
 bool SteamTransport::available() { return false; }
 
-bool SteamTransport::start() {
-    std::fprintf(stderr, "steam: this build has no Steam support - configure with "
-                         "-DSTEAM_SDK_DIR=<path to the Steamworks sdk directory>\n");
-    return false;
-}
+bool SteamTransport::start() { return false; }
 
 bool SteamTransport::listen() { return false; }
 bool SteamTransport::connectTo(std::uint64_t) { return false; }
