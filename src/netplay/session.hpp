@@ -45,6 +45,10 @@ inline constexpr int kInputRedundancy = 12;
 inline constexpr int kMaxInputsPerPacket =
     kMaxInputDelay > kInputRedundancy ? kMaxInputDelay : kInputRedundancy;
 
+// Sentinel for "no timestamp to echo yet", so the first packets of a session
+// do not produce a nonsense round-trip sample.
+inline constexpr std::uint32_t kNoStamp = 0xffffffffu;
+
 class Session {
 public:
     enum class Role { Host, Client };
@@ -58,8 +62,11 @@ public:
     // client's pick rides in on Hello, the host answers with the whole thing —
     // so neither player has their fighter chosen for them, and both end up
     // holding the identical MatchSetup that Game is built from.
+    // `inputDelay` <= 0 measures the link and picks one; anything else pins it.
+    // `tickSeconds` is the sim's fixed step, which is what turns a measured
+    // round trip in milliseconds into a delay in frames.
     void start(Transport* transport, Role role, const MatchSetup& ownPick,
-               int inputDelay = kDefaultInputDelay);
+               int inputDelay, float tickSeconds);
     void stop();
 
     // Drains the socket and keeps the handshake going. Once per render frame.
@@ -101,6 +108,10 @@ public:
     std::int64_t frame() const { return m_frame; }
     std::int64_t stalls() const { return m_stalls; } // steps lost waiting, all match
     int inputDelay() const { return m_inputDelay; }
+    // Smoothed round trip in ms, and its mean deviation. Zero until the first
+    // echo comes back.
+    float rttMs() const { return m_rttMs; }
+    float rttJitterMs() const { return m_rttVarMs; }
     // One line for the UI — "waiting for an opponent", "desynced at frame N".
     const char* status() const { return m_status; }
     // Is there something the player should be told? True while handshaking,
@@ -117,6 +128,13 @@ private:
     void sendInputs();
     void sendHandshake();
     void setState(State s, const char* why);
+    // Raises the delay to `frames` by repeating the newest scheduled input
+    // into the gap. Only ever *raises* mid-match: lowering would mean unsending
+    // frames the peer may already hold, so an improving link waits for the
+    // next match to take the benefit while a degrading one is answered at once.
+    void widenDelay(int frames);
+    // What the measured link is asking for, in frames.
+    int targetDelay() const;
 
     Transport* m_transport = nullptr;
     Role m_role = Role::Host;
@@ -125,6 +143,16 @@ private:
     char m_status[96] = {};
 
     int m_inputDelay = kDefaultInputDelay;
+    bool m_adaptDelay = true;      // false once --delay pins it
+    float m_tickSeconds = 1.0f / 120.0f;
+    // Round-trip estimate. Every input packet carries our clock and echoes the
+    // last one we heard, so a sample needs no clock sync — just our own clock
+    // minus what came back. The echo also folds in the peer's send
+    // granularity, which is the delay that actually matters here.
+    float m_clockMs = 0.0f;
+    std::uint32_t m_peerStamp = kNoStamp; // their newest clock value, to echo back
+    float m_rttMs = 0.0f;
+    float m_rttVarMs = 0.0f;
     std::int64_t m_frame = 0;     // next frame to simulate
     std::int64_t m_localHead = 0; // next frame a local sample will be scheduled for
     std::int64_t m_stalls = 0;

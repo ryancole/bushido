@@ -1050,7 +1050,7 @@ int main(int argc, char** argv) {
     //   --host <port>          pick a match as usual, then wait for an opponent
     //   --join <host:port>     skip the menus, take the match the host sends
     //   --netsim <l[,j[,loss]]>  imitate a worse link (ms, ms, percent)
-    //   --delay <frames>       input delay, default kDefaultInputDelay
+    //   --delay <frames>       pin the input delay; default is to measure it
     // --auto is what makes recording scriptable: nobody has to click through a
     // select screen, and the bot supplies a whole match of hits, dismemberment
     // and debris against a player who never moves.
@@ -1063,7 +1063,7 @@ int main(int argc, char** argv) {
     std::uint16_t hostPort = 0;
     bool netSim = false;
     SimulatedLink::Conditions simConditions;
-    int inputDelay = kDefaultInputDelay;
+    int inputDelay = 0; // 0 = measure the link and choose; --delay pins it
     for (int i = 1; i < argc; ++i) {
         bool wantsArg = std::strcmp(argv[i], "--record") == 0 ||
                         std::strcmp(argv[i], "--replay") == 0 ||
@@ -1252,6 +1252,11 @@ int main(int argc, char** argv) {
     // Netplay. The transport is a plain UDP socket; the session is the
     // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless
     // --host or --join was passed.
+    // Declared here rather than beside the accumulator because the netplay
+    // session needs it too — it is what turns a round trip in milliseconds
+    // into an input delay in frames.
+    constexpr float kFixedDt = 1.0f / 120.0f;
+
     UdpTransport transport;
     // --netsim slips a deliberately worse link in front of the socket. The
     // session only ever sees a Transport, which is the point of the interface.
@@ -1290,10 +1295,9 @@ int main(int argc, char** argv) {
             mine.weapons[i] = matchWeapons[i];
         }
         mine.level = matchLevel;
-        session.start(netLink, role, mine, inputDelay);
+        session.start(netLink, role, mine, inputDelay, kFixedDt);
     };
 
-    constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();

@@ -1,5 +1,6 @@
 #include "netplay/session.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -64,12 +65,14 @@ struct Reader {
 } // namespace
 
 void Session::start(Transport* transport, Role role, const MatchSetup& ownPick,
-                    int inputDelay) {
+                    int inputDelay, float tickSeconds) {
     *this = Session{};
     m_transport = transport;
     m_role = role;
     m_setup = ownPick; // half filled in until the handshake merges the other half
-    m_inputDelay = inputDelay < 1 ? 1
+    m_tickSeconds = tickSeconds > 0.0f ? tickSeconds : 1.0f / 120.0f;
+    m_adaptDelay = inputDelay <= 0;
+    m_inputDelay = m_adaptDelay ? kDefaultInputDelay
                    : inputDelay > kMaxInputDelay ? kMaxInputDelay
                                                  : inputDelay;
 
@@ -96,11 +99,12 @@ void Session::stop() {
         const long long stalls = static_cast<long long>(m_totalStalls + m_stalls);
         std::fprintf(stderr,
                      "net: %lld frames simulated, %lld stalled steps (%.2f per frame), "
-                     "delay %d\n",
+                     "delay %d%s, rtt %.0f ms +/- %.0f\n",
                      frames, stalls,
                      frames > 0 ? static_cast<double>(stalls) / static_cast<double>(frames)
                                 : 0.0,
-                     m_inputDelay);
+                     m_inputDelay, m_adaptDelay ? " (adapted)" : " (pinned)", m_rttMs,
+                     m_rttVarMs);
         // Stalling more than about a quarter of the time means the link needs
         // more buffer than it was given, and the symptom — a match that runs
         // in slow motion — does not look like a network problem from inside
@@ -124,7 +128,14 @@ void Session::pump(float dt) {
     if (m_state == State::Idle || m_state == State::Desynced || m_state == State::Lost) {
         return;
     }
+    m_clockMs += dt * 1000.0f;
     receiveAll();
+
+    // A worse link is answered at once; a better one waits for the next match,
+    // since lowering the delay would mean unsending scheduled frames.
+    if (m_adaptDelay && m_state == State::Running) {
+        widenDelay(targetDelay());
+    }
 
     // A host still in the handshake is *advertising*, not waiting on anyone in
     // particular, so it waits as long as the player leaves it up — timing that
@@ -173,6 +184,11 @@ void Session::sendInputs() {
     w.u8(static_cast<std::uint8_t>(Msg::Inputs));
     w.u32(m_match);
     w.u8(m_wantRematch ? 1u : 0u);
+    // Our clock, and the newest of theirs we have seen. They echo ours back
+    // the same way, so each side can measure a round trip against its own
+    // clock alone — no synchronisation, no agreement on what time it is.
+    w.u32(static_cast<std::uint32_t>(m_clockMs));
+    w.u32(m_peerStamp);
     // The newest kInputRedundancy scheduled frames, oldest first. Repeating
     // them is the entire loss-recovery scheme.
     std::int64_t last = m_localHead - 1;
@@ -275,6 +291,8 @@ void Session::receiveAll() {
 
         std::uint32_t theirMatch = r.u32();
         std::uint8_t flags = r.u8();
+        std::uint32_t theirStamp = r.u32();
+        std::uint32_t echoed = r.u32();
         std::int64_t first = static_cast<std::int64_t>(r.u32());
         int count = r.u8();
         std::uint16_t bits[kMaxInputsPerPacket] = {};
@@ -290,6 +308,25 @@ void Session::receiveAll() {
             continue; // truncated; the next packet repeats all of it anyway
         }
         m_sinceHeard = 0.0f; // alive, whichever match they are on
+        m_peerStamp = theirStamp;
+
+        // Round trip: our own clock, minus the value of it they sent back.
+        // Smoothed the RTP way — a running mean plus a running mean deviation
+        // — because a single late packet should not move the delay, but a
+        // consistently worse link should.
+        if (echoed != kNoStamp) {
+            float sample = m_clockMs - static_cast<float>(echoed);
+            if (sample >= 0.0f && sample < 10000.0f) {
+                if (m_rttMs <= 0.0f) {
+                    m_rttMs = sample;
+                    m_rttVarMs = sample * 0.5f;
+                } else {
+                    float diff = sample - m_rttMs;
+                    m_rttMs += 0.10f * diff;
+                    m_rttVarMs += 0.10f * (std::fabs(diff) - m_rttVarMs);
+                }
+            }
+        }
 
         if (theirMatch == m_match + 1) {
             // They have already restarted, which they only do once they have
@@ -373,6 +410,45 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
     return true;
 }
 
+int Session::targetDelay() const {
+    if (m_rttMs <= 0.0f) {
+        return kDefaultInputDelay; // nothing measured yet
+    }
+    // Cover the round trip plus a couple of deviations, round up, and add one
+    // frame of slack. No more than that: the measurement already *includes*
+    // the send granularity, because the echo travels back through the peer's
+    // render loop — on loopback that alone reads as ~10 ms of round trip. An
+    // extra margin on top would be double-counting, and every frame of it is
+    // 8.3 ms of input lag charged to the player. These constants reproduce the
+    // delays that measured clean in the table in CLAUDE.md.
+    const float budgetMs = m_rttMs + 2.0f * m_rttVarMs;
+    const float frameMs = m_tickSeconds * 1000.0f;
+    int frames = static_cast<int>(budgetMs / frameMs) + 1 + 1;
+    if (frames < kDefaultInputDelay) frames = kDefaultInputDelay;
+    if (frames > kMaxInputDelay) frames = kMaxInputDelay;
+    return frames;
+}
+
+void Session::widenDelay(int frames) {
+    if (frames <= m_inputDelay || m_localHead <= 0) {
+        return;
+    }
+    if (frames > kMaxInputDelay) {
+        frames = kMaxInputDelay;
+    }
+    // Fill the new gap by repeating the newest scheduled input, which is what
+    // the player was doing anyway — the alternative, leaving holes, is the one
+    // thing the ring must never have.
+    const std::uint16_t held = m_local[(m_localHead - 1) % kRing];
+    while (m_localHead < m_frame + frames) {
+        m_local[m_localHead % kRing] = held;
+        ++m_localHead;
+    }
+    std::fprintf(stderr, "net: input delay %d -> %d frames (rtt %.0f ms +/- %.0f)\n",
+                 m_inputDelay, frames, m_rttMs, m_rttVarMs);
+    m_inputDelay = frames;
+}
+
 void Session::beginRematch() {
     // Everything about *this* match resets; everything about the connection —
     // transport, role, agreed setup, state — is kept. The match index moving
@@ -380,6 +456,11 @@ void Session::beginRematch() {
     ++m_match;
     m_totalFrames += m_frame;
     m_totalStalls += m_stalls;
+    if (m_adaptDelay) {
+        // The one point the delay may also come *down*: nothing is scheduled
+        // across a match boundary, so there is nothing to unsend.
+        m_inputDelay = targetDelay();
+    }
     m_frame = 0;
     m_stalls = 0;
     m_stalling = false;
