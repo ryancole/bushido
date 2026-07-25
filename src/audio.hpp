@@ -36,6 +36,15 @@ public:
     // every frame and transitions fall out of app-state changes.
     void playMusic(Music track);
 
+    // Mixer levels, 0..1, scaling everything this class plays. Both start at 1
+    // — the levels the effects and tracks were synthesized against — and the
+    // options screen drives them from the saved settings. Music applies at
+    // once (it rides *under* the crossfade, which is a separate fader, so
+    // dragging the slider mid-transition doesn't fight it); SFX applies to
+    // each effect as it's played.
+    void setMusicVolume(float volume);
+    void setSfxVolume(float volume);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
