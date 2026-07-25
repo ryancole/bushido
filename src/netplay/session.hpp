@@ -109,11 +109,17 @@ public:
                                                                     : Intent::None;
     }
 
-    // After a Reselect, each side picks again and submits its own half; the
-    // level is the host's to give. Both halves travel on every packet, so the
-    // merge needs no more handshaking than the intent did.
-    void submitLoadout(int character, int weapon, int level);
+    // After a Reselect, each side picks again and submits its own half. Both
+    // halves travel on every packet, so the merge needs no more handshaking
+    // than the intent did. `ownsLevel` says whether this peer's battleground
+    // is the one that counts — the host's on the opening handshake, and after
+    // that the *loser's*, which both sides work out from the same `winner()`.
+    void submitLoadout(int character, int weapon, int level, bool ownsLevel);
+    bool ownsLevel() const { return m_ownsLevel; }
     bool loadoutSubmitted() const { return m_loadoutReady; }
+    // How often a step attempt has recently found itself short a remote input.
+    // Smoothed, so the HUD reads the connection rather than the last frame.
+    float stallRate() const { return m_stallRate; }
     bool loadoutsExchanged() const { return m_loadoutReady && m_peerLoadoutReady; }
     // Rolls onto the next match: frame counter and input rings clear, and the
     // match index moves so packets still in flight from the finished match are
@@ -132,7 +138,11 @@ public:
     // Is there something the player should be told? True while handshaking,
     // stalled on a missing input, desynced, or dropped — i.e. exactly when the
     // sim is not advancing and they deserve to know why.
-    bool waiting() const { return m_state != State::Running || m_stalling; }
+    // Something the player needs told in words: handshaking, dropped, or
+    // desynced. A momentary stall is deliberately *not* in here — at a bad
+    // enough link that is most frames, and a banner flashing on and off would
+    // be worse than useless. The connection readout carries that instead.
+    bool waiting() const { return m_state != State::Running; }
 
 private:
     static constexpr int kRing = 256; // frames of history; drift never nears it
@@ -187,6 +197,8 @@ private:
     // Each side's half of the next match. The peer's is kept from every packet
     // rather than only from a "ready" one, so if they roll forward before their
     // ready flag reaches us we still hold the pick they rolled with.
+    bool m_ownsLevel = true; // host on the opening handshake, loser after that
+    float m_stallRate = 0.0f;
     bool m_loadoutReady = false;
     bool m_peerLoadoutReady = false;
     std::int32_t m_peerChar = 0;

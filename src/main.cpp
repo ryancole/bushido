@@ -825,17 +825,20 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::PushFont(nullptr, 17.0f);
     // What the next click actually does, which differs per mode — a netplay
     // host's opponent is not drawn at random, they are a person still picking.
+    const bool net =
+        s.mode == SetupMode::NetHost || s.mode == SetupMode::NetClient;
     const char* hint;
     if (levelStage) {
         hint = s.mode == SetupMode::LocalVersus
                    ? "Click a battleground to hand over to player 2"
-               : s.mode == SetupMode::NetHost
-                   ? "Click a battleground, then wait for your opponent"
-                   : "Click a battleground to begin - your opponent is drawn at random";
+               : net ? "Click a battleground, then wait for your opponent"
+                     : "Click a battleground to begin - your opponent is drawn at random";
     } else if (weaponStage) {
+        // A netplay peer that does not own the battleground finishes on the
+        // blade — either because it is joining, or because it won the last one.
         hint = s.pickLevel ? "Click a blade to choose the battleground"
-               : s.mode == SetupMode::NetClient ? "Click a blade to join the host"
-                                                : "Click a blade to enter the arena";
+               : net       ? "Click a blade, then wait for your opponent"
+                           : "Click a blade to enter the arena";
     } else {
         hint = "Click a fighter to choose their blade";
     }
@@ -976,6 +979,32 @@ void drawNetBanner(const Session& session) {
     dl->AddRectFilled({at.x - 18.0f, at.y - 9.0f}, {at.x + w + 18.0f, at.y + size + 9.0f},
                       IM_COL32(0, 0, 0, 150), 4.0f);
     dl->AddText(font, size, at, IM_COL32(232, 222, 204, 230), text);
+}
+
+// Connection readout, top centre between the blood bars. The numbers existed
+// before this but only in a line printed at exit, which is no use at all to
+// the person wondering mid-match why their swings feel late — a link short of
+// buffer shows up as the whole fight running thick, and nothing on screen
+// said so. Colour carries the verdict; the numbers say why.
+void drawNetStatus(const Session& session) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = 17.0f;
+    const float rate = session.stallRate();
+
+    char text[96];
+    std::snprintf(text, sizeof text, "%.0f ms   delay %df%s", session.rttMs(),
+                  session.inputDelay(), rate > 0.25f ? "   STALLING" : "");
+
+    ImU32 color = IM_COL32(232, 222, 204, 130);      // fine
+    if (rate > 0.25f) {
+        color = IM_COL32(214, 44, 44, 235);          // the match is being held up
+    } else if (rate > 0.05f) {
+        color = IM_COL32(224, 176, 72, 200);         // ragged but playable
+    }
+    const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
+    dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 24.0f}, color, text);
 }
 
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
@@ -1285,6 +1314,8 @@ int main(int argc, char** argv) {
     // rather than setting one up, which is the difference between submitting a
     // loadout over the wire and opening a fresh handshake.
     bool netReselect = false;
+    // Whether this peer's battleground pick is the one that counts next match.
+    bool netOwnsLevel = false;
     // Opens one pass of the select screen. `chooseLevel` is false for whoever
     // picks second into a ground someone else already settled: local versus's
     // player 2, and a netplay client, whose host owns the battleground. Their
@@ -1549,20 +1580,24 @@ int main(int argc, char** argv) {
                 startMatch();
             } else if (agreed == Session::Intent::Reselect) {
                 netReselect = true;
+                // The loser names the next battleground. Both peers work that
+                // out from the same winner(), so they agree without a word
+                // about it, and it stops the host owning the ground forever.
+                const int mine = session.localSlot();
+                netOwnsLevel =
+                    game->winner() >= 0 ? game->winner() != mine : mine == 0;
                 if (autoMatch) {
                     // Nobody at this keyboard to pick again: keep the fighter
                     // and let the human on the other end change theirs.
-                    const int mine = session.localSlot();
                     session.submitLoadout(matchChars[mine], matchWeapons[mine],
-                                          matchLevel);
+                                          matchLevel, netOwnsLevel);
                     state = AppState::NetWait;
                 } else {
                     // Back to the select screen with the connection intact —
                     // the new picks travel over the live session, so nobody
                     // re-hosts or re-joins to swap a sword.
-                    const bool hosting = session.localSlot() == 0;
-                    beginSelect(hosting ? SetupMode::NetHost : SetupMode::NetClient,
-                                hosting ? 0 : 1, hosting);
+                    beginSelect(mine == 0 ? SetupMode::NetHost : SetupMode::NetClient,
+                                mine, netOwnsLevel);
                     state = AppState::CharacterSelect;
                 }
             }
@@ -1751,8 +1786,11 @@ int main(int argc, char** argv) {
                 drawNetBanner(session); // the only thing on screen before a match
             } else {
                 drawBloodBars(*game);
-                if (session.active() && session.waiting()) {
-                    drawNetBanner(session);
+                if (session.active()) {
+                    drawNetStatus(session);
+                    if (session.waiting()) {
+                        drawNetBanner(session);
+                    }
                 }
                 // Give the killing blow a beat to land before the overlay.
                 // Not while replaying: Rematch would rebuild the Game out from
@@ -1869,7 +1907,8 @@ int main(int argc, char** argv) {
                 // Re-picking mid-session: the connection is already up, so the
                 // pick goes straight down it rather than through a handshake.
                 session.submitLoadout(matchChars[selectingPlayer],
-                                      matchWeapons[selectingPlayer], matchLevel);
+                                      matchWeapons[selectingPlayer], matchLevel,
+                                      netOwnsLevel);
                 state = AppState::NetWait;
             } else {
                 // Netplay: this half of the match goes to the session, and the

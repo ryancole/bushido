@@ -72,6 +72,7 @@ void Session::start(Transport* transport, Role role, const MatchSetup& ownPick,
     m_setup = ownPick; // half filled in until the handshake merges the other half
     m_tickSeconds = tickSeconds > 0.0f ? tickSeconds : 1.0f / 120.0f;
     m_adaptDelay = inputDelay <= 0;
+    m_ownsLevel = role == Role::Host; // until a match has been lost by someone
     m_inputDelay = m_adaptDelay ? kDefaultInputDelay
                    : inputDelay > kMaxInputDelay ? kMaxInputDelay
                                                  : inputDelay;
@@ -403,6 +404,7 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
     }
     if (!m_remoteHas[m_frame % kRing]) {
         ++m_stalls;
+        m_stallRate += 0.02f * (1.0f - m_stallRate);
         if (!m_stalling) {
             m_stalling = true;
             setState(State::Running, "waiting for the opponent");
@@ -410,6 +412,7 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
         return false;
     }
 
+    m_stallRate += 0.02f * (0.0f - m_stallRate);
     const int mine = localSlot();
     out[mine] = unpackInput(m_local[m_frame % kRing]);
     out[1 - mine] = unpackInput(m_remote[m_frame % kRing]);
@@ -430,12 +433,13 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
     return true;
 }
 
-void Session::submitLoadout(int character, int weapon, int level) {
+void Session::submitLoadout(int character, int weapon, int level, bool ownsLevel) {
     const int mine = localSlot();
     m_setup.chars[mine] = character;
     m_setup.weapons[mine] = weapon;
-    if (m_role == Role::Host) {
-        m_setup.level = level; // the ground is the host's to give
+    m_ownsLevel = ownsLevel;
+    if (ownsLevel) {
+        m_setup.level = level;
     }
     m_loadoutReady = true;
 }
@@ -499,8 +503,8 @@ void Session::beginRematch() {
     const int theirs = 1 - localSlot();
     m_setup.chars[theirs] = m_peerChar;
     m_setup.weapons[theirs] = m_peerWeapon;
-    if (m_role == Role::Client) {
-        m_setup.level = m_peerLevel; // the host owns the ground
+    if (!m_ownsLevel) {
+        m_setup.level = m_peerLevel; // theirs was the pick that counted
     }
     m_intent = Intent::None;
     m_peerIntent = Intent::None;
