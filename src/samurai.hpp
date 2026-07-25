@@ -16,6 +16,7 @@ struct SamuraiPose {
     bool grounded = true;
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery
+    int attackKind = 0;      // mirrors game AttackKind: 0 light, 1 heavy, 2 jab
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
     // Shoulder-to-tip length of the drawn katana, matching the fighter's
     // resolved reach (character + weapon) so what connects is what the

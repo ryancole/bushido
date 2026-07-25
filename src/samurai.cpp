@@ -18,14 +18,19 @@ const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 
 // Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up).
-// Windup raises the blade overhead, active chops it down in front, recovery
-// settles back toward rest (stopping short so the blade never pierces the
-// ground before it disappears).
-float swordArmAngle(int attackState, float t) {
+// Windup raises the blade, active carries it through the attack's arc,
+// recovery settles back toward rest (stopping short so the blade never
+// pierces the ground before it disappears). The Active-phase angles must
+// match game.cpp's kAttackTuning so the cut lands where the blade is drawn:
+// light chops overhead-to-front, heavy from further past overhead, and the
+// jab snaps a short arc to horizontal — a forward thrust.
+float swordArmAngle(int attackState, int attackKind, float t) {
+    constexpr float kStart[3] = {2.60f, 2.95f, 1.20f}; // light, heavy, jab
+    constexpr float kEnd[3] = {0.55f, 0.45f, 1.55f};
     switch (attackState) {
-        case 1: return glm::mix(0.35f, 2.60f, t * t * (3.0f - 2.0f * t));
-        case 2: return glm::mix(2.60f, 0.55f, t);
-        case 3: return glm::mix(0.55f, 0.35f, t);
+        case 1: return glm::mix(0.35f, kStart[attackKind], t * t * (3.0f - 2.0f * t));
+        case 2: return glm::mix(kStart[attackKind], kEnd[attackKind], t);
+        case 3: return glm::mix(kEnd[attackKind], 0.35f, t);
         default: return 0.0f;
     }
 }
@@ -97,10 +102,14 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     float bob = 0.015f * std::sin(pose.time * 2.2f) +
                 0.035f * pose.moveAmount * std::fabs(std::sin(pose.walkPhase));
     float lean = -0.12f * pose.moveAmount;
+    // Rear back through the windup, drive in through the strike: the heavy
+    // exaggerates both, the jab barely coils and lunges into the thrust.
+    constexpr float kRearBack[3] = {0.12f, 0.20f, 0.05f}; // light, heavy, jab
+    constexpr float kDriveIn[3] = {0.22f, 0.30f, 0.28f};
     if (pose.attackState == 1) {
-        lean += 0.12f * pose.attackT; // rear back through the windup
+        lean += kRearBack[pose.attackKind] * pose.attackT;
     } else if (pose.attackState == 2) {
-        lean -= 0.22f * pose.attackT; // drive into the chop
+        lean -= kDriveIn[pose.attackKind] * pose.attackT;
     }
     glm::mat4 upper = glm::translate(glm::mat4(1.0f), {0.0f, bob, 0.0f}) *
                       pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
@@ -123,7 +132,7 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         bool swordArm = s == swordSide && pose.attackState != 0;
         float swing;
         if (swordArm) {
-            swing = swordArmAngle(pose.attackState, pose.attackT);
+            swing = swordArmAngle(pose.attackState, pose.attackKind, pose.attackT);
         } else if (pose.grounded) {
             swing = std::sin(pose.walkPhase + (s > 0.0f ? pi : 0.0f)) * 0.45f * pose.moveAmount;
         } else {

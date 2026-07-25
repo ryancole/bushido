@@ -81,6 +81,16 @@ PlayerInput Bot::think(const Game& game, float dt) {
     if (m_attackDelay <= 0.0f && self.attackState == AttackState::None &&
         adx < st.reach + 0.25f && std::abs(dz) < kDepthAligned) {
         in.attack = true;
+        // Pick the blow: mostly the standard cut. The heavy's long windup
+        // only commits when the foe can't answer (hitstun or downed) — plus
+        // the rare greedy read — and the jab is the fast answer in close.
+        const bool foeHelpless = foe.hitstun > 0.0f || foe.downed();
+        const float roll = frand();
+        if (roll < (foeHelpless ? 0.45f : 0.08f)) {
+            in.attackKind = AttackKind::Heavy;
+        } else if (adx < st.reach * 0.65f && frand() < 0.45f) {
+            in.attackKind = AttackKind::Jab;
+        }
         m_attackDelay = 0.35f + 0.75f * frand();
     }
 
