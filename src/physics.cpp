@@ -7,8 +7,10 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -149,14 +151,17 @@ struct Physics::Impl {
     bool prone[2] = {false, false};
     std::vector<JPH::BodyID> debris;
     DebrisContactListener contactListener;
+    Physics::Water water;
 };
 
-Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB,
-                 const std::vector<StaticBox>& staticBoxes)
+Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
+                 const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes,
+                 const std::vector<StaticBox>& groundBoxes, const Water& water)
     : m_gravity(gravity) {
     ensureJoltInitialized();
     m_impl = std::make_unique<Impl>();
     Impl& im = *m_impl;
+    im.water = water;
 
     im.jobSystem = std::make_unique<JPH::JobSystemThreadPool>(
         JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
@@ -179,13 +184,23 @@ Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB
         bodies.CreateAndAddBody(settings, JPH::EActivation::DontActivate);
     };
 
-    // Ground slab (top surface at y = 0) and four arena walls whose inner
-    // faces sit at the arena bounds, replacing the old position clamp.
+    // Ground (top surface at y = 0) and four arena walls whose inner faces
+    // sit at the arena bounds, replacing the old position clamp. The ground
+    // is one flat slab unless the level hands in its own boxes (Hanami's
+    // banks + carved stream bed).
     constexpr float kWall = 0.5f; // wall/ground half thickness
     constexpr float kWallHalfHeight = 20.0f;
-    const float hw = Game::kArenaHalfWidth;
+    const float hw = arenaHalfWidth;
     const float hd = Game::kArenaHalfDepth;
-    addStaticBox({hw + 2.0f * kWall, kWall, hd + 2.0f * kWall}, {0.0f, -kWall, 0.0f});
+    if (groundBoxes.empty()) {
+        addStaticBox({hw + 2.0f * kWall, kWall, hd + 2.0f * kWall},
+                     {0.0f, -kWall, 0.0f});
+    } else {
+        for (const StaticBox& g : groundBoxes) {
+            addStaticBox({g.halfExtent.x, g.halfExtent.y, g.halfExtent.z},
+                         {g.center.x, g.center.y, g.center.z});
+        }
+    }
     addStaticBox({kWall, kWallHalfHeight, hd + 2.0f * kWall},
                  {hw + kWall, kWallHalfHeight, 0.0f});
     addStaticBox({kWall, kWallHalfHeight, hd + 2.0f * kWall},
@@ -276,9 +291,40 @@ void Physics::setCharacterProne(int i, bool prone) {
 }
 
 void Physics::step(float dt) {
-    m_impl->contactListener.clear();
-    m_impl->physicsSystem.Update(dt, 1, &m_impl->tempAllocator,
-                                 m_impl->jobSystem.get());
+    Impl& im = *m_impl;
+
+    // Water: float any debris that has drifted into the volume. Buoyancy
+    // against the surface plane makes a piece bob ~2/3 submerged; the drag
+    // terms pull its velocity toward the current's, which is what actually
+    // carries it downstream. Pieces are re-activated while in the water so a
+    // settled piece can't sleep through the current.
+    if (im.water.max.x > im.water.min.x) {
+        constexpr float kBuoyancy = 1.6f;    // fluid/body density ratio; >1 floats
+        constexpr float kLinearDrag = 0.6f;
+        constexpr float kAngularDrag = 0.3f;
+        JPH::BodyInterface& bodies = im.physicsSystem.GetBodyInterface();
+        for (const JPH::BodyID& id : im.debris) {
+            JPH::RVec3 pos = bodies.GetPosition(id);
+            if (pos.GetX() < im.water.min.x || pos.GetX() > im.water.max.x ||
+                pos.GetZ() < im.water.min.z || pos.GetZ() > im.water.max.z ||
+                pos.GetY() > im.water.max.y + 0.3f) {
+                continue;
+            }
+            bodies.ActivateBody(id);
+            JPH::BodyLockWrite lock(im.physicsSystem.GetBodyLockInterface(), id);
+            if (!lock.Succeeded()) {
+                continue;
+            }
+            lock.GetBody().ApplyBuoyancyImpulse(
+                JPH::RVec3(pos.GetX(), im.water.max.y, pos.GetZ()),
+                JPH::Vec3::sAxisY(), kBuoyancy, kLinearDrag, kAngularDrag,
+                {im.water.current.x, im.water.current.y, im.water.current.z},
+                JPH::Vec3(0.0f, -m_gravity, 0.0f), dt);
+        }
+    }
+
+    im.contactListener.clear();
+    im.physicsSystem.Update(dt, 1, &im.tempAllocator, im.jobSystem.get());
 }
 
 const std::vector<Physics::DebrisImpact>& Physics::debrisImpacts() const {

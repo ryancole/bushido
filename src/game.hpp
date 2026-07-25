@@ -161,10 +161,20 @@ public:
     const std::vector<SoundCue>& soundCues() const { return m_soundCues; }
     void clearSoundCues() { m_soundCues.clear(); }
 
+    // Baseline arena bounds. Depth is shared by every level; width is only
+    // the default — each level authors its own (LevelDef::arenaHalfWidth),
+    // baked into this match as arenaHalfWidth().
     static constexpr float kArenaHalfWidth = 12.0f;
     static constexpr float kArenaHalfDepth = 5.0f;
+    float arenaHalfWidth() const { return m_arenaHalfWidth; }
 
 private:
+    // Inside the level's water volume (xz)? Blood never marks the floor
+    // there — the moving water carries it away.
+    bool inWater(float x, float z) const {
+        return m_hasWater && x >= m_waterMinXZ.x && x <= m_waterMaxXZ.x &&
+               z >= m_waterMinXZ.y && z <= m_waterMaxXZ.y;
+    }
     void severLimb(int victim, Limb limb, const glm::vec2& impulseDir);
     void collapse(Player& p); // death: cancel the swing, start the body's fall
     void spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count, float speed);
@@ -181,6 +191,12 @@ private:
     std::vector<BloodMark> m_bloodMarks;
     std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
     int m_level = 0;        // battleground roster index (scenery + obstacles)
+    float m_arenaHalfWidth = kArenaHalfWidth; // this match's playable half width
+    // The level's water volume footprint (xz), mirrored from level.hpp so
+    // blood marks can be suppressed in the stream; Physics holds the rest.
+    bool m_hasWater = false;
+    glm::vec2 m_waterMinXZ{0.0f};
+    glm::vec2 m_waterMaxXZ{0.0f};
     int m_winner = -1;      // decided once; a post-match death can't flip it
     float m_overTime = 0.0f;
     std::uint32_t m_rng = 0x51ce00d5u;
