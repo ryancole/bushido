@@ -114,6 +114,7 @@ std::uint64_t SteamTransport::selfId() const {
     return m_impl->up ? SteamUser()->GetSteamID().ConvertToUint64() : 0ull;
 }
 
+
 void SteamTransport::pump() {
     if (m_impl->up) {
         SteamAPI_RunCallbacks();

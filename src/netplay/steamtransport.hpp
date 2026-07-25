@@ -39,6 +39,15 @@ public:
     // Address a specific person. The host's SteamID is what gets shared.
     bool connectTo(std::uint64_t peerSteamId);
     // This machine's SteamID, which is what a host reads out to a friend.
+    //
+    // There is no local loopback to be had here, and both ways of trying were
+    // measured rather than assumed. A process messaging its *own* SteamID
+    // makes Steam assert (csteamnetworkingmessages.cpp:233) and drop the
+    // session; an IP identity is refused outright ("Bad FakeIP type", result
+    // 5003), because ISteamNetworkingMessages is SteamID-only and IP
+    // addressing belongs to ISteamNetworkingSockets. Testing through *that*
+    // would exercise an API this file does not use. Two machines and two
+    // accounts is the only honest test.
     std::uint64_t selfId() const;
 
     // Steam's callbacks only fire from here; call once per frame.
