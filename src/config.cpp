@@ -173,6 +173,25 @@ Keybinds defaultKeybinds() {
     return k;
 }
 
+Keybinds defaultKeybinds2() {
+    // The right-hand end of the board: arrows to move, the comma/period/slash
+    // cluster and the right modifiers for everything else. Disjoint from
+    // player 1's set by construction, and no mouse — one mouse cannot serve
+    // two fighters. Deliberately not the keypad, which half of laptops don't
+    // have; every key here is on every keyboard.
+    Keybinds k;
+    k[Action::MoveLeft] = key(GLFW_KEY_LEFT);
+    k[Action::MoveRight] = key(GLFW_KEY_RIGHT);
+    k[Action::MoveAway] = key(GLFW_KEY_UP);
+    k[Action::MoveToward] = key(GLFW_KEY_DOWN);
+    k[Action::Jump] = key(GLFW_KEY_SLASH);
+    k[Action::Block] = key(GLFW_KEY_RIGHT_SHIFT);
+    k[Action::Crouch] = key(GLFW_KEY_RIGHT_CONTROL);
+    k[Action::Attack] = key(GLFW_KEY_PERIOD);
+    k[Action::Jab] = key(GLFW_KEY_COMMA);
+    return k;
+}
+
 const char* actionName(Action a) { return kActions[static_cast<int>(a)].label; }
 const char* actionKey(Action a) { return kActions[static_cast<int>(a)].tomlKey; }
 const char* actionHint(Action a) { return kActions[static_cast<int>(a)].hint; }
@@ -243,7 +262,11 @@ bool loadConfig(Settings& settings) {
 
     // Sections are read independently: a file predating one of them (or with a
     // section deleted) keeps the defaults for it and loads the rest.
-    if (const toml::table* keys = tbl["keybinds"].as_table()) {
+    auto readKeybinds = [&](const char* table, Keybinds& out) {
+        const toml::table* keys = tbl[table].as_table();
+        if (!keys) {
+            return;
+        }
         // Per-entry recovery too: a stale or misspelled name loses that one
         // binding to its default rather than the whole section.
         for (int i = 0; i < kActionCount; ++i) {
@@ -255,14 +278,16 @@ bool loadConfig(Settings& settings) {
             }
             Bind b;
             if (parseBind(*name, b)) {
-                settings.keybinds[a] = b;
+                out[a] = b;
             } else {
-                std::fprintf(stderr, "config: %s has unknown control \"%.*s\"\n",
-                             actionKey(a), static_cast<int>(name->size()),
+                std::fprintf(stderr, "config: %s.%s has unknown control \"%.*s\"\n",
+                             table, actionKey(a), static_cast<int>(name->size()),
                              name->data());
             }
         }
-    }
+    };
+    readKeybinds("keybinds", settings.keybinds);
+    readKeybinds("keybinds_p2", settings.keybinds2);
 
     if (const toml::table* audio = tbl["audio"].as_table()) {
         // Out-of-range levels are clamped rather than refused — a hand-edited
@@ -306,12 +331,20 @@ bool saveConfig(const Settings& settings) {
            "# \"Mouse 1\", \"Num Plus\"). An unrecognized name falls back to that\n"
            "# action's default. Volumes run 0 (silent) to 1 (as synthesized).\n"
            "# Delete this file, or any single section, to reset it.\n"
-           "\n[keybinds]\n";
-    for (int i = 0; i < kActionCount; ++i) {
-        const Action a = static_cast<Action>(i);
-        out << std::left << std::setw(12) << actionKey(a) << " = \""
-            << bindName(settings.keybinds[a]) << "\"\n";
-    }
+           "#\n"
+           "# [keybinds] is player 1, [keybinds_p2] the second local fighter.\n"
+           "# Both are live at once in a local versus, so they should not\n"
+           "# share a control - the options screen keeps them apart for you.\n";
+    auto writeKeybinds = [&](const char* table, const Keybinds& keys) {
+        out << "\n[" << table << "]\n";
+        for (int i = 0; i < kActionCount; ++i) {
+            const Action a = static_cast<Action>(i);
+            out << std::left << std::setw(12) << actionKey(a) << " = \""
+                << bindName(keys[a]) << "\"\n";
+        }
+    };
+    writeKeybinds("keybinds", settings.keybinds);
+    writeKeybinds("keybinds_p2", settings.keybinds2);
 
     out << "\n[audio]\n" << std::fixed << std::setprecision(2);
     out << std::left << std::setw(12) << "music" << " = " << settings.audio.music

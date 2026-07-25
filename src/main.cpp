@@ -35,7 +35,7 @@
 namespace {
 
 enum class AppState { Loading, Menu, Options, CharacterSelect, Playing };
-enum class MenuAction { None, Play, Options, Quit };
+enum class MenuAction { None, Play, Versus, Options, Quit };
 
 // One piece of startup work. The app opens straight into `Loading` and runs
 // exactly one step per frame, so the window stays responsive and the bar
@@ -62,6 +62,13 @@ struct SelectScreen {
     int shownLevel = 0;
     int pickedCharacter = -1;
     int pickedWeapon = -1;
+    // Local versus runs this screen once per human. `player` is who is picking
+    // (0-based, titles only), `versus` puts their number on the titles, and
+    // `pickLevel` is false for the second of them — the first already chose the
+    // ground, so their last click is the blade and it starts the match.
+    int player = 0;
+    bool versus = false;
+    bool pickLevel = true;
 };
 
 // A completed pick, returned by drawCharacterSelect once the level (the last
@@ -186,6 +193,10 @@ MenuAction drawMainMenu() {
         action = MenuAction::Play;
     }
     ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
+        action = MenuAction::Versus;
+    }
+    ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
         action = MenuAction::Options;
     }
@@ -201,15 +212,23 @@ MenuAction drawMainMenu() {
 
 // Options sections, in tab order. One per `Settings` member — a new group of
 // settings is a struct there plus a tab here.
-enum class OptionsSection { Keybinds, Audio, Count };
+enum class OptionsSection { Controls1, Controls2, Audio, Count };
 constexpr int kOptionsSectionCount = static_cast<int>(OptionsSection::Count);
-constexpr const char* kSectionNames[kOptionsSectionCount] = {"Keybinds", "Audio"};
+constexpr const char* kSectionNames[kOptionsSectionCount] = {"Controls 1", "Controls 2",
+                                                             "Audio"};
+
+// The keybind set a section edits, or null for a section that isn't controls.
+Keybinds* sectionKeybinds(Settings& settings, OptionsSection s) {
+    if (s == OptionsSection::Controls1) return &settings.keybinds;
+    if (s == OptionsSection::Controls2) return &settings.keybinds2;
+    return nullptr;
+}
 
 // Options-screen state. `capturing` is the keybind row waiting for a control;
 // the two latches keep the clicks that open and close a capture from being read
 // as the binding itself (see drawOptions).
 struct OptionsScreen {
-    OptionsSection section = OptionsSection::Keybinds;
+    OptionsSection section = OptionsSection::Controls1;
     int capturing = -1;   // Action index, or -1 while just browsing
     bool armed = false;   // a capture accepts input only once everything is up
     bool swallow = false; // ignore button clicks until the controls are up
@@ -241,17 +260,23 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             // until every control has come up.
             s.armed = !anyDown;
         } else if (anyDown) {
+            Keybinds* edited = sectionKeybinds(settings, s.section);
             const Action a = static_cast<Action>(s.capturing);
-            const Bind previous = settings.keybinds[a];
+            const Bind previous = (*edited)[a];
             // A control that's already spoken for trades places with this row
             // instead of being refused: every action stays bound, so there's
-            // no unbound state to render, poll, or save.
-            for (Bind& b : settings.keybinds.binds) {
-                if (b == pressed) {
-                    b = previous;
+            // no unbound state to render, poll, or save. The sweep covers
+            // *both* sets, not just the one being edited — in a local versus
+            // they are live together, so a control shared across sets would
+            // move both fighters, and no amount of clicking could fix it.
+            for (Keybinds* set : {&settings.keybinds, &settings.keybinds2}) {
+                for (Bind& b : set->binds) {
+                    if (b == pressed) {
+                        b = previous;
+                    }
                 }
             }
-            settings.keybinds[a] = pressed;
+            (*edited)[a] = pressed;
             s.capturing = -1;
             s.swallow = true;
             result.save = true;
@@ -309,7 +334,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     // resize per section would jump the whole panel on every tab click.
     ImGui::BeginChild("section", {contentW, 392.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
-    if (s.section == OptionsSection::Keybinds) {
+    if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
         for (int i = 0; i < kActionCount; ++i) {
             const Action a = static_cast<Action>(i);
             ImGui::PushFont(nullptr, 22.0f);
@@ -324,8 +349,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             }
             ImGui::PushFont(nullptr, 22.0f);
             const bool clicked = ImGui::Button(
-                capturing ? "press a control" : bindName(settings.keybinds[a]),
-                {fieldW, 0.0f});
+                capturing ? "press a control" : bindName((*keys)[a]), {fieldW, 0.0f});
             ImGui::PopFont();
             if (capturing) {
                 ImGui::PopStyleColor();
@@ -405,7 +429,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             }
         }();
         ImGui::TextWrapped("%s Defaults resets this section. Saved to %s",
-                           s.section == OptionsSection::Keybinds
+                           sectionKeybinds(settings, s.section)
                                ? "Click a control to rebind it."
                                : "Drag a level to set it - you hear it as it moves.",
                            pathLabel.c_str());
@@ -419,9 +443,27 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     // Section-scoped, so resetting the controls can't quietly move the volumes
     // (or the reverse) while the player is looking at the other tab.
     if (ImGui::Button("Defaults", {halfW, 0.0f}) && !s.swallow) {
-        if (s.section == OptionsSection::Keybinds) {
-            settings.keybinds = defaultKeybinds();
+        if (sectionKeybinds(settings, s.section)) {
+            if (s.section == OptionsSection::Controls1) {
+                settings.keybinds = defaultKeybinds();
+            } else {
+                settings.keybinds2 = defaultKeybinds2();
+            }
             s.capturing = -1;
+            // A section-scoped reset can re-claim a control the *other* set had
+            // been moved onto, and no click on this screen would untangle that.
+            // The two default sets are disjoint, so putting the other one back
+            // as well always lands somewhere valid.
+            bool clash = false;
+            for (const Bind& a : settings.keybinds.binds) {
+                for (const Bind& b : settings.keybinds2.binds) {
+                    clash = clash || a == b;
+                }
+            }
+            if (clash) {
+                settings.keybinds = defaultKeybinds();
+                settings.keybinds2 = defaultKeybinds2();
+            }
         } else {
             settings.audio = AudioSettings{};
             result.applyAudio = true;
@@ -509,7 +551,7 @@ bool drawSelectTile(const char* name, const glm::vec4& face, float tile,
 SelectResult drawCharacterSelect(SelectScreen& s) {
     SelectResult picked;
     const bool weaponStage = s.pickedCharacter >= 0 && s.pickedWeapon < 0;
-    const bool levelStage = s.pickedWeapon >= 0;
+    const bool levelStage = s.pickedWeapon >= 0 && s.pickLevel;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -518,10 +560,15 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
 
+    const char* stage = levelStage    ? "CHOOSE YOUR BATTLEGROUND"
+                        : weaponStage ? "CHOOSE YOUR BLADE"
+                                      : "CHOOSE YOUR FIGHTER";
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted(levelStage    ? "CHOOSE YOUR BATTLEGROUND"
-                           : weaponStage ? "CHOOSE YOUR BLADE"
-                                         : "CHOOSE YOUR FIGHTER");
+    if (s.versus) {
+        ImGui::Text("PLAYER %d - %s", s.player + 1, stage);
+    } else {
+        ImGui::TextUnformatted(stage);
+    }
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
@@ -555,6 +602,11 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
             ImGui::PushID(i);
             if (drawSelectTile(w.name, w.tileColor, tile, s.shownWeapon == i)) {
                 s.pickedWeapon = i;
+                if (!s.pickLevel) {
+                    // The ground is already settled (the other player chose
+                    // it), so the blade is this one's last click.
+                    picked = {s.pickedCharacter, i, -1};
+                }
             }
             ImGui::PopID();
             if (ImGui::IsItemHovered()) {
@@ -637,8 +689,11 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
     ImGui::PushFont(nullptr, 17.0f);
     ImGui::TextUnformatted(
-        levelStage    ? "Click a battleground to begin - your opponent is drawn at random"
-        : weaponStage ? "Click a blade to choose the battleground"
+        levelStage ? (s.versus ? "Click a battleground to hand over to player 2"
+                               : "Click a battleground to begin - your opponent "
+                                 "is drawn at random")
+        : weaponStage ? (s.pickLevel ? "Click a blade to choose the battleground"
+                                     : "Click a blade to enter the arena")
                       : "Click a fighter to choose their blade");
     ImGui::PopFont();
     ImGui::PopStyleColor();
@@ -686,9 +741,12 @@ void drawBloodBars(const Game& game) {
 // a moment to play out; Rematch reruns the same pairing with a fresh Game.
 enum class OverAction { None, Rematch, Select };
 
-OverAction drawWinOverlay(const Game& game) {
+OverAction drawWinOverlay(const Game& game, bool versus) {
     OverAction action = OverAction::None;
-    const char* title = game.winner() == 0 ? "VICTORY" : "SLAIN";
+    // Against the bot the verdict is the player's own; with two humans at one
+    // keyboard, "VICTORY" would be true for exactly one of the people reading it.
+    const char* title = versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
+                               : (game.winner() == 0 ? "VICTORY" : "SLAIN");
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -946,6 +1004,22 @@ int main(int argc, char** argv) {
     // Rematch keeps it — and is the one place a local-versus or netplay match
     // would differ from this one.
     InputSource matchSources[2] = {InputSource::Local0, InputSource::Bot};
+    // Local versus sets a match up in two passes — one human picks, hands the
+    // keyboard over, the other picks — so the flow has to remember which of
+    // them is at the screen and whether a second pass is still owed.
+    bool versusSetup = false;
+    int selectingPlayer = 0;
+    // Opens the select screen for one fighter. The second player in a versus
+    // inherits the battleground rather than choosing it again, which also makes
+    // their blade click the one that starts the match.
+    auto beginSelect = [&](bool versus, int player) {
+        versusSetup = versus;
+        selectingPlayer = player;
+        select = SelectScreen{};
+        select.versus = versus;
+        select.player = player;
+        select.pickLevel = !versus || player == 0;
+    };
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -954,10 +1028,12 @@ int main(int argc, char** argv) {
     // One latch per local control set (see input.hpp): the held controls are
     // read per render frame, the attack edges wait here for a fixed step.
     LocalInput localInputs[2];
-    // Which control set a local slot reads. Both slots share one set today; a
-    // second one is a struct in config.hpp, a [keybinds_p2] table on disk, and
-    // a tab in drawOptions — this is the single call site it would change.
-    auto localKeys = [&](int) -> const Keybinds& { return settings.keybinds; };
+    // Which control set a local slot reads: [keybinds] and [keybinds_p2] from
+    // the config, kept disjoint by the options screen since in a versus both
+    // are live at once.
+    auto localKeys = [&](int slot) -> const Keybinds& {
+        return slot == 0 ? settings.keybinds : settings.keybinds2;
+    };
     bool escHeld = false;
 
     // The determinism harness (--record / --replay). Both are inert unless the
@@ -1237,15 +1313,19 @@ int main(int argc, char** argv) {
                 // Not while replaying: Rematch would rebuild the Game out from
                 // under the log and report a desync that is purely the click's.
                 if (!replayer.active() && game->over() && game->overTime() > 1.2f) {
-                    overAction = drawWinOverlay(*game);
+                    overAction = drawWinOverlay(
+                        *game, matchSources[1] == InputSource::Local1);
                 }
             }
             renderer.endFrame();
         }
 
         if (action == MenuAction::Play) {
+            beginSelect(false, 0);
             state = AppState::CharacterSelect;
-            select = SelectScreen{};
+        } else if (action == MenuAction::Versus) {
+            beginSelect(true, 0);
+            state = AppState::CharacterSelect;
         } else if (action == MenuAction::Options) {
             state = AppState::Options;
             options = OptionsScreen{};
@@ -1271,26 +1351,34 @@ int main(int argc, char** argv) {
         }
 
         if (picked.character >= 0) {
-            matchChars[0] = picked.character;
-            matchWeapons[0] = picked.weapon;
-            matchLevel = picked.level;
-            matchChars[1] =
-                std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
-            matchWeapons[1] =
-                std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
-            // The select screen is single-player: one human, one bot. A local
-            // versus or netplay pick would set the second slot differently and
-            // change nothing else about the match.
-            matchSources[0] = InputSource::Local0;
-            matchSources[1] = InputSource::Bot;
-            startMatch();
+            matchChars[selectingPlayer] = picked.character;
+            matchWeapons[selectingPlayer] = picked.weapon;
+            if (picked.level >= 0) {
+                matchLevel = picked.level; // -1 when the ground was already set
+            }
+            if (versusSetup && selectingPlayer == 0) {
+                beginSelect(true, 1); // hand the keyboard over
+            } else {
+                if (!versusSetup) {
+                    // One human, one bot: the opponent is drawn rather than picked.
+                    matchChars[1] =
+                        std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+                    matchWeapons[1] =
+                        std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
+                }
+                // The only thing separating the two modes: who drives slot 1.
+                matchSources[0] = InputSource::Local0;
+                matchSources[1] =
+                    versusSetup ? InputSource::Local1 : InputSource::Bot;
+                startMatch();
+            }
         }
 
         if (overAction == OverAction::Rematch) {
             startMatch();
         } else if (overAction == OverAction::Select) {
+            beginSelect(versusSetup, 0); // back into whichever mode this was
             state = AppState::CharacterSelect;
-            select = SelectScreen{};
         }
     }
 
