@@ -14,11 +14,13 @@
 #include <exception>
 #include <memory>
 #include <random>
+#include <string>
 
 #include "audio.hpp"
 #include "bot.hpp"
 #include "camera.hpp"
 #include "characters/character.hpp"
+#include "config.hpp"
 #include "game.hpp"
 #include "levels/level.hpp"
 #include "renderer.hpp"
@@ -27,8 +29,8 @@
 
 namespace {
 
-enum class AppState { Menu, CharacterSelect, Playing };
-enum class MenuAction { None, Play, Quit };
+enum class AppState { Menu, Options, CharacterSelect, Playing };
+enum class MenuAction { None, Play, Options, Quit };
 
 // Select-screen state. Three stages on one screen: pick the fighter, then the
 // blade, then the battleground. `shown*` are the indices being previewed (the
@@ -75,6 +77,13 @@ void setupMenuStyle() {
     style.Colors[ImGuiCol_ButtonHovered] = {0.55f, 0.09f, 0.09f, 0.85f};
     style.Colors[ImGuiCol_ButtonActive] = {0.72f, 0.13f, 0.13f, 1.0f};
     style.Colors[ImGuiCol_NavCursor] = {0.85f, 0.70f, 0.25f, 0.80f};
+    // Slider troughs match the button faces, and the grab picks up the riposte
+    // gold while it's being dragged (the options screen's volume rows).
+    style.Colors[ImGuiCol_FrameBg] = {0.0f, 0.0f, 0.0f, 0.35f};
+    style.Colors[ImGuiCol_FrameBgHovered] = {0.55f, 0.09f, 0.09f, 0.50f};
+    style.Colors[ImGuiCol_FrameBgActive] = {0.55f, 0.09f, 0.09f, 0.70f};
+    style.Colors[ImGuiCol_SliderGrab] = {0.72f, 0.13f, 0.13f, 1.0f};
+    style.Colors[ImGuiCol_SliderGrabActive] = {0.85f, 0.70f, 0.25f, 1.0f};
 }
 
 MenuAction drawMainMenu() {
@@ -104,6 +113,10 @@ MenuAction drawMainMenu() {
         action = MenuAction::Play;
     }
     ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
+        action = MenuAction::Options;
+    }
+    ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Quit", {buttonWidth, 0.0f})) {
         action = MenuAction::Quit;
     }
@@ -111,6 +124,253 @@ MenuAction drawMainMenu() {
 
     ImGui::End();
     return action;
+}
+
+// Options sections, in tab order. One per `Settings` member — a new group of
+// settings is a struct there plus a tab here.
+enum class OptionsSection { Keybinds, Audio, Count };
+constexpr int kOptionsSectionCount = static_cast<int>(OptionsSection::Count);
+constexpr const char* kSectionNames[kOptionsSectionCount] = {"Keybinds", "Audio"};
+
+// Options-screen state. `capturing` is the keybind row waiting for a control;
+// the two latches keep the clicks that open and close a capture from being read
+// as the binding itself (see drawOptions).
+struct OptionsScreen {
+    OptionsSection section = OptionsSection::Keybinds;
+    int capturing = -1;   // Action index, or -1 while just browsing
+    bool armed = false;   // a capture accepts input only once everything is up
+    bool swallow = false; // ignore button clicks until the controls are up
+};
+
+struct OptionsResult {
+    bool back = false;
+    bool save = false;       // settings edited and settled — persist them
+    bool applyAudio = false; // levels moved — push them to the mixer now
+    bool previewSfx = false; // play something so a new SFX level is audible
+};
+
+// Options screen: a tab per settings section over a fixed-size content area.
+// Edits land in `settings` immediately (the caller persists and applies them),
+// so there's no apply step to fall out of sync with what the game is reading.
+OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen& s) {
+    OptionsResult result;
+
+    // Capture polls the bindable-control table rather than installing a GLFW
+    // key callback: ImGui's GLFW backend owns those callbacks (renderer.init
+    // passes install_callbacks = true), and the poll doubles as the validity
+    // filter — a control the table doesn't list simply can't be bound.
+    if (s.capturing >= 0) {
+        Bind pressed;
+        const bool anyDown = pollAnyBind(window, pressed);
+        if (!s.armed) {
+            // The click that opened the capture can still read as down (sticky
+            // buttons hold a press until it's read once), so accept nothing
+            // until every control has come up.
+            s.armed = !anyDown;
+        } else if (anyDown) {
+            const Action a = static_cast<Action>(s.capturing);
+            const Bind previous = settings.keybinds[a];
+            // A control that's already spoken for trades places with this row
+            // instead of being refused: every action stays bound, so there's
+            // no unbound state to render, poll, or save.
+            for (Bind& b : settings.keybinds.binds) {
+                if (b == pressed) {
+                    b = previous;
+                }
+            }
+            settings.keybinds[a] = pressed;
+            s.capturing = -1;
+            s.swallow = true;
+            result.save = true;
+        }
+    }
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("options", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(nullptr, 50.0f);
+    ImGui::TextUnformatted("OPTIONS");
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 6.0f});
+
+    // Rows are dense: the menu style's roomy item spacing and tall frame
+    // padding would push nine keybinds off the bottom of a 720p window.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 6.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
+
+    const float labelW = 190.0f;
+    const float fieldW = 210.0f;
+    const float contentW = labelW + fieldW;
+    const char* hint = nullptr; // the hovered row's hint, drawn in the footer
+
+    // Section tabs. The live one wears the same crimson as a hot button, so
+    // "selected" and "hovered" read as the same visual language.
+    const float tabW = (contentW - 10.0f) / kOptionsSectionCount;
+    ImGui::PushFont(nullptr, 22.0f);
+    for (int i = 0; i < kOptionsSectionCount; ++i) {
+        if (i > 0) {
+            ImGui::SameLine(0.0f, 10.0f);
+        }
+        const bool live = static_cast<int>(s.section) == i;
+        if (live) {
+            ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.09f, 0.09f, 0.85f});
+        }
+        const bool clicked = ImGui::Button(kSectionNames[i], {tabW, 0.0f});
+        if (live) {
+            ImGui::PopStyleColor();
+        }
+        if (clicked && !s.swallow) {
+            s.section = static_cast<OptionsSection>(i);
+            s.capturing = -1; // leaving the rows abandons any pending rebind
+        }
+    }
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 4.0f});
+
+    // Fixed-size content area, tall enough for the longest section (the nine
+    // keybind rows): the window is centered and auto-sized, so letting it
+    // resize per section would jump the whole panel on every tab click.
+    ImGui::BeginChild("section", {contentW, 392.0f}, ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    if (s.section == OptionsSection::Keybinds) {
+        for (int i = 0; i < kActionCount; ++i) {
+            const Action a = static_cast<Action>(i);
+            ImGui::PushFont(nullptr, 22.0f);
+            ImGui::TextUnformatted(actionName(a));
+            ImGui::PopFont();
+            ImGui::SameLine(labelW);
+
+            ImGui::PushID(i);
+            const bool capturing = s.capturing == i;
+            if (capturing) {
+                ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.09f, 0.09f, 0.85f});
+            }
+            ImGui::PushFont(nullptr, 22.0f);
+            const bool clicked = ImGui::Button(
+                capturing ? "press a control" : bindName(settings.keybinds[a]),
+                {fieldW, 0.0f});
+            ImGui::PopFont();
+            if (capturing) {
+                ImGui::PopStyleColor();
+            }
+            if (clicked && !s.swallow) {
+                s.capturing = capturing ? -1 : i;
+                s.armed = false;
+            }
+            if (ImGui::IsItemHovered() && s.capturing < 0) {
+                hint = actionHint(a);
+            }
+            ImGui::PopID();
+        }
+    } else {
+        // A level applies the moment it moves (the menu theme is playing, so
+        // music is its own preview) but only persists once the drag settles —
+        // otherwise one sweep across the slider is a hundred file writes.
+        auto volumeRow = [&](const char* label, const char* rowHint, int id,
+                             float& level, bool previewOnRelease) {
+            ImGui::PushFont(nullptr, 22.0f);
+            ImGui::TextUnformatted(label);
+            ImGui::PopFont();
+            ImGui::SameLine(labelW);
+
+            ImGui::PushID(id);
+            ImGui::PushFont(nullptr, 20.0f);
+            ImGui::SetNextItemWidth(fieldW);
+            float percent = level * 100.0f;
+            if (ImGui::SliderFloat("##level", &percent, 0.0f, 100.0f, "%.0f%%")) {
+                level = std::clamp(percent * 0.01f, 0.0f, 1.0f);
+                result.applyAudio = true;
+            }
+            ImGui::PopFont();
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                result.save = true;
+                result.applyAudio = true;
+                // Nothing in a menu makes an effect sound, so the SFX level
+                // would otherwise be set blind.
+                result.previewSfx = previewOnRelease;
+            }
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+                hint = rowHint;
+            }
+            ImGui::PopID();
+        };
+        volumeRow("Music", "The menu theme and each battleground's track", 0,
+                  settings.audio.music, false);
+        volumeRow("Effects", "Swings, cuts, clangs, and bodies hitting the ground", 1,
+                  settings.audio.sfx, true);
+    }
+    ImGui::EndChild();
+
+    ImGui::PopStyleVar(2);
+    ImGui::Dummy({0.0f, 8.0f});
+
+    // Fixed-height footer: the hint changes with the hovered row, and the
+    // window must not resize (and shift every row) as it does.
+    ImGui::BeginChild("hint", {contentW, 58.0f}, ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 17.0f);
+    if (s.capturing >= 0) {
+        ImGui::TextWrapped(
+            "Press any key or mouse button to bind %s - Esc cancels. A control "
+            "already in use trades places with this one.",
+            actionName(static_cast<Action>(s.capturing)));
+    } else if (hint) {
+        ImGui::TextWrapped("%s", hint);
+    } else {
+        // Path conversion can throw on an exotic profile name; a wrong hint
+        // line is not worth taking the app down for.
+        static const std::string pathLabel = [] {
+            try {
+                return configPath().string();
+            } catch (const std::exception&) {
+                return std::string("bushido.toml");
+            }
+        }();
+        ImGui::TextWrapped("%s Defaults resets this section. Saved to %s",
+                           s.section == OptionsSection::Keybinds
+                               ? "Click a control to rebind it."
+                               : "Drag a level to set it - you hear it as it moves.",
+                           pathLabel.c_str());
+    }
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    const float halfW = (contentW - 12.0f) * 0.5f;
+    ImGui::PushFont(nullptr, 26.0f);
+    // Section-scoped, so resetting the controls can't quietly move the volumes
+    // (or the reverse) while the player is looking at the other tab.
+    if (ImGui::Button("Defaults", {halfW, 0.0f}) && !s.swallow) {
+        if (s.section == OptionsSection::Keybinds) {
+            settings.keybinds = defaultKeybinds();
+            s.capturing = -1;
+        } else {
+            settings.audio = AudioSettings{};
+            result.applyAudio = true;
+        }
+        result.save = true;
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("Back", {halfW, 0.0f}) && !s.swallow) {
+        result.back = true;
+    }
+    ImGui::PopFont();
+
+    ImGui::End();
+
+    // Cleared *after* the widgets: ImGui fires a button on mouse release, which
+    // is the same frame the swallow would otherwise go false — so the release
+    // that completed a capture would re-open it.
+    if (s.swallow) {
+        Bind ignored;
+        s.swallow = pollAnyBind(window, ignored);
+    }
+    return result;
 }
 
 // Five-segment rating bar (select screen). Draws with the low-level draw
@@ -399,16 +659,17 @@ void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 col
     renderer.drawBox(model, color);
 }
 
-PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int toward,
-                      int jump, int block, int crouch) {
+// The held-state half of the player's controls; the attack edges are latched in
+// the main loop instead (they have to survive zero-step frames).
+PlayerInput readInput(GLFWwindow* window, const Keybinds& keys) {
     PlayerInput in;
-    if (glfwGetKey(window, left) == GLFW_PRESS) in.move.x -= 1.0f;
-    if (glfwGetKey(window, right) == GLFW_PRESS) in.move.x += 1.0f;
-    if (glfwGetKey(window, away) == GLFW_PRESS) in.move.y -= 1.0f;   // into the screen (-z)
-    if (glfwGetKey(window, toward) == GLFW_PRESS) in.move.y += 1.0f; // toward the camera (+z)
-    in.jump = glfwGetKey(window, jump) == GLFW_PRESS;
-    in.block = glfwGetKey(window, block) == GLFW_PRESS;
-    in.crouch = glfwGetKey(window, crouch) == GLFW_PRESS;
+    if (bindHeld(window, keys[Action::MoveLeft])) in.move.x -= 1.0f;
+    if (bindHeld(window, keys[Action::MoveRight])) in.move.x += 1.0f;
+    if (bindHeld(window, keys[Action::MoveAway])) in.move.y -= 1.0f;   // into the screen (-z)
+    if (bindHeld(window, keys[Action::MoveToward])) in.move.y += 1.0f; // toward the camera (+z)
+    in.jump = bindHeld(window, keys[Action::Jump]);
+    in.block = bindHeld(window, keys[Action::Block]);
+    in.crouch = bindHeld(window, keys[Action::Crouch]);
     return in;
 }
 
@@ -522,6 +783,15 @@ int main() {
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
     AppState state = AppState::Menu;
     SelectScreen select;
+    // Player settings, from %APPDATA%/bushido/bushido.toml if it's there; a
+    // missing or broken file just leaves the defaults standing (loadConfig says
+    // which). The mixer levels have to be pushed to Audio; the keybinds are
+    // read straight out of `settings` every frame.
+    Settings settings;
+    loadConfig(settings);
+    audio.setMusicVolume(settings.audio.music);
+    audio.setSfxVolume(settings.audio.sfx);
+    OptionsScreen options;
     std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
     // The current match's loadout — (character, weapon) roster indices per
     // player — kept outside Game so Rematch can rebuild the same pairing.
@@ -536,15 +806,15 @@ int main() {
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
     // Attack inputs are edge-detected per render frame but consumed by fixed
-    // steps; latch them so a click landing on a zero-step frame is not lost.
-    // The left button attacks on *release* — a tap is the normal swing, a
-    // hold past kHeavyHoldTime charges the heavy — so both can share the
-    // button. The right button jabs on press.
-    constexpr float kHeavyHoldTime = 0.28f; // s of LMB hold that makes it a heavy
-    bool lmbHeld = false;
-    bool rmbHeld = false;
-    bool lmbSuppressed = false; // ignore the release of a pre-match click
-    float lmbHoldTime = 0.0f;
+    // steps; latch them so a press landing on a zero-step frame is not lost.
+    // The attack control fires on *release* — a tap is the normal swing, a
+    // hold past kHeavyHoldTime charges the heavy — so both share one control.
+    // The jab control fires on press.
+    constexpr float kHeavyHoldTime = 0.28f; // s of hold that makes it a heavy
+    bool attackHeld = false;
+    bool jabHeld = false;
+    bool attackSuppressed = false; // ignore the release of a pre-match click
+    float attackHoldTime = 0.0f;
     bool attackPending = false;
     AttackKind pendingKind = AttackKind::Light;
     bool escHeld = false;
@@ -557,10 +827,10 @@ int main() {
                                       matchWeapons[1], matchLevel);
         bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
-        lmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        rmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-        lmbSuppressed = lmbHeld;
-        lmbHoldTime = 0.0f;
+        attackHeld = bindHeld(window, settings.keybinds[Action::Attack]);
+        jabHeld = bindHeld(window, settings.keybinds[Action::Jab]);
+        attackSuppressed = attackHeld;
+        attackHoldTime = 0.0f;
         attackPending = false;
     };
 
@@ -571,7 +841,9 @@ int main() {
         // fighter stage, match/select -> menu, menu -> quit.
         bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         if (escDown && !escHeld) {
-            if (state == AppState::CharacterSelect && select.pickedWeapon >= 0) {
+            if (state == AppState::Options && options.capturing >= 0) {
+                options.capturing = -1; // cancel the rebind, stay on the screen
+            } else if (state == AppState::CharacterSelect && select.pickedWeapon >= 0) {
                 select.pickedWeapon = -1;
             } else if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
                 select.pickedCharacter = -1;
@@ -590,36 +862,35 @@ int main() {
 
         if (state == AppState::Playing) {
             PlayerInput inputs[2] = {
-                readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S,
-                          GLFW_KEY_SPACE, GLFW_KEY_LEFT_SHIFT, GLFW_KEY_LEFT_CONTROL),
+                readInput(window, settings.keybinds),
                 {}, // player 2 is the bot, filled per fixed step below
             };
 
-            // LMB: light on a tap's release, heavy on a long hold's release.
-            bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            if (lmb && !lmbHeld) {
-                lmbHoldTime = 0.0f; // fresh press: start the charge clock
+            // Attack: light on a tap's release, heavy on a long hold's release.
+            bool attack = bindHeld(window, settings.keybinds[Action::Attack]);
+            if (attack && !attackHeld) {
+                attackHoldTime = 0.0f; // fresh press: start the charge clock
             }
-            if (lmb) {
-                lmbHoldTime += frameTime;
-            } else if (lmbHeld) { // release edge
-                if (lmbSuppressed) {
-                    lmbSuppressed = false; // the click that started the match
+            if (attack) {
+                attackHoldTime += frameTime;
+            } else if (attackHeld) { // release edge
+                if (attackSuppressed) {
+                    attackSuppressed = false; // the click that started the match
                 } else if (!attackPending) {
-                    pendingKind = lmbHoldTime >= kHeavyHoldTime ? AttackKind::Heavy
-                                                                : AttackKind::Light;
+                    pendingKind = attackHoldTime >= kHeavyHoldTime ? AttackKind::Heavy
+                                                                  : AttackKind::Light;
                     attackPending = true;
                 }
             }
-            lmbHeld = lmb;
+            attackHeld = attack;
 
-            // RMB: jab on press.
-            bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-            if (rmb && !rmbHeld && !attackPending) {
+            // Jab on press.
+            bool jab = bindHeld(window, settings.keybinds[Action::Jab]);
+            if (jab && !jabHeld && !attackPending) {
                 pendingKind = AttackKind::Jab;
                 attackPending = true;
             }
-            rmbHeld = rmb;
+            jabHeld = jab;
 
             inputs[0].attack = attackPending;
             inputs[0].attackKind = pendingKind;
@@ -665,12 +936,15 @@ int main() {
 
         MenuAction action = MenuAction::None;
         OverAction overAction = OverAction::None;
+        OptionsResult optionsResult;
         SelectResult picked;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
             if (state == AppState::Menu) {
                 action = drawMainMenu();
+            } else if (state == AppState::Options) {
+                optionsResult = drawOptions(window, settings, options);
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
             } else {
@@ -686,8 +960,28 @@ int main() {
         if (action == MenuAction::Play) {
             state = AppState::CharacterSelect;
             select = SelectScreen{};
+        } else if (action == MenuAction::Options) {
+            state = AppState::Options;
+            options = OptionsScreen{};
         } else if (action == MenuAction::Quit) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+
+        // Persist on every settled edit: there's no apply step, so the file and
+        // what the game is reading never disagree. Keybinds are read live out of
+        // `settings`; the mixer levels have to be pushed across to Audio.
+        if (optionsResult.applyAudio) {
+            audio.setMusicVolume(settings.audio.music);
+            audio.setSfxVolume(settings.audio.sfx);
+        }
+        if (optionsResult.previewSfx) {
+            audio.play(Sfx::Hit, 0.0f, 1.0f);
+        }
+        if (optionsResult.save) {
+            saveConfig(settings);
+        }
+        if (optionsResult.back) {
+            state = AppState::Menu;
         }
 
         if (picked.character >= 0) {

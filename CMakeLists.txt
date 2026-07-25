@@ -43,6 +43,11 @@ FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG v1.92.1)
 
+# Header-only TOML parser, for the player's settings file.
+FetchContent_Declare(tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0)
+
 # Jolt must use the dynamic CRT to match the rest of the build.
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
 set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
@@ -58,7 +63,8 @@ FetchContent_Declare(JoltPhysics
     GIT_TAG v5.6.0
     SOURCE_SUBDIR Build)
 
-FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics miniaudio imgui)
+FetchContent_MakeAvailable(glfw vk-bootstrap glm JoltPhysics miniaudio imgui
+                           tomlplusplus)
 
 add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -75,6 +81,7 @@ add_executable(bushido
     src/renderer.cpp
     src/camera.cpp
     src/bot.cpp
+    src/config.cpp
     src/characters/character.cpp
     src/characters/ronin.cpp
     src/characters/shinobi.cpp
@@ -103,7 +110,8 @@ target_link_libraries(bushido PRIVATE
     glm::glm
     Jolt
     miniaudio
-    imgui)
+    imgui
+    tomlplusplus::tomlplusplus)
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

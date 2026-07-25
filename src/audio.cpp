@@ -429,6 +429,10 @@ struct Audio::Impl {
     std::vector<float> musicPcm[kMusicCount];
     Voice music[kMusicCount];
     int currentMusic = -1;
+
+    // Mixer levels from the player's settings (1 = as synthesized).
+    float musicVolume = 1.0f;
+    float sfxVolume = 1.0f;
 };
 
 Audio::Audio() : m_impl(std::make_unique<Impl>()) {
@@ -515,8 +519,27 @@ void Audio::play(Sfx sfx, float pan, float pitch, float gain) {
     ma_sound_seek_to_pcm_frame(&voice.sound, 0);
     ma_sound_set_pan(&voice.sound, std::clamp(pan, -1.0f, 1.0f));
     ma_sound_set_pitch(&voice.sound, pitch);
-    ma_sound_set_volume(&voice.sound, std::clamp(gain, 0.0f, 1.0f));
+    ma_sound_set_volume(&voice.sound,
+                        std::clamp(gain, 0.0f, 1.0f) * m_impl->sfxVolume);
     ma_sound_start(&voice.sound);
+}
+
+void Audio::setMusicVolume(float volume) {
+    m_impl->musicVolume = std::clamp(volume, 0.0f, 1.0f);
+    if (!m_impl->ok) {
+        return;
+    }
+    // The bus volume and the crossfade fader are independent multipliers in
+    // miniaudio, so setting this mid-transition scales the fade rather than
+    // cancelling it — no need to know whether one is running.
+    for (int t = 0; t < kMusicCount; ++t) {
+        ma_sound_set_volume(&m_impl->music[t].sound, m_impl->musicVolume);
+    }
+}
+
+void Audio::setSfxVolume(float volume) {
+    // Nothing to push: play() scales each effect as it starts.
+    m_impl->sfxVolume = std::clamp(volume, 0.0f, 1.0f);
 }
 
 void Audio::playMusic(Music track) {
