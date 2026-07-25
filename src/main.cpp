@@ -639,6 +639,13 @@ int main() {
             accumulator = 0.0f; // the sim freezes while the menu is up
         }
 
+        // Music follows the app state: the front-end (menu + select screens)
+        // plays the menu theme, a match plays its battleground's own track.
+        // playMusic is an idempotent "this should be the music now", so the
+        // crossfades fall out of the state transitions on their own.
+        audio.playMusic(state == AppState::Playing ? levelMusic(game->level())
+                                                   : Music::Menu);
+
         // Play the sounds the sim raised this frame, panned by world x
         // relative to the fighters' midpoint (~ the camera's framing center),
         // with a little pitch jitter so repeats don't sound stamped-out.
