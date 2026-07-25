@@ -16,6 +16,18 @@ constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard is up
 
+// Crouching: held input ducks the whole upper body kCrouchDrop meters at full
+// depth — pose, hurtboxes, and the blade pivot all ride crouchAmount, so a
+// crouched fighter is genuinely smaller and their swings sweep a lower lane
+// (a leg-hunting stance). Legs fold rather than drop: their hit boxes squash
+// toward the floor by the same fraction the model compresses them. The drop
+// and the leg pivot height must mirror samurai.cpp's crouch numbers so the
+// cut lands where the body is drawn.
+constexpr float kCrouchMoveScale = 0.45f; // movement slowdown while crouched
+constexpr float kCrouchDrop = 0.45f;      // upper-body y drop at full crouch
+constexpr float kCrouchRate = 9.0f;       // crouchAmount approach speed, 1/s
+constexpr float kHipHeight = 0.85f;       // leg pivot height (samurai.cpp legs)
+
 // Per-attack tuning, indexed by AttackKind. Each attack scales the wielder's
 // resolved stats (character + weapon) rather than replacing them, the same
 // contract weapons follow — a fast character jabs faster than a slow one.
@@ -168,6 +180,26 @@ glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
     return {half.x, c * half.y + s * half.z, s * half.y + c * half.z};
 }
 
+// A limb's model-local bounds with the player's crouch applied: arms and the
+// head drop with the upper body, legs squash toward the floor by the same
+// fraction the model compresses them.
+LimbBounds crouchedLimbBounds(const Player& p, int limb) {
+    LimbBounds b = samuraiLimbBounds(limb);
+    const float drop = p.crouchAmount * kCrouchDrop;
+    if (drop <= 0.0f) {
+        return b;
+    }
+    if (limb == static_cast<int>(Limb::LegFront) ||
+        limb == static_cast<int>(Limb::LegBack)) {
+        const float squash = (kHipHeight - drop) / kHipHeight;
+        b.center.y *= squash;
+        b.half.y *= squash;
+    } else {
+        b.center.y -= drop;
+    }
+    return b;
+}
+
 float attackDuration(const CharacterStats& st, AttackKind kind, AttackState state) {
     const AttackTuning& tun = kAttackTuning[static_cast<int>(kind)];
     switch (state) {
@@ -287,6 +319,14 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // committed to the guard.
         p.blocking = in.block && p.attackState == AttackState::None &&
                      !p.downed() && canSwing;
+        // Crouch: held while grounded and upright. The pose (and every
+        // crouch-dependent hurtbox) chases the held state instead of
+        // snapping so ducking reads as a motion, not a teleport.
+        p.crouching = in.crouch && p.grounded && !p.downed();
+        const float crouchTarget = p.crouching ? 1.0f : 0.0f;
+        p.crouchAmount = p.crouchAmount < crouchTarget
+                             ? std::min(crouchTarget, p.crouchAmount + kCrouchRate * dt)
+                             : std::max(crouchTarget, p.crouchAmount - kCrouchRate * dt);
         // A fresh press (re)arms the buffer; otherwise it counts down. The
         // swing fires from the buffer the first tick the fighter is able.
         if (in.attack) {
@@ -334,6 +374,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.blocking) {
             speedScale *= kBlockMoveScale;
         }
+        if (p.crouching) {
+            speedScale *= kCrouchMoveScale;
+        }
         if (p.downed()) {
             if (p.fallTilt < kMaxTilt) {
                 speedScale = 0.0f; // mid-fall: no footing at all
@@ -352,7 +395,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         if (p.grounded) {
             p.vy = 0.0f;
-            if (in.jump && p.hitstun <= 0.0f && !p.downed()) {
+            if (in.jump && p.hitstun <= 0.0f && !p.downed() && !p.crouching) {
                 p.vy = st.jumpVelocity;
                 p.grounded = false;
             }
@@ -420,8 +463,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         const AttackTuning& tun = kAttackTuning[static_cast<int>(p.attackKind)];
         const float swordSide =
             p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
-        const glm::vec3 pivot =
-            modelToWorld(p, {0.0f, kShoulderHeight, swordSide * kShoulderSide});
+        // A crouched attacker's shoulder (and so the whole sweep) rides lower.
+        const glm::vec3 pivot = modelToWorld(
+            p, {0.0f, kShoulderHeight - p.crouchAmount * kCrouchDrop,
+                swordSide * kShoulderSide});
         const float tCur = p.attackT;
         const float tPrev =
             std::max(0.0f, tCur - dt / (st.activeTime * tun.activeScale));
@@ -444,7 +489,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 if (foe.severed[l]) {
                     continue;
                 }
-                LimbBounds b = samuraiLimbBounds(l);
+                LimbBounds b = crouchedLimbBounds(foe, l);
                 glm::vec3 center = modelToWorld(foe, b.center);
                 if (!segmentHitsBox(s0, s1, center,
                                     rollHalfExtent(foe, b.half) + kLimbHitPad[l])) {
@@ -457,7 +502,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 }
             }
             if (hitLimb < 0 && !hitTorso) {
-                glm::vec3 torsoCenter = modelToWorld(foe, {0.0f, kTorsoCenterY, 0.0f});
+                glm::vec3 torsoCenter = modelToWorld(
+                    foe,
+                    {0.0f, kTorsoCenterY - foe.crouchAmount * kCrouchDrop, 0.0f});
                 hitTorso = segmentHitsBox(s0, s1, torsoCenter,
                                           rollHalfExtent(foe, kTorsoHalf));
             }
@@ -520,9 +567,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         // Blood sprays from the wound, away from the attacker and upward;
         // dismemberment gushes harder than a body hit.
-        glm::vec3 wound = modelToWorld(foe, {0.0f, kTorsoCenterY, 0.0f});
+        glm::vec3 wound = modelToWorld(
+            foe, {0.0f, kTorsoCenterY - foe.crouchAmount * kCrouchDrop, 0.0f});
         if (hitLimb >= 0) {
-            wound = modelToWorld(foe, samuraiLimbBounds(hitLimb).center);
+            wound = modelToWorld(foe, crouchedLimbBounds(foe, hitLimb).center);
         }
         glm::vec3 spray = glm::normalize(glm::vec3{dir.x, 1.2f, dir.y});
         spawnBlood(wound, spray, hitLimb >= 0 ? kSeverBloodCount : kHitBloodCount,
@@ -593,8 +641,10 @@ void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
         v.fallVel = kToppleKick;
     }
 
+    // The debris body keeps the limb's full-size half extents (that's the
+    // shape drawSeveredLimb draws) but spawns where the crouched limb sits.
     LimbBounds b = samuraiLimbBounds(static_cast<int>(limb));
-    glm::vec3 center = modelToWorld(v, b.center);
+    glm::vec3 center = modelToWorld(v, crouchedLimbBounds(v, static_cast<int>(limb)).center);
     float yaw = v.facing > 0.0f ? 0.0f : 3.14159265358979f;
     glm::vec3 vel{impulseDir.x * 4.0f, 4.5f, impulseDir.y * 4.0f};
     glm::vec3 angVel{0.0f, 3.0f, -impulseDir.x * 12.0f};
