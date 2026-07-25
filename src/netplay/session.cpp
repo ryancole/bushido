@@ -8,11 +8,11 @@ namespace {
 // Bumped whenever the packet layout or the meaning of a field changes. Two
 // builds that disagree here refuse each other at the handshake rather than
 // desyncing ten seconds in, where the cause would be much harder to see.
-constexpr std::uint32_t kProtocol = 1;
+constexpr std::uint32_t kProtocol = 2;
 
 enum class Msg : std::uint8_t {
-    Hello = 0,   // client -> host: I would like a match
-    Welcome = 1, // host -> client: here is the match
+    Hello = 0,   // client -> host: I would like a match, and here is my fighter
+    Welcome = 1, // host -> client: here is the match, yours included
     Inputs = 2,  // both ways, every frame
 };
 
@@ -63,11 +63,11 @@ struct Reader {
 
 } // namespace
 
-void Session::start(Transport* transport, Role role, const MatchSetup& setup) {
+void Session::start(Transport* transport, Role role, const MatchSetup& ownPick) {
     *this = Session{};
     m_transport = transport;
     m_role = role;
-    m_setup = setup;
+    m_setup = ownPick; // half filled in until the handshake merges the other half
 
     // Both peers seed the first kInputDelay frames with neutral input: nobody
     // has pressed anything yet, and it means each side has something to send
@@ -129,6 +129,8 @@ void Session::sendHandshake() {
     Writer w{buf, kMaxPacket};
     w.u8(static_cast<std::uint8_t>(Msg::Hello));
     w.u32(kProtocol);
+    w.i32(m_setup.chars[1]); // the fighter this client chose for itself
+    w.i32(m_setup.weapons[1]);
     m_transport->send(buf, w.n);
 }
 
@@ -173,6 +175,8 @@ void Session::receiveAll() {
 
         if (kind == Msg::Hello) {
             std::uint32_t version = r.u32();
+            std::int32_t theirChar = r.i32();
+            std::int32_t theirWeapon = r.i32();
             if (!r.ok) {
                 continue;
             }
@@ -181,6 +185,11 @@ void Session::receiveAll() {
                 return;
             }
             m_sinceHeard = 0.0f;
+            // Their half of the match. Taken on trust here and range-checked
+            // by the caller before it reaches a roster lookup — the session
+            // does not know how long the roster is.
+            m_setup.chars[1] = theirChar;
+            m_setup.weapons[1] = theirWeapon;
             // Answer every Hello, not just the first: the client repeats until
             // it hears back, so a lost Welcome has to be answerable again.
             unsigned char out[kMaxPacket];
@@ -241,11 +250,10 @@ void Session::receiveAll() {
             continue; // truncated; the next packet repeats all of it anyway
         }
         m_sinceHeard = 0.0f;
-        // A host can be handed inputs before it ever sees a Hello if the
-        // Welcome was lost — treat that as connected too.
-        if (m_state == State::Handshake && m_role == Role::Host) {
-            setState(State::Running, "opponent connected");
-        }
+        // Deliberately no "promote to Running on Inputs" shortcut here: the
+        // host cannot start without the client's fighter, which only arrives
+        // on Hello. It cannot miss one either — a client only sends inputs
+        // after a Welcome, and a Welcome only follows a Hello the host got.
 
         for (int i = 0; i < count; ++i) {
             std::int64_t f = first + i;

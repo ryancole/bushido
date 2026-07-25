@@ -51,6 +51,14 @@ struct UdpTransport::Impl {
         if (!winsockReady()) {
             return false;
         }
+        // Backing out of a lobby and trying again reopens this, so the old
+        // socket has to go — otherwise the port stays held by a handle
+        // nothing can reach any more.
+        if (sock != INVALID_SOCKET) {
+            closesocket(sock);
+            sock = INVALID_SOCKET;
+        }
+        havePeer = false;
         sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (sock == INVALID_SOCKET) {
             std::fprintf(stderr, "net: could not create a socket\n");

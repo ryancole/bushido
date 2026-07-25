@@ -36,8 +36,21 @@
 
 namespace {
 
-enum class AppState { Loading, Menu, Options, CharacterSelect, NetWait, Playing };
-enum class MenuAction { None, Play, Versus, Options, Quit };
+enum class AppState {
+    Loading,
+    Menu,
+    Options,
+    NetSetup, // host-or-join, before anyone picks a fighter
+    CharacterSelect,
+    NetWait, // picked, waiting on the handshake to agree the match
+    Playing
+};
+enum class MenuAction { None, Play, Versus, Online, Options, Quit };
+
+// How the match being set up will be driven. Chosen when the flow starts — a
+// menu button or a command-line flag — and read once the select screen
+// finishes, which is the only place the four modes differ.
+enum class SetupMode { Solo, LocalVersus, NetHost, NetClient };
 
 // One piece of startup work. The app opens straight into `Loading` and runs
 // exactly one step per frame, so the window stays responsive and the bar
@@ -185,9 +198,7 @@ bool setupIsSane(const MatchSetup& s) {
     return true;
 }
 
-// `hosting` hides Local Versus: the second fighter is already spoken for by
-// whoever connects, so offering the couch seat would be a lie.
-MenuAction drawMainMenu(bool hosting) {
+MenuAction drawMainMenu() {
     MenuAction action = MenuAction::None;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
@@ -213,11 +224,13 @@ MenuAction drawMainMenu(bool hosting) {
     if (ImGui::Button("Play", {buttonWidth, 0.0f})) {
         action = MenuAction::Play;
     }
-    if (!hosting) {
-        ImGui::SetCursorPosX(buttonX);
-        if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
-            action = MenuAction::Versus;
-        }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
+        action = MenuAction::Versus;
+    }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Online", {buttonWidth, 0.0f})) {
+        action = MenuAction::Online;
     }
     ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
@@ -231,6 +244,93 @@ MenuAction drawMainMenu(bool hosting) {
 
     ImGui::End();
     return action;
+}
+
+// Online setup: host on a port, or join an address. Kept deliberately plain —
+// this is a direct connection between two people who already arranged it, so
+// there is no lobby list to browse and nothing to match-make.
+struct NetScreen {
+    char port[16] = "7777";
+    char address[64] = "127.0.0.1:7777";
+    char error[96] = ""; // last thing that went wrong, shown under the fields
+};
+
+struct NetSetupResult {
+    bool back = false;
+    bool host = false;
+    bool join = false;
+};
+
+NetSetupResult drawNetSetup(NetScreen& s) {
+    NetSetupResult result;
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("net-setup", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(nullptr, 50.0f);
+    ImGui::TextUnformatted("ONLINE");
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 6.0f});
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 8.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
+    const float labelW = 120.0f;
+    const float fieldW = 250.0f;
+    const float contentW = labelW + fieldW;
+
+    auto row = [&](const char* label, const char* id, char* buf, std::size_t cap,
+                   const char* button) {
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::TextUnformatted(label);
+        ImGui::PopFont();
+        ImGui::SameLine(labelW);
+        ImGui::PushID(id);
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::SetNextItemWidth(fieldW);
+        ImGui::InputText("##field", buf, cap);
+        ImGui::SameLine(labelW);
+        const bool clicked = ImGui::Button(button, {fieldW, 0.0f});
+        ImGui::PopFont();
+        ImGui::PopID();
+        return clicked;
+    };
+
+    result.host = row("Port", "port", s.port, sizeof s.port, "Host a Match");
+    ImGui::Dummy({0.0f, 10.0f});
+    result.join = row("Address", "address", s.address, sizeof s.address, "Join a Match");
+
+    ImGui::PopStyleVar(2);
+    ImGui::Dummy({0.0f, 10.0f});
+
+    // The hint line doubles as the error line: opening a socket is the thing
+    // that fails here, and it should fail where the field can still be fixed.
+    const bool failed = s.error[0] != '\0';
+    ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{0.85f, 0.30f, 0.28f, 0.95f}
+                                                : ImVec4{0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 17.0f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
+    ImGui::TextWrapped("%s",
+                       failed ? s.error
+                              : "A direct connection - the same network, or a "
+                                "forwarded port. The host chooses the battleground; "
+                                "you both choose your own fighter.");
+    ImGui::PopTextWrapPos();
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::Dummy({0.0f, 8.0f});
+
+    ImGui::PushFont(nullptr, 26.0f);
+    if (ImGui::Button("Back", {contentW, 0.0f})) {
+        result.back = true;
+    }
+    ImGui::PopFont();
+
+    ImGui::End();
+    return result;
 }
 
 // Options sections, in tab order. One per `Settings` member — a new group of
@@ -1102,31 +1202,33 @@ int main(int argc, char** argv) {
     // Local versus sets a match up in two passes — one human picks, hands the
     // keyboard over, the other picks — so the flow has to remember which of
     // them is at the screen and whether a second pass is still owed.
-    bool versusSetup = false;
+    SetupMode setupMode = SetupMode::Solo;
     int selectingPlayer = 0;
-    // Opens the select screen for one fighter. The second player in a versus
-    // inherits the battleground rather than choosing it again, which also makes
-    // their blade click the one that starts the match.
-    // Opens the lockstep session on the match this machine picked and hands it
-    // to the client. Shared by the select screen and --auto.
-    auto beginHostSession = [&] {
-        matchSources[0] = autoMatch ? InputSource::Bot : InputSource::Local0;
-        matchSources[1] = InputSource::Remote;
-        MatchSetup setup;
-        for (int i = 0; i < 2; ++i) {
-            setup.chars[i] = matchChars[i];
-            setup.weapons[i] = matchWeapons[i];
-        }
-        setup.level = matchLevel;
-        session.start(&transport, Session::Role::Host, setup);
-    };
-    auto beginSelect = [&](bool versus, int player) {
-        versusSetup = versus;
+    NetScreen netScreen;
+    // Opens one pass of the select screen. `chooseLevel` is false for whoever
+    // picks second into a ground someone else already settled: local versus's
+    // player 2, and a netplay client, whose host owns the battleground. Their
+    // blade click is therefore the one that ends the pass.
+    auto beginSelect = [&](SetupMode mode, int player, bool chooseLevel) {
+        setupMode = mode;
         selectingPlayer = player;
         select = SelectScreen{};
-        select.versus = versus;
+        select.versus = mode == SetupMode::LocalVersus;
         select.player = player;
-        select.pickLevel = !versus || player == 0;
+        select.pickLevel = chooseLevel;
+    };
+    // Hands this machine's own half of the match to the session. The other
+    // half arrives over the handshake — the host learns the client's fighter
+    // from its Hello, the client learns the whole match from the Welcome — so
+    // neither player has a fighter chosen for them.
+    auto beginNetSession = [&](Session::Role role) {
+        MatchSetup mine;
+        for (int i = 0; i < 2; ++i) {
+            mine.chars[i] = matchChars[i];
+            mine.weapons[i] = matchWeapons[i];
+        }
+        mine.level = matchLevel;
+        session.start(&transport, role, mine);
     };
 
     constexpr float kFixedDt = 1.0f / 120.0f;
@@ -1244,26 +1346,30 @@ int main(int argc, char** argv) {
             } else if (loadShown > 0.995f) {
                 // --replay skips the front end: the log names the match, so
                 // there is nothing left to pick.
-                if (joinTarget) {
-                    // A client has nothing to pick — the host names the match
-                    // — so the front end is skipped and the wait for the
-                    // handshake is the only screen before the arena.
-                    if (!transport.join(joinHost.c_str(), joinPort)) {
-                        glfwSetWindowShouldClose(window, GLFW_TRUE);
-                    } else {
-                        session.start(&transport, Session::Role::Client, MatchSetup{});
-                        state = AppState::NetWait;
-                    }
-                } else if (netHost && !transport.host(hostPort)) {
-                    glfwSetWindowShouldClose(window, GLFW_TRUE); // port taken; it said so
+                const bool netFlag = netHost || joinTarget;
+                const bool socketOpen =
+                    !netFlag || (joinTarget ? transport.join(joinHost.c_str(), joinPort)
+                                            : transport.host(hostPort));
+                if (netFlag && !socketOpen) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
+                } else if (netFlag && autoMatch) {
+                    // Hands-off netplay soak run: nobody picks, so the pairing
+                    // is the fixture's and the bot drives this side.
+                    matchLevel = kLevelCount > 1 ? 1 : 0;
+                    beginNetSession(netHost ? Session::Role::Host
+                                            : Session::Role::Client);
+                    state = AppState::NetWait;
+                } else if (netFlag) {
+                    // The flags are a shortcut past the Online screen, not past
+                    // the picking — both players still choose their own fighter.
+                    beginSelect(netHost ? SetupMode::NetHost : SetupMode::NetClient,
+                                netHost ? 0 : 1, netHost);
+                    state = AppState::CharacterSelect;
                 } else if (!replayPath && autoMatch) {
                     // Nobody picks, so the pairing is fixed. Hanami rather
                     // than Dojo: carved ground, solid stones and water mean
                     // strictly more physics for two runs to disagree about.
                     matchLevel = kLevelCount > 1 ? 1 : 0;
-                    if (netHost) {
-                        beginHostSession();
-                    }
                     startMatch();
                 } else if (!replayPath) {
                     state = AppState::Menu;
@@ -1302,7 +1408,9 @@ int main(int argc, char** argv) {
             session.state() == Session::State::Running) {
             const MatchSetup& setup = session.setup();
             if (!setupIsSane(setup)) {
-                std::fprintf(stderr, "net: the host named a fighter, blade or "
+                // Both roles check: a client is trusting the host's whole
+                // match, and a host is trusting the fighter the client sent.
+                std::fprintf(stderr, "net: the opponent named a fighter, blade or "
                                      "battleground this build does not have\n");
                 session.stop();
                 state = AppState::Menu;
@@ -1312,10 +1420,13 @@ int main(int argc, char** argv) {
                     matchWeapons[i] = setup.weapons[i];
                 }
                 matchLevel = setup.level;
-                // The client drives fighter 2 — with their own player-1
-                // controls, since it is their only keyboard.
-                matchSources[0] = InputSource::Remote;
-                matchSources[1] = autoMatch ? InputSource::Bot : InputSource::Local0;
+                // Whichever fighter this machine owns is driven from here — by
+                // the local player-1 controls, since a client has only its own
+                // keyboard — and the other one comes off the wire.
+                const int mine = session.localSlot();
+                matchSources[mine] =
+                    autoMatch ? InputSource::Bot : InputSource::Local0;
+                matchSources[1 - mine] = InputSource::Remote;
                 startMatch();
             }
         }
@@ -1465,14 +1576,17 @@ int main(int argc, char** argv) {
         MenuAction action = MenuAction::None;
         OverAction overAction = OverAction::None;
         OptionsResult optionsResult;
+        NetSetupResult netResult;
         SelectResult picked;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
             if (state == AppState::Menu) {
-                action = drawMainMenu(netHost);
+                action = drawMainMenu();
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
+            } else if (state == AppState::NetSetup) {
+                netResult = drawNetSetup(netScreen);
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
             } else if (state == AppState::NetWait) {
@@ -1495,11 +1609,14 @@ int main(int argc, char** argv) {
         }
 
         if (action == MenuAction::Play) {
-            beginSelect(false, 0);
+            beginSelect(SetupMode::Solo, 0, true);
             state = AppState::CharacterSelect;
         } else if (action == MenuAction::Versus) {
-            beginSelect(true, 0);
+            beginSelect(SetupMode::LocalVersus, 0, true);
             state = AppState::CharacterSelect;
+        } else if (action == MenuAction::Online) {
+            netScreen.error[0] = '\0';
+            state = AppState::NetSetup;
         } else if (action == MenuAction::Options) {
             state = AppState::Options;
             options = OptionsScreen{};
@@ -1524,42 +1641,86 @@ int main(int argc, char** argv) {
             state = AppState::Menu;
         }
 
+        // Online setup. Opening the socket is the thing that can fail, and it
+        // fails here where the player can still fix the field, rather than
+        // after they have gone and picked a fighter.
+        if (netResult.back) {
+            state = AppState::Menu;
+        } else if (netResult.host || netResult.join) {
+            netScreen.error[0] = '\0';
+            bool ready = false;
+            if (netResult.host) {
+                long port = std::strtol(netScreen.port, nullptr, 10);
+                if (port <= 0 || port > 65535) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "\"%s\" is not a port number.", netScreen.port);
+                } else if (!transport.host(static_cast<std::uint16_t>(port))) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Could not listen on port %ld - already in use?",
+                                  port);
+                } else {
+                    ready = true;
+                }
+            } else {
+                std::string h;
+                std::uint16_t p = 0;
+                if (!parseEndpoint(netScreen.address, h, p)) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "\"%s\" should look like 192.168.1.20:7777.",
+                                  netScreen.address);
+                } else if (!transport.join(h.c_str(), p)) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Could not resolve \"%s\".", h.c_str());
+                } else {
+                    ready = true;
+                }
+            }
+            if (ready) {
+                // The host picks a fighter and the ground; the client picks a
+                // fighter into the ground the host is about to name.
+                const bool hosting = netResult.host;
+                beginSelect(hosting ? SetupMode::NetHost : SetupMode::NetClient,
+                            hosting ? 0 : 1, hosting);
+                state = AppState::CharacterSelect;
+            }
+        }
+
         if (picked.character >= 0) {
             matchChars[selectingPlayer] = picked.character;
             matchWeapons[selectingPlayer] = picked.weapon;
             if (picked.level >= 0) {
                 matchLevel = picked.level; // -1 when the ground was already set
             }
-            if (versusSetup && selectingPlayer == 0) {
-                beginSelect(true, 1); // hand the keyboard over
-            } else {
-                if (!versusSetup) {
-                    // One human, one bot: the opponent is drawn rather than picked.
-                    matchChars[1] =
-                        std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
-                    matchWeapons[1] =
-                        std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
-                }
-                // The only thing separating the modes: who drives slot 1. The
-                // host names the match and the client takes it whole,
-                // including the fighter it will be driving — picking your own
-                // across a wire is UI this build doesn't have, so the opponent
-                // is drawn exactly as the bot's would be.
-                if (netHost) {
-                    beginHostSession();
-                } else {
-                    matchSources[0] = InputSource::Local0;
-                    matchSources[1] =
-                        versusSetup ? InputSource::Local1 : InputSource::Bot;
-                }
+            if (setupMode == SetupMode::LocalVersus && selectingPlayer == 0) {
+                beginSelect(SetupMode::LocalVersus, 1, false); // hand the keyboard over
+            } else if (setupMode == SetupMode::Solo) {
+                // One human, one bot: the opponent is drawn rather than picked.
+                matchChars[1] =
+                    std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+                matchWeapons[1] =
+                    std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
+                matchSources[0] = InputSource::Local0;
+                matchSources[1] = InputSource::Bot;
                 startMatch();
+            } else if (setupMode == SetupMode::LocalVersus) {
+                matchSources[0] = InputSource::Local0;
+                matchSources[1] = InputSource::Local1;
+                startMatch();
+            } else {
+                // Netplay: this half of the match goes to the session, and the
+                // arena waits on the handshake for the other half.
+                beginNetSession(setupMode == SetupMode::NetHost ? Session::Role::Host
+                                                                : Session::Role::Client);
+                state = AppState::NetWait;
             }
         }
 
         if (overAction == OverAction::Rematch) {
             startMatch();
         } else if (overAction == OverAction::Select) {
-            beginSelect(versusSetup, 0); // back into whichever mode this was
+            // Back into whichever offline mode this was; netplay offers
+            // Disconnect instead, a rematch there needing both peers to agree.
+            beginSelect(setupMode, 0, true);
             state = AppState::CharacterSelect;
         } else if (overAction == OverAction::Disconnect) {
             session.stop();

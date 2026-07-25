@@ -42,9 +42,12 @@ public:
     // the peer went quiet for kTimeout.
     enum class State { Idle, Handshake, Running, Desynced, Lost };
 
-    // The host already knows the match (it picked it) and sends it across; the
-    // client passes anything and takes what arrives.
-    void start(Transport* transport, Role role, const MatchSetup& setup);
+    // Each side passes what it chose for itself: the host fills slots [0] and
+    // the level, the client fills slots [1]. The handshake merges them — the
+    // client's pick rides in on Hello, the host answers with the whole thing —
+    // so neither player has their fighter chosen for them, and both end up
+    // holding the identical MatchSetup that Game is built from.
+    void start(Transport* transport, Role role, const MatchSetup& ownPick);
     void stop();
 
     // Drains the socket and keeps the handshake going. Once per render frame.
