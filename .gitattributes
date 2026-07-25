@@ -1,0 +1,17 @@
+# Line endings are normalised to LF inside the repository; git hands out
+# whatever the platform wants on checkout. Without this, committing from
+# Windows warns about CRLF conversion on every touched file, and a clone on
+# another platform sees the whole tree as modified before anyone edits it.
+* text=auto
+
+# Committed binaries git must not interpret. The music is raw PCM: a
+# line-ending "fix" would corrupt it, and audio corruption is the kind that
+# shows up as a click nobody can place rather than as an error.
+*.wav   binary
+*.png   binary
+*.ico   binary
+
+# Replay recordings (netplay/replay.hpp) are packed little-endian structs.
+# Nothing commits them today, but a desync report is exactly the sort of
+# attachment that ends up in a repo one day.
+*.bsdr  binary
