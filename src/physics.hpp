@@ -11,9 +11,30 @@
 // is handed each fixed step.
 class Physics {
 public:
+    // An extra static collider box beyond the arena statics (level scenery
+    // like Hanami's bank stones). Axis-aligned, alive for the whole match.
+    struct StaticBox {
+        glm::vec3 center;
+        glm::vec3 halfExtent;
+    };
+
+    // A water volume: debris that drifts inside floats (buoyancy against the
+    // surface plane, drag toward the current's velocity) and rides the
+    // current downstream. Default (zero extent) = no water.
+    struct Water {
+        glm::vec3 min{0.0f};
+        glm::vec3 max{0.0f}; // max.y is the surface height
+        glm::vec3 current{0.0f};
+    };
+
     // Spawns are feet positions (the ground surface is y = 0). Gravity is the
     // magnitude of downward acceleration, matching the game's own constant.
-    Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB);
+    // arenaHalfWidth places the side walls (per-level; depth is fixed).
+    // groundBoxes replace the default flat ground slab when non-empty
+    // (Hanami's carved stream channel).
+    Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
+            const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes = {},
+            const std::vector<StaticBox>& groundBoxes = {}, const Water& water = {});
     ~Physics();
 
     struct MoveResult {

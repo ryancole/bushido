@@ -20,6 +20,7 @@
 #include "camera.hpp"
 #include "character.hpp"
 #include "game.hpp"
+#include "level.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
 #include "weapon.hpp"
@@ -29,21 +30,24 @@ namespace {
 enum class AppState { Menu, CharacterSelect, Playing };
 enum class MenuAction { None, Play, Quit };
 
-// Select-screen state. Two stages on one screen: pick the fighter, then the
-// blade. `shown`/`shownWeapon` are the indices being previewed (the last tile
-// the mouse hovered); pickedCharacter latches once a fighter tile is clicked
-// and flips the screen to the weapon row.
+// Select-screen state. Three stages on one screen: pick the fighter, then the
+// blade, then the battleground. `shown*` are the indices being previewed (the
+// last tile the mouse hovered); each picked* latches once its tile is clicked
+// and flips the screen to the next row.
 struct SelectScreen {
     int shown = 0;
     int shownWeapon = 0;
+    int shownLevel = 0;
     int pickedCharacter = -1;
+    int pickedWeapon = -1;
 };
 
-// A completed loadout pick, returned by drawCharacterSelect once the weapon
-// (the second stage) is clicked; character stays -1 until then.
+// A completed pick, returned by drawCharacterSelect once the level (the last
+// stage) is clicked; character stays -1 until then.
 struct SelectResult {
     int character = -1;
     int weapon = -1;
+    int level = -1;
 };
 
 // The default ImGui look is a grey debug tool; restyle it into a sparse
@@ -163,14 +167,16 @@ bool drawSelectTile(const char* name, const glm::vec4& face, float tile,
     return clicked;
 }
 
-// Single-player select, two stages on one screen, both mouse-driven: a row of
-// fighter tiles, then (once one is clicked) a row of weapon tiles. Hovering a
-// tile previews its stats in the panel below; clicking a weapon locks the
-// loadout and starts the match (the caller draws the opponent — fighter and
-// blade — at random). Returns character -1 while still browsing.
+// Single-player select, three stages on one screen, all mouse-driven: a row
+// of fighter tiles, then (once one is clicked) a row of weapon tiles, then a
+// row of battleground tiles. Hovering a tile previews it in the panel below;
+// clicking a level locks everything and starts the match (the caller draws
+// the opponent — fighter and blade — at random). Returns character -1 while
+// still browsing.
 SelectResult drawCharacterSelect(SelectScreen& s) {
     SelectResult picked;
-    const bool weaponStage = s.pickedCharacter >= 0;
+    const bool weaponStage = s.pickedCharacter >= 0 && s.pickedWeapon < 0;
+    const bool levelStage = s.pickedWeapon >= 0;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -180,7 +186,9 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                      ImGuiWindowFlags_NoSavedSettings);
 
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted(weaponStage ? "CHOOSE YOUR BLADE" : "CHOOSE YOUR FIGHTER");
+    ImGui::TextUnformatted(levelStage    ? "CHOOSE YOUR BATTLEGROUND"
+                           : weaponStage ? "CHOOSE YOUR BLADE"
+                                         : "CHOOSE YOUR FIGHTER");
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
@@ -190,7 +198,37 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     // (and the title above it) doesn't jump when the rows swap.
     const float panelW = kCharacterCount * tile + (kCharacterCount - 1) * tileGap;
 
-    if (!weaponStage) {
+    if (levelStage) {
+        for (int i = 0; i < kLevelCount; ++i) {
+            const LevelDef& l = levelDef(i);
+            if (i > 0) {
+                ImGui::SameLine(0.0f, tileGap);
+            }
+            ImGui::PushID(i);
+            if (drawSelectTile(l.name, l.tileColor, tile, s.shownLevel == i)) {
+                picked = {s.pickedCharacter, s.pickedWeapon, i};
+            }
+            ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                s.shownLevel = i;
+            }
+        }
+    } else if (weaponStage) {
+        for (int i = 0; i < kWeaponCount; ++i) {
+            const WeaponDef& w = weaponDef(i);
+            if (i > 0) {
+                ImGui::SameLine(0.0f, tileGap);
+            }
+            ImGui::PushID(i);
+            if (drawSelectTile(w.name, w.tileColor, tile, s.shownWeapon == i)) {
+                s.pickedWeapon = i;
+            }
+            ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                s.shownWeapon = i;
+            }
+        }
+    } else {
         for (int i = 0; i < kCharacterCount; ++i) {
             const CharacterDef& c = characterDef(i);
             if (i > 0) {
@@ -205,21 +243,6 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                 s.shown = i;
             }
         }
-    } else {
-        for (int i = 0; i < kWeaponCount; ++i) {
-            const WeaponDef& w = weaponDef(i);
-            if (i > 0) {
-                ImGui::SameLine(0.0f, tileGap);
-            }
-            ImGui::PushID(i);
-            if (drawSelectTile(w.name, w.tileColor, tile, s.shownWeapon == i)) {
-                picked = {s.pickedCharacter, i};
-            }
-            ImGui::PopID();
-            if (ImGui::IsItemHovered()) {
-                s.shownWeapon = i;
-            }
-        }
     }
     ImGui::Dummy({0.0f, 10.0f});
 
@@ -232,7 +255,11 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                       ImGuiWindowFlags_NoBackground);
     const char* name;
     const char* epithet;
-    if (weaponStage) {
+    if (levelStage) {
+        const LevelDef& l = levelDef(s.shownLevel);
+        name = l.name;
+        epithet = l.epithet;
+    } else if (weaponStage) {
         const WeaponDef& w = weaponDef(s.shownWeapon);
         name = w.name;
         epithet = w.epithet;
@@ -242,7 +269,11 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
         epithet = c.epithet;
     }
     ImGui::PushFont(nullptr, 30.0f);
-    if (weaponStage) {
+    if (levelStage) {
+        // Keep the whole locked loadout on screen while browsing grounds.
+        ImGui::Text("%s  -  %s  -  %s", characterDef(s.pickedCharacter).name,
+                    weaponDef(s.pickedWeapon).name, name);
+    } else if (weaponStage) {
         // Keep the chosen fighter on screen while browsing blades.
         ImGui::Text("%s  -  %s", characterDef(s.pickedCharacter).name, name);
     } else {
@@ -255,7 +286,9 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::Dummy({0.0f, 2.0f});
-    if (weaponStage) {
+    if (levelStage) {
+        // Levels have no stats — the epithet carries the preview.
+    } else if (weaponStage) {
         const WeaponDef& w = weaponDef(s.shownWeapon);
         drawStatBar("Speed", w.rSpeed, kFill);
         drawStatBar("Damage", w.rDamage, kFill);
@@ -270,9 +303,10 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::Dummy({0.0f, 2.0f});
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextUnformatted(weaponStage
-                               ? "Click a blade to begin - your opponent is drawn at random"
-                               : "Click a fighter to choose their blade");
+    ImGui::TextUnformatted(
+        levelStage    ? "Click a battleground to begin - your opponent is drawn at random"
+        : weaponStage ? "Click a blade to choose the battleground"
+                      : "Click a fighter to choose their blade");
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -379,18 +413,11 @@ PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int tow
 }
 
 void drawScene(Renderer& renderer, const Game& game, float time) {
-    // Arena floor: covers the playable x/z area with some visual overhang.
-    drawBox(renderer, {0.0f, -0.5f, 0.0f},
-            {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, Game::kArenaHalfDepth * 2.0f + 4.0f},
-            {0.16f, 0.15f, 0.13f, 1.0f});
-
-    // Background pillars for depth reference, behind the playable area.
-    const float pillarX[] = {-14.0f, -7.0f, 0.0f, 7.0f, 14.0f};
-    const float pillarH[] = {4.5f, 3.2f, 5.5f, 3.8f, 4.8f};
-    for (int i = 0; i < 5; ++i) {
-        drawBox(renderer, {pillarX[i], pillarH[i] * 0.5f, -Game::kArenaHalfDepth - 1.5f},
-                {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
-    }
+    // Level scenery (floor, backdrop, ambient animation) goes down first so
+    // everything gameplay draws sits on top of it. The game knows its own
+    // battleground, which keeps the drawn scenery and the sim's obstacle
+    // colliders on the same level by construction.
+    drawLevel(renderer, game.level(), time);
 
     // Blood splats staining the floor. Each mark carries its own y jitter and
     // yaw so overlaps don't z-fight or look stamped from the same die.
@@ -489,7 +516,7 @@ int main() {
     Audio audio; // logs and stays silent if no device; the game runs regardless
     // The initial Game is just the arena diorama behind the menu; every
     // lock-in on the select screen replaces it with a fresh match.
-    auto game = std::make_unique<Game>(0, 0, 1, 0);
+    auto game = std::make_unique<Game>(0, 0, 1, 0, 0);
     Bot bot; // drives player 2; re-seeded per match
     FramingCamera camera;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
@@ -500,6 +527,9 @@ int main() {
     // player — kept outside Game so Rematch can rebuild the same pairing.
     int matchChars[2] = {0, 1};
     int matchWeapons[2] = {0, 0};
+    // The battleground index rides beside the loadout so Rematch keeps the
+    // arena; Game bakes it in at construction (scenery + obstacle colliders).
+    int matchLevel = 0;
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
@@ -524,7 +554,7 @@ int main() {
     // a held LMB is flagged so even its eventual release swings nothing.
     auto startMatch = [&] {
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
-                                      matchWeapons[1]);
+                                      matchWeapons[1], matchLevel);
         bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
         lmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
@@ -537,11 +567,13 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
-        // Esc backs out one level: blade stage -> fighter stage,
-        // match/select -> menu, menu -> quit.
+        // Esc backs out one level: battleground stage -> blade stage ->
+        // fighter stage, match/select -> menu, menu -> quit.
         bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         if (escDown && !escHeld) {
-            if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
+            if (state == AppState::CharacterSelect && select.pickedWeapon >= 0) {
+                select.pickedWeapon = -1;
+            } else if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
                 select.pickedCharacter = -1;
             } else if (state != AppState::Menu) {
                 state = AppState::Menu;
@@ -654,6 +686,7 @@ int main() {
         if (picked.character >= 0) {
             matchChars[0] = picked.character;
             matchWeapons[0] = picked.weapon;
+            matchLevel = picked.level;
             matchChars[1] =
                 std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
             matchWeapons[1] =

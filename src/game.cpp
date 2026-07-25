@@ -1,5 +1,6 @@
 #include "game.hpp"
 
+#include "level.hpp" // static obstacle boxes for the chosen battleground
 #include "physics.hpp"
 #include "samurai.hpp" // limb bounds double as gameplay hit regions
 
@@ -211,7 +212,8 @@ float attackDuration(const CharacterStats& st, AttackKind kind, AttackState stat
 }
 } // namespace
 
-Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon) {
+Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int level)
+    : m_level(level) {
     m_defs[0] = &characterDef(p0Character);
     m_defs[1] = &characterDef(p1Character);
     m_weapons[0] = &weaponDef(p0Weapon);
@@ -233,8 +235,31 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon) {
     m_players[0].facing = 1.0f;
     m_players[1].facing = -1.0f;
     // Physics characters are positioned by their feet; ground surface is y = 0.
-    m_physics = std::make_unique<Physics>(kGravity, glm::vec3{-3.0f, 0.0f, 0.0f},
-                                          glm::vec3{3.0f, 0.0f, 0.0f});
+    // The level dictates the arena's width (side-wall placement), its
+    // obstacle boxes (stones, trunks, the house) become static colliders
+    // alongside the arena's ground and walls, its ground boxes replace the
+    // flat slab (Hanami's carved stream channel), and its water volume gives
+    // debris buoyancy and a downstream current.
+    m_arenaHalfWidth = levelDef(level).arenaHalfWidth;
+    std::vector<Physics::StaticBox> statics;
+    for (const LevelObstacle& o : levelObstacles(level)) {
+        statics.push_back({o.center, o.halfExtent});
+    }
+    std::vector<Physics::StaticBox> ground;
+    for (const LevelObstacle& g : levelGround(level)) {
+        ground.push_back({g.center, g.halfExtent});
+    }
+    Physics::Water water;
+    if (const LevelWater* w = levelWater(level)) {
+        water = {w->min, w->max, w->current};
+        m_hasWater = true;
+        m_waterMinXZ = {w->min.x, w->min.z};
+        m_waterMaxXZ = {w->max.x, w->max.z};
+    }
+    m_physics = std::make_unique<Physics>(kGravity, m_arenaHalfWidth,
+                                          glm::vec3{-3.0f, 0.0f, 0.0f},
+                                          glm::vec3{3.0f, 0.0f, 0.0f}, statics,
+                                          ground, water);
 }
 
 Game::~Game() = default;
@@ -418,7 +443,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     for (const Physics::DebrisImpact& impact : m_physics->debrisImpacts()) {
         m_soundCues.push_back(
             {Sfx::Thud, impact.pos.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
-        if (impact.pos.y < 0.15f) {
+        // A piece hitting the stream bed splashes rather than smears — no
+        // mark, no droplet burst (addBloodMark would drop the mark anyway).
+        if (impact.pos.y < 0.15f && !inWater(impact.pos.x, impact.pos.z)) {
             addBloodMark(impact.pos,
                          std::clamp(0.08f + impact.speed * 0.03f, 0.10f, 0.34f));
             spawnBlood({impact.pos.x, 0.08f, impact.pos.z}, {0.0f, 1.0f, 0.0f}, 3,
@@ -669,6 +696,9 @@ void Game::spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count,
 }
 
 void Game::addBloodMark(const glm::vec3& pos, float radius) {
+    if (inWater(pos.x, pos.z)) {
+        return; // washed away downstream
+    }
     // Each mark gets its own tiny y offset so overlapping splats don't
     // z-fight; all stay below the blob shadows (y = 0.03).
     BloodMark mark{{pos.x, 0.006f + 0.010f * frand(), pos.z},

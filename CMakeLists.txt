@@ -78,6 +78,7 @@ add_executable(bushido
     src/character.cpp
     src/weapon.cpp
     src/game.cpp
+    src/level.cpp
     src/physics.cpp
     src/samurai.cpp
     src/audio.cpp)
