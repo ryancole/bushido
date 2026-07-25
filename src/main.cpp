@@ -313,19 +313,23 @@ NetSetupResult drawNetSetup(NetScreen& s) {
 
     // The hint line doubles as the error line: opening a socket is the thing
     // that fails here, and it should fail where the field can still be fixed.
+    // Fixed-height, for the same reason drawOptions' footer is — the window is
+    // centered and auto-sized, so a three-line hint collapsing to a one-line
+    // error would jump the whole panel (and the Back button) up as you click.
     const bool failed = s.error[0] != '\0';
+    ImGui::BeginChild("hint", {contentW, 64.0f}, ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
     ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{0.85f, 0.30f, 0.28f, 0.95f}
                                                 : ImVec4{0.91f, 0.87f, 0.80f, 0.65f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
     ImGui::TextWrapped("%s",
                        failed ? s.error
                               : "A direct connection - the same network, or a "
                                 "forwarded port. The host chooses the battleground; "
                                 "you both choose your own fighter.");
-    ImGui::PopTextWrapPos();
     ImGui::PopFont();
     ImGui::PopStyleColor();
+    ImGui::EndChild();
     ImGui::Dummy({0.0f, 8.0f});
 
     ImGui::PushFont(nullptr, 26.0f);
