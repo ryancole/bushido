@@ -30,6 +30,7 @@
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
 #include "netplay/simlink.hpp"
+#include "netplay/steamlobby.hpp"
 #include "netplay/steamtransport.hpp"
 #include "netplay/transport.hpp"
 #include "renderer.hpp"
@@ -1034,6 +1035,33 @@ void drawNetStatus(const Session& session) {
     dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 24.0f}, color, text);
 }
 
+// While a Steam host waits, offer Steam's own friend picker. This is the
+// whole difference between reading a seventeen-digit number down the phone
+// and clicking a name.
+bool drawInviteButton(bool overlayRefused) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos({vp->Size.x * 0.5f, vp->Size.y * 0.5f + 30.0f},
+                            ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::Begin("invite", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PushFont(nullptr, 26.0f);
+    const bool clicked = ImGui::Button("Invite a Friend", {260.0f, 0.0f});
+    ImGui::PopFont();
+    if (overlayRefused) {
+        // Nothing visible happens when the overlay is off, so say so rather
+        // than let the button look broken.
+        ImGui::PushStyleColor(ImGuiCol_Text, {0.85f, 0.30f, 0.28f, 0.95f});
+        ImGui::PushFont(nullptr, 16.0f);
+        ImGui::TextWrapped("Steam's overlay is off - send them your ID instead.");
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+    }
+    ImGui::End();
+    return clicked;
+}
+
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
     model = glm::scale(model, size);
@@ -1130,8 +1158,9 @@ int main(int argc, char** argv) {
     bool netHost = false;
     std::uint16_t hostPort = 0;
     bool netSim = false;
-    bool steamForced = false;  // --steam: fail rather than fall back
-    bool steamRefused = false; // --no-steam: direct IP even if Steam is there
+    bool steamForced = false;    // --steam: fail rather than fall back
+    bool steamRefused = false;   // --no-steam: direct IP even if Steam is there
+    std::uint64_t connectLobby = 0; // +connect_lobby: launched from an invite
     SimulatedLink::Conditions simConditions;
     int inputDelay = 0; // 0 = measure the link and choose; --delay pins it
     for (int i = 1; i < argc; ++i) {
@@ -1165,6 +1194,10 @@ int main(int argc, char** argv) {
             steamForced = true;
         } else if (std::strcmp(argv[i], "--no-steam") == 0) {
             steamRefused = true;
+        } else if (std::strcmp(argv[i], "+connect_lobby") == 0 && i + 1 < argc) {
+            // Steam's own doing: this is how it launches a game that was not
+            // running when a friend's invite was accepted. The plus is theirs.
+            connectLobby = std::strtoull(argv[++i], nullptr, 10);
         } else if (std::strcmp(argv[i], "--netsim") == 0) {
             if (!parseConditions(argv[++i], simConditions)) {
                 std::fprintf(stderr, "--netsim wants latencyMs[,jitterMs[,loss%%]], "
@@ -1336,6 +1369,7 @@ int main(int argc, char** argv) {
 
     UdpTransport transport;
     SteamTransport steamTransport;
+    SteamLobby steamLobby;
     // Steam's relay is the default now that it has carried a real match: it
     // needs no port forwarded and addresses a person rather than a machine.
     // Three things fall back to direct IP — --no-steam, a build without the
@@ -1389,6 +1423,8 @@ int main(int argc, char** argv) {
     bool netReselect = false;
     // Whether this peer's battleground pick is the one that counts next match.
     bool netOwnsLevel = false;
+    bool lobbyJoinPending = false; // asked to enter a lobby, waiting on Steam
+    bool overlayRefused = false;   // the invite dialog would not open
     // Opens one pass of the select screen. `chooseLevel` is false for whoever
     // picks second into a ground someone else already settled: local versus's
     // player 2, and a netplay client, whose host owns the battleground. Their
@@ -1592,8 +1628,44 @@ int main(int argc, char** argv) {
         // a host learns someone is calling — so it ticks from the moment the
         // Online screen is up, not just once a session exists.
         if (steamMode) {
-            steamTransport.pump();
+            steamTransport.pump(); // also drives the lobby's callbacks
+
+            // A friend's invite arrives one of two ways: Steam launched us
+            // with +connect_lobby because the game was closed, or it told us
+            // mid-session because it was not. Both land here.
+            std::uint64_t invited = 0;
+            if (connectLobby) {
+                invited = connectLobby;
+                connectLobby = 0;
+            } else {
+                steamLobby.takeJoinRequest(invited);
+            }
+            if (invited) {
+                session.stop(); // whatever we were doing, this supersedes it
+                steamLobby.leave();
+                steamLobby.join(invited);
+                lobbyJoinPending = true;
+                netScreen.error[0] = '\0';
+                state = AppState::NetSetup;
+            }
+
+            // The lobby answered. Its owner is the host, so the joiner is the
+            // one who connects; the host only ever had to listen.
+            if (lobbyJoinPending) {
+                if (steamLobby.state() == SteamLobby::State::Joined) {
+                    lobbyJoinPending = false;
+                    if (steamTransport.connectTo(steamLobby.peerId())) {
+                        beginSelect(SetupMode::NetClient, 1, false);
+                        state = AppState::CharacterSelect;
+                    }
+                } else if (steamLobby.state() == SteamLobby::State::Failed) {
+                    lobbyJoinPending = false;
+                    std::snprintf(netScreen.error, sizeof netScreen.error, "%s",
+                                  steamLobby.status());
+                }
+            }
         }
+
         if (session.active()) {
             if (simLink) {
                 simLink->advance(frameTime); // nothing is released until it ticks
@@ -1857,6 +1929,7 @@ int main(int argc, char** argv) {
         OptionsResult optionsResult;
         NetSetupResult netResult;
         SelectResult picked;
+        bool inviteClicked = false;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
@@ -1870,6 +1943,9 @@ int main(int argc, char** argv) {
                 picked = drawCharacterSelect(select);
             } else if (state == AppState::NetWait) {
                 drawNetBanner(session); // the only thing on screen before a match
+                if (steamMode && steamLobby.state() == SteamLobby::State::Hosting) {
+                    inviteClicked = drawInviteButton(overlayRefused);
+                }
             } else {
                 drawBloodBars(*game);
                 if (session.active()) {
@@ -1924,6 +2000,10 @@ int main(int argc, char** argv) {
             state = AppState::Menu;
         }
 
+        if (inviteClicked && !steamLobby.openInviteOverlay()) {
+            overlayRefused = true; // the button would otherwise look broken
+        }
+
         // Online setup. Opening the socket is the thing that can fail, and it
         // fails here where the player can still fix the field, rather than
         // after they have gone and picked a fighter.
@@ -1938,6 +2018,12 @@ int main(int argc, char** argv) {
                 // naming a person.
                 if (netResult.host) {
                     ready = steamTransport.listen();
+                    if (ready) {
+                        // Asynchronous; the wait screen offers the invite once
+                        // Steam answers. Hosting works without it either way —
+                        // the ID is still on the previous screen.
+                        steamLobby.host();
+                    }
                 } else {
                     char* end = nullptr;
                     unsigned long long id =

@@ -97,6 +97,7 @@ add_executable(bushido
     src/netplay/replay.cpp
     src/netplay/session.cpp
     src/netplay/simlink.cpp
+    src/netplay/steamlobby.cpp
     src/netplay/steamtransport.cpp
     src/netplay/transport.cpp
     src/levels/level.cpp
