@@ -126,8 +126,10 @@ struct Player {
 class Game {
 public:
     // A match is fully described by two (character, weapon) roster index
-    // pairs; that's the whole setup a future netplay layer would agree on.
-    Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon);
+    // pairs plus a level index; that's the whole setup a future netplay
+    // layer would agree on. The level picks the scenery and its static
+    // obstacle colliders (levelObstacles).
+    Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int level);
     ~Game();
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
@@ -137,6 +139,9 @@ public:
     // scale, reach bonus, and knockback scale already applied. Everything
     // outside Game (bot, rendering) should read these, not the raw roster.
     const CharacterStats& stats(int i) const { return m_stats[i]; }
+    // The battleground this match was built on (roster index into level.hpp);
+    // main draws the matching scenery.
+    int level() const { return m_level; }
 
     // Match outcome: winner() is -1 while the duel is live, else the index
     // of the surviving player. overTime() is seconds since it was decided
@@ -175,6 +180,7 @@ private:
     std::vector<BloodParticle> m_blood;
     std::vector<BloodMark> m_bloodMarks;
     std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
+    int m_level = 0;        // battleground roster index (scenery + obstacles)
     int m_winner = -1;      // decided once; a post-match death can't flip it
     float m_overTime = 0.0f;
     std::uint32_t m_rng = 0x51ce00d5u;

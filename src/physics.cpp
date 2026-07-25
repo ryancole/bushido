@@ -151,7 +151,8 @@ struct Physics::Impl {
     DebrisContactListener contactListener;
 };
 
-Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB)
+Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB,
+                 const std::vector<StaticBox>& staticBoxes)
     : m_gravity(gravity) {
     ensureJoltInitialized();
     m_impl = std::make_unique<Impl>();
@@ -193,6 +194,13 @@ Physics::Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB
                  {0.0f, kWallHalfHeight, hd + kWall});
     addStaticBox({hw + 2.0f * kWall, kWallHalfHeight, kWall},
                  {0.0f, kWallHalfHeight, -hd - kWall});
+
+    // Level scenery colliders (e.g. Hanami's bank stones). Same layer as the
+    // arena, so fighters and debris both collide with them.
+    for (const StaticBox& b : staticBoxes) {
+        addStaticBox({b.halfExtent.x, b.halfExtent.y, b.halfExtent.z},
+                     {b.center.x, b.center.y, b.center.z});
+    }
 
     // Character capsule matching the fighter's body box, origin at the feet.
     const float radius = Player::kHalfWidth;

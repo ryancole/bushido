@@ -11,9 +11,17 @@
 // is handed each fixed step.
 class Physics {
 public:
+    // An extra static collider box beyond the arena statics (level scenery
+    // like Hanami's bank stones). Axis-aligned, alive for the whole match.
+    struct StaticBox {
+        glm::vec3 center;
+        glm::vec3 halfExtent;
+    };
+
     // Spawns are feet positions (the ground surface is y = 0). Gravity is the
     // magnitude of downward acceleration, matching the game's own constant.
-    Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB);
+    Physics(float gravity, const glm::vec3& spawnA, const glm::vec3& spawnB,
+            const std::vector<StaticBox>& staticBoxes = {});
     ~Physics();
 
     struct MoveResult {

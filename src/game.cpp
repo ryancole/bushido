@@ -1,5 +1,6 @@
 #include "game.hpp"
 
+#include "level.hpp" // static obstacle boxes for the chosen battleground
 #include "physics.hpp"
 #include "samurai.hpp" // limb bounds double as gameplay hit regions
 
@@ -211,7 +212,8 @@ float attackDuration(const CharacterStats& st, AttackKind kind, AttackState stat
 }
 } // namespace
 
-Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon) {
+Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int level)
+    : m_level(level) {
     m_defs[0] = &characterDef(p0Character);
     m_defs[1] = &characterDef(p1Character);
     m_weapons[0] = &weaponDef(p0Weapon);
@@ -233,8 +235,14 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon) {
     m_players[0].facing = 1.0f;
     m_players[1].facing = -1.0f;
     // Physics characters are positioned by their feet; ground surface is y = 0.
+    // The level's obstacle boxes (Hanami's bank stones) become static
+    // colliders alongside the arena's ground and walls.
+    std::vector<Physics::StaticBox> statics;
+    for (const LevelObstacle& o : levelObstacles(level)) {
+        statics.push_back({o.center, o.halfExtent});
+    }
     m_physics = std::make_unique<Physics>(kGravity, glm::vec3{-3.0f, 0.0f, 0.0f},
-                                          glm::vec3{3.0f, 0.0f, 0.0f});
+                                          glm::vec3{3.0f, 0.0f, 0.0f}, statics);
 }
 
 Game::~Game() = default;
