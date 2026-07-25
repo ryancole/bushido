@@ -68,6 +68,24 @@ public:
     // compares it against their own for the same frame.
     void stepped(std::uint32_t checksum);
 
+    // Rematch is *agreed*, not commanded — one player cannot restart the other's
+    // game. Each peer sets its own flag and both flags ride on every input
+    // packet, so the request is a level rather than an edge: it repeats until
+    // the state changes, and there is no ack to lose and nothing to retransmit.
+    // The same property that lets the input stream drop packets safely.
+    void requestRematch() { m_wantRematch = true; }
+    bool rematchRequested() const { return m_wantRematch; }
+    // Both sides want it — or the peer has already rolled onto the next match,
+    // which they only do after seeing our own request, so their agreement is
+    // implied even if their last flag never reached us.
+    bool rematchAgreed() const {
+        return (m_wantRematch && m_peerWantsRematch) || m_peerAhead;
+    }
+    // Rolls onto the next match: frame counter and input rings clear, and the
+    // match index moves so packets still in flight from the finished match are
+    // ignored rather than replayed into the new one. The setup is unchanged.
+    void beginRematch();
+
     std::int64_t frame() const { return m_frame; }
     std::int64_t stalls() const { return m_stalls; } // steps lost waiting, all match
     // One line for the UI — "waiting for an opponent", "desynced at frame N".
@@ -97,6 +115,13 @@ private:
     std::int64_t m_localHead = 0; // next frame a local sample will be scheduled for
     std::int64_t m_stalls = 0;
     bool m_stalling = false; // currently short a remote input
+
+    // Which match of this session we are on. Travels on every input packet so
+    // a peer one match behind (or ahead) can tell the streams apart.
+    std::uint32_t m_match = 0;
+    bool m_wantRematch = false;
+    bool m_peerWantsRematch = false;
+    bool m_peerAhead = false; // peer has already started the next match
 
     std::uint16_t m_local[kRing] = {};
     std::uint16_t m_remote[kRing] = {};

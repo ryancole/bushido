@@ -886,10 +886,10 @@ void drawBloodBars(const Game& game) {
 enum class OverAction { None, Rematch, Select, Disconnect };
 
 // `localSlot` is the fighter this machine's player drives — 0 everywhere
-// except a netplay client, which drives fighter 2. `net` swaps the buttons:
-// a rematch would have to be agreed by both peers, which is protocol this
-// build does not have.
-OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net) {
+// except a netplay client, which drives fighter 2. Across a wire a rematch is
+// a request rather than a restart, so `asked` swaps the button for the wait.
+OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net,
+                          bool asked) {
     OverAction action = OverAction::None;
     // Against the bot (or across a wire) the verdict is the reader's own; with
     // two humans at one keyboard, "VICTORY" would be true for exactly one of
@@ -920,6 +920,18 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
                           (std::max(titleWidth, buttonWidth) - buttonWidth) * 0.5f;
     ImGui::PushFont(nullptr, 30.0f);
     if (net) {
+        ImGui::SetCursorPosX(buttonX);
+        if (asked) {
+            // Asked and waiting: the other player has to want it too, so there
+            // is nothing to click but out.
+            ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+            ImGui::PushFont(nullptr, 22.0f);
+            ImGui::TextUnformatted("waiting for your opponent...");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+        } else if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+            action = OverAction::Rematch;
+        }
         ImGui::SetCursorPosX(buttonX);
         if (ImGui::Button("Disconnect", {buttonWidth, 0.0f})) {
             action = OverAction::Disconnect;
@@ -1452,6 +1464,16 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Both peers reached agreement on a rematch — independently, from the
+        // same two flags — so each rolls its own session onto the next match
+        // and rebuilds the same fresh Game. They need not do it on the same
+        // frame: lockstep resynchronises at frame 0 of the new match the same
+        // way it did at the start of the first one.
+        if (state == AppState::Playing && session.active() && session.rematchAgreed()) {
+            session.beginRematch();
+            startMatch();
+        }
+
         if (state == AppState::Playing) {
             // Local controls are read once per render frame — the attack edges
             // live on the latch until a step takes them.
@@ -1562,9 +1584,16 @@ int main(int argc, char** argv) {
 
             // --auto is hands-off: once the match is decided and the debris
             // has had a moment to settle, leave. The recorder's destructor
-            // reports the step count on the way out.
+            // reports the step count on the way out. In a netplay session it
+            // asks for a rematch instead — quitting would strand a peer who
+            // wanted another round, and an endless soak is the more useful
+            // shape for the thing --auto exists to do.
             if (autoMatch && game->over() && game->overTime() > 2.0f) {
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
+                if (session.active()) {
+                    session.requestRematch();
+                } else {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1623,7 +1652,8 @@ int main(int argc, char** argv) {
                 if (!replayer.active() && game->over() && game->overTime() > 1.2f) {
                     overAction = drawWinOverlay(
                         *game, matchSources[1] == InputSource::Local1,
-                        session.active() ? session.localSlot() : 0, session.active());
+                        session.active() ? session.localSlot() : 0, session.active(),
+                        session.rematchRequested());
                 }
             }
             renderer.endFrame();
@@ -1737,7 +1767,13 @@ int main(int argc, char** argv) {
         }
 
         if (overAction == OverAction::Rematch) {
-            startMatch();
+            // Offline it happens now; across a wire it is a request, and the
+            // restart lands for both peers when the other agrees.
+            if (session.active()) {
+                session.requestRematch();
+            } else {
+                startMatch();
+            }
         } else if (overAction == OverAction::Select) {
             // Back into whichever offline mode this was; netplay offers
             // Disconnect instead, a rematch there needing both peers to agree.

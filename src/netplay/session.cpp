@@ -8,7 +8,7 @@ namespace {
 // Bumped whenever the packet layout or the meaning of a field changes. Two
 // builds that disagree here refuse each other at the handshake rather than
 // desyncing ten seconds in, where the cause would be much harder to see.
-constexpr std::uint32_t kProtocol = 2;
+constexpr std::uint32_t kProtocol = 3;
 
 enum class Msg : std::uint8_t {
     Hello = 0,   // client -> host: I would like a match, and here is my fighter
@@ -148,6 +148,8 @@ void Session::sendInputs() {
     unsigned char buf[kMaxPacket];
     Writer w{buf, kMaxPacket};
     w.u8(static_cast<std::uint8_t>(Msg::Inputs));
+    w.u32(m_match);
+    w.u8(m_wantRematch ? 1u : 0u);
     // The newest kInputRedundancy scheduled frames, oldest first. Repeating
     // them is the entire loss-recovery scheme.
     std::int64_t last = m_localHead - 1;
@@ -245,6 +247,8 @@ void Session::receiveAll() {
             continue;
         }
 
+        std::uint32_t theirMatch = r.u32();
+        std::uint8_t flags = r.u8();
         std::int64_t first = static_cast<std::int64_t>(r.u32());
         int count = r.u8();
         std::uint16_t bits[kInputRedundancy] = {};
@@ -259,7 +263,21 @@ void Session::receiveAll() {
         if (!r.ok) {
             continue; // truncated; the next packet repeats all of it anyway
         }
-        m_sinceHeard = 0.0f;
+        m_sinceHeard = 0.0f; // alive, whichever match they are on
+
+        if (theirMatch == m_match + 1) {
+            // They have already restarted, which they only do once they have
+            // seen our own request — so the rematch is agreed even if their
+            // last flag never arrived. Their inputs belong to the next match;
+            // they will still be repeating them by the time we get there.
+            m_peerAhead = true;
+            continue;
+        }
+        if (theirMatch != m_match) {
+            continue; // a match we have already left; nothing here applies
+        }
+        m_peerWantsRematch = (flags & 1u) != 0;
+
         // Deliberately no "promote to Running on Inputs" shortcut here: the
         // host cannot start without the client's fighter, which only arrives
         // on Hello. It cannot miss one either — a client only sends inputs
@@ -327,6 +345,29 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
         setState(State::Running, "connected");
     }
     return true;
+}
+
+void Session::beginRematch() {
+    // Everything about *this* match resets; everything about the connection —
+    // transport, role, agreed setup, state — is kept. The match index moving
+    // is what makes packets still arriving from the finished match harmless.
+    ++m_match;
+    m_frame = 0;
+    m_stalls = 0;
+    m_stalling = false;
+    m_wantRematch = false;
+    m_peerWantsRematch = false;
+    m_peerAhead = false;
+    for (int i = 0; i < kRing; ++i) {
+        m_remoteHas[i] = false;
+        m_sumsHas[i] = false;
+    }
+    for (int f = 0; f < kInputDelay; ++f) {
+        m_local[f % kRing] = packInput(PlayerInput{});
+    }
+    m_localHead = kInputDelay;
+    setState(State::Running, "connected");
+    std::fprintf(stderr, "net: rematch - starting match %u\n", m_match);
 }
 
 void Session::stepped(std::uint32_t checksum) {
