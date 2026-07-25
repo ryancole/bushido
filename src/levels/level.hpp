@@ -13,6 +13,10 @@ class Renderer;
 // (Game::kArenaHalfDepth) but own their width; beyond what's drawn, a level
 // contributes solid obstacle boxes (Hanami's bank stones, tree trunks, and
 // house) that Game feeds to Physics as static colliders.
+//
+// This header is the whole public surface. Each battleground lives in its own
+// file beside it (dojo.cpp, hanami.cpp) and is wired up through registry.hpp;
+// level.cpp is nothing but the index → implementation dispatch.
 
 struct LevelDef {
     const char* id; // stable slug — the serialization/netplay key, never reordered
