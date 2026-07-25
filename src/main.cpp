@@ -29,6 +29,7 @@
 #include "levels/level.hpp"
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
+#include "netplay/simlink.hpp"
 #include "netplay/transport.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
@@ -1048,6 +1049,8 @@ int main(int argc, char** argv) {
     // LAN or a forwarded port, no NAT traversal:
     //   --host <port>          pick a match as usual, then wait for an opponent
     //   --join <host:port>     skip the menus, take the match the host sends
+    //   --netsim <l[,j[,loss]]>  imitate a worse link (ms, ms, percent)
+    //   --delay <frames>       input delay, default kDefaultInputDelay
     // --auto is what makes recording scriptable: nobody has to click through a
     // select screen, and the bot supplies a whole match of hits, dismemberment
     // and debris against a player who never moves.
@@ -1058,10 +1061,15 @@ int main(int argc, char** argv) {
     bool autoMatch = false;
     bool netHost = false;
     std::uint16_t hostPort = 0;
+    bool netSim = false;
+    SimulatedLink::Conditions simConditions;
+    int inputDelay = kDefaultInputDelay;
     for (int i = 1; i < argc; ++i) {
         bool wantsArg = std::strcmp(argv[i], "--record") == 0 ||
                         std::strcmp(argv[i], "--replay") == 0 ||
                         std::strcmp(argv[i], "--host") == 0 ||
+                        std::strcmp(argv[i], "--netsim") == 0 ||
+                        std::strcmp(argv[i], "--delay") == 0 ||
                         std::strcmp(argv[i], "--join") == 0;
         if (wantsArg && i + 1 >= argc) {
             std::fprintf(stderr, "%s needs an argument\n", argv[i]);
@@ -1083,6 +1091,20 @@ int main(int argc, char** argv) {
             hostPort = static_cast<std::uint16_t>(port);
         } else if (std::strcmp(argv[i], "--join") == 0) {
             joinTarget = argv[++i];
+        } else if (std::strcmp(argv[i], "--netsim") == 0) {
+            if (!parseConditions(argv[++i], simConditions)) {
+                std::fprintf(stderr, "--netsim wants latencyMs[,jitterMs[,loss%%]], "
+                                     "e.g. 40,8,1.5\n");
+                return 1;
+            }
+            netSim = true;
+        } else if (std::strcmp(argv[i], "--delay") == 0) {
+            long frames = std::strtol(argv[++i], nullptr, 10);
+            if (frames < 1 || frames > kMaxInputDelay) {
+                std::fprintf(stderr, "--delay wants 1..%d frames\n", kMaxInputDelay);
+                return 1;
+            }
+            inputDelay = static_cast<int>(frames);
         } else {
             std::fprintf(stderr, "unknown argument '%s'\n", argv[i]);
             return 1;
@@ -1231,6 +1253,13 @@ int main(int argc, char** argv) {
     // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless
     // --host or --join was passed.
     UdpTransport transport;
+    // --netsim slips a deliberately worse link in front of the socket. The
+    // session only ever sees a Transport, which is the point of the interface.
+    std::unique_ptr<SimulatedLink> simLink;
+    if (netSim) {
+        simLink = std::make_unique<SimulatedLink>(transport, simConditions, 0xa17e51u);
+    }
+    Transport* netLink = simLink ? static_cast<Transport*>(simLink.get()) : &transport;
     Session session;
     // Local versus sets a match up in two passes — one human picks, hands the
     // keyboard over, the other picks — so the flow has to remember which of
@@ -1261,7 +1290,7 @@ int main(int argc, char** argv) {
             mine.weapons[i] = matchWeapons[i];
         }
         mine.level = matchLevel;
-        session.start(&transport, role, mine);
+        session.start(netLink, role, mine, inputDelay);
     };
 
     constexpr float kFixedDt = 1.0f / 120.0f;
@@ -1432,6 +1461,9 @@ int main(int argc, char** argv) {
         // keep flowing during a stall — ours are exactly what the peer is
         // waiting for — and a stall means no fixed step runs at all.
         if (session.active()) {
+            if (simLink) {
+                simLink->advance(frameTime); // nothing is released until it ticks
+            }
             session.pump(frameTime);
         }
 
@@ -1572,6 +1604,17 @@ int main(int argc, char** argv) {
                         session.stepped(sum); // the peer compares it against theirs
                     }
                 }
+
+                // Offline --auto stops on an exact step. Checking after the
+                // loop instead would end the run wherever the last render
+                // frame happened to land, so a recording's length — and its
+                // hash — would wobble by a step between runs, which is a
+                // regression check that cries wolf.
+                if (autoMatch && !session.active() && game->over() &&
+                    game->overTime() > 2.0f) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    break;
+                }
             }
 
             // A stall must not bank time. Without this the accumulator grows
@@ -1582,18 +1625,14 @@ int main(int argc, char** argv) {
                 accumulator = std::min(accumulator, kFixedDt * 8.0f);
             }
 
-            // --auto is hands-off: once the match is decided and the debris
-            // has had a moment to settle, leave. The recorder's destructor
-            // reports the step count on the way out. In a netplay session it
-            // asks for a rematch instead — quitting would strand a peer who
-            // wanted another round, and an endless soak is the more useful
-            // shape for the thing --auto exists to do.
-            if (autoMatch && game->over() && game->overTime() > 2.0f) {
-                if (session.active()) {
-                    session.requestRematch();
-                } else {
-                    glfwSetWindowShouldClose(window, GLFW_TRUE);
-                }
+            // In a netplay session --auto asks for another round rather than
+            // leaving: quitting would strand a peer who wanted a rematch, and
+            // an endless run of matches is the more useful shape for the thing
+            // --auto exists to do. (The offline case ends inside the step loop
+            // above, where it can stop on an exact frame.)
+            if (autoMatch && session.active() && game->over() &&
+                game->overTime() > 2.0f) {
+                session.requestRematch();
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1786,6 +1825,10 @@ int main(int argc, char** argv) {
     }
 
     session.stop(); // reports the frame and stall counts on the way out
+    if (simLink && simLink->dropped() > 0) {
+        std::fprintf(stderr, "net: the simulated link dropped %lld datagrams\n",
+                     static_cast<long long>(simLink->dropped()));
+    }
     renderer.shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();

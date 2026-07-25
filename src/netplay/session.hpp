@@ -26,13 +26,24 @@
 // next one to land, and a reliability layer would only add the head-of-line
 // blocking this protocol exists to avoid.
 
-// 3 frames at 120 Hz is 25 ms of buffer — about one good LAN round trip. Raise
-// it for a worse connection: every frame added is 8.3 ms of input lag bought in
-// exchange for tolerating 8.3 ms more of network jitter before a stall.
-inline constexpr int kInputDelay = 3;
+// 3 frames at 120 Hz is 25 ms of buffer — about one good LAN round trip, and
+// the default. It is a *setting*, not a constant, because it is the one knob
+// that trades the two things a connection cares about against each other:
+// every frame added is 8.3 ms of input lag bought in exchange for tolerating
+// 8.3 ms more of network delay before the sim stalls. A link that needs more
+// than it has does not degrade gracefully — it stalls on almost every frame.
+inline constexpr int kDefaultInputDelay = 3;
+inline constexpr int kMaxInputDelay = 32;
 // Frames of input repeated in each packet. At 12, four consecutive datagrams
-// have to vanish before a stall, and the packet is still under 40 bytes.
+// have to vanish before a stall, and the packet is still under 40 bytes. The
+// window actually sent is max(this, inputDelay): at startup a peer has seeded
+// exactly inputDelay frames and sent nothing else, so a window narrower than
+// the delay would leave the oldest frames — including frame 0 — never
+// transmitted, and both sides would wait on them forever.
 inline constexpr int kInputRedundancy = 12;
+// Ceiling on frames in one packet, and so on the receive-side buffer.
+inline constexpr int kMaxInputsPerPacket =
+    kMaxInputDelay > kInputRedundancy ? kMaxInputDelay : kInputRedundancy;
 
 class Session {
 public:
@@ -47,7 +58,8 @@ public:
     // client's pick rides in on Hello, the host answers with the whole thing —
     // so neither player has their fighter chosen for them, and both end up
     // holding the identical MatchSetup that Game is built from.
-    void start(Transport* transport, Role role, const MatchSetup& ownPick);
+    void start(Transport* transport, Role role, const MatchSetup& ownPick,
+               int inputDelay = kDefaultInputDelay);
     void stop();
 
     // Drains the socket and keeps the handshake going. Once per render frame.
@@ -88,6 +100,7 @@ public:
 
     std::int64_t frame() const { return m_frame; }
     std::int64_t stalls() const { return m_stalls; } // steps lost waiting, all match
+    int inputDelay() const { return m_inputDelay; }
     // One line for the UI — "waiting for an opponent", "desynced at frame N".
     const char* status() const { return m_status; }
     // Is there something the player should be told? True while handshaking,
@@ -111,10 +124,16 @@ private:
     MatchSetup m_setup;
     char m_status[96] = {};
 
+    int m_inputDelay = kDefaultInputDelay;
     std::int64_t m_frame = 0;     // next frame to simulate
     std::int64_t m_localHead = 0; // next frame a local sample will be scheduled for
     std::int64_t m_stalls = 0;
     bool m_stalling = false; // currently short a remote input
+    // Same two counts, but across every match of the session rather than the
+    // current one — a rematch zeroes the per-match figures, which would
+    // otherwise make a long soak report only its last few seconds.
+    std::int64_t m_totalFrames = 0;
+    std::int64_t m_totalStalls = 0;
 
     // Which match of this session we are on. Travels on every input packet so
     // a peer one match behind (or ahead) can tell the streams apart.

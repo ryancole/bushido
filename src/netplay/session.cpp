@@ -63,31 +63,54 @@ struct Reader {
 
 } // namespace
 
-void Session::start(Transport* transport, Role role, const MatchSetup& ownPick) {
+void Session::start(Transport* transport, Role role, const MatchSetup& ownPick,
+                    int inputDelay) {
     *this = Session{};
     m_transport = transport;
     m_role = role;
     m_setup = ownPick; // half filled in until the handshake merges the other half
+    m_inputDelay = inputDelay < 1 ? 1
+                   : inputDelay > kMaxInputDelay ? kMaxInputDelay
+                                                 : inputDelay;
 
-    // Both peers seed the first kInputDelay frames with neutral input: nobody
+    // Both peers seed the first m_inputDelay frames with neutral input: nobody
     // has pressed anything yet, and it means each side has something to send
     // the moment it comes up, so the handshake and the first inputs overlap
     // instead of queueing.
-    for (int f = 0; f < kInputDelay; ++f) {
+    for (int f = 0; f < m_inputDelay; ++f) {
         m_local[f % kRing] = packInput(PlayerInput{});
     }
-    m_localHead = kInputDelay;
+    m_localHead = m_inputDelay;
     setState(State::Handshake, role == Role::Host ? "waiting for an opponent"
                                                   : "connecting to the host");
 }
 
 void Session::stop() {
-    if (m_frame > 0) {
-        // Stalls are the number that matters: they are frames both machines
-        // sat still waiting on a packet, and the honest measure of whether
-        // kInputDelay is set high enough for the connection.
-        std::fprintf(stderr, "net: %lld frames simulated, %lld stalled steps\n",
-                     static_cast<long long>(m_frame), static_cast<long long>(m_stalls));
+    if (m_totalFrames + m_frame > 0) {
+        // Stalls are the number that matters: they are steps both machines sat
+        // still waiting on a packet, and the honest measure of whether the
+        // input delay is set high enough for the connection. Per *frame*
+        // rather than per second, because that ratio is what does not depend
+        // on how long the soak happened to run.
+        const long long frames = static_cast<long long>(m_totalFrames + m_frame);
+        const long long stalls = static_cast<long long>(m_totalStalls + m_stalls);
+        std::fprintf(stderr,
+                     "net: %lld frames simulated, %lld stalled steps (%.2f per frame), "
+                     "delay %d\n",
+                     frames, stalls,
+                     frames > 0 ? static_cast<double>(stalls) / static_cast<double>(frames)
+                                : 0.0,
+                     m_inputDelay);
+        // Stalling more than about a quarter of the time means the link needs
+        // more buffer than it was given, and the symptom — a match that runs
+        // in slow motion — does not look like a network problem from inside
+        // the game, so it is worth naming.
+        if (frames > 0 && stalls * 4 > frames) {
+            std::fprintf(stderr,
+                         "net: that connection wanted more input delay than %d "
+                         "frames; --delay trades input lag for fewer stalls\n",
+                         m_inputDelay);
+        }
     }
     *this = Session{};
 }
@@ -153,7 +176,10 @@ void Session::sendInputs() {
     // The newest kInputRedundancy scheduled frames, oldest first. Repeating
     // them is the entire loss-recovery scheme.
     std::int64_t last = m_localHead - 1;
-    std::int64_t first = last - (kInputRedundancy - 1);
+    // Never narrower than the input delay — see kInputRedundancy. At startup
+    // that is the difference between sending frame 0 and deadlocking on it.
+    const int window = m_inputDelay > kInputRedundancy ? m_inputDelay : kInputRedundancy;
+    std::int64_t first = last - (window - 1);
     if (first < 0) {
         first = 0;
     }
@@ -251,8 +277,8 @@ void Session::receiveAll() {
         std::uint8_t flags = r.u8();
         std::int64_t first = static_cast<std::int64_t>(r.u32());
         int count = r.u8();
-        std::uint16_t bits[kInputRedundancy] = {};
-        if (count > kInputRedundancy) {
+        std::uint16_t bits[kMaxInputsPerPacket] = {};
+        if (count > kMaxInputsPerPacket) {
             continue; // not something this build would have sent
         }
         for (int i = 0; i < count; ++i) {
@@ -331,8 +357,8 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
     out[mine] = unpackInput(m_local[m_frame % kRing]);
     out[1 - mine] = unpackInput(m_remote[m_frame % kRing]);
 
-    // This frame's sample is scheduled kInputDelay frames out — m_localHead is
-    // always m_frame + kInputDelay, which is what buys the network its time.
+    // This frame's sample is scheduled m_inputDelay frames out — m_localHead is
+    // always m_frame + m_inputDelay, which is what buys the network its time.
     m_local[m_localHead % kRing] = packInput(local);
     ++m_localHead;
 
@@ -352,6 +378,8 @@ void Session::beginRematch() {
     // transport, role, agreed setup, state — is kept. The match index moving
     // is what makes packets still arriving from the finished match harmless.
     ++m_match;
+    m_totalFrames += m_frame;
+    m_totalStalls += m_stalls;
     m_frame = 0;
     m_stalls = 0;
     m_stalling = false;
@@ -362,10 +390,10 @@ void Session::beginRematch() {
         m_remoteHas[i] = false;
         m_sumsHas[i] = false;
     }
-    for (int f = 0; f < kInputDelay; ++f) {
+    for (int f = 0; f < m_inputDelay; ++f) {
         m_local[f % kRing] = packInput(PlayerInput{});
     }
-    m_localHead = kInputDelay;
+    m_localHead = m_inputDelay;
     setState(State::Running, "connected");
     std::fprintf(stderr, "net: rematch - starting match %u\n", m_match);
 }

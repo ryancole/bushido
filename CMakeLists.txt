@@ -96,6 +96,7 @@ add_executable(bushido
     src/input.cpp
     src/netplay/replay.cpp
     src/netplay/session.cpp
+    src/netplay/simlink.cpp
     src/netplay/transport.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp
