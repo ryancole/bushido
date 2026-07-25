@@ -366,13 +366,14 @@ void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 col
 }
 
 PlayerInput readInput(GLFWwindow* window, int left, int right, int away, int toward,
-                      int jump) {
+                      int jump, int block) {
     PlayerInput in;
     if (glfwGetKey(window, left) == GLFW_PRESS) in.move.x -= 1.0f;
     if (glfwGetKey(window, right) == GLFW_PRESS) in.move.x += 1.0f;
     if (glfwGetKey(window, away) == GLFW_PRESS) in.move.y -= 1.0f;   // into the screen (-z)
     if (glfwGetKey(window, toward) == GLFW_PRESS) in.move.y += 1.0f; // toward the camera (+z)
     in.jump = glfwGetKey(window, jump) == GLFW_PRESS;
+    in.block = glfwGetKey(window, block) == GLFW_PRESS;
     return in;
 }
 
@@ -420,10 +421,15 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         if (p.hitstun > 0.0f) {
             c.kimono = glm::mix(c.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
         }
+        // The riposte window glows gold — strike now; fades as it closes.
+        if (p.riposteTime > 0.0f) {
+            c.kimono = glm::mix(c.kimono, glm::vec4{0.95f, 0.78f, 0.30f, 1.0f},
+                                0.55f * std::min(1.0f, p.riposteTime / 0.25f));
+        }
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
-                     p.attackT, game.stats(i).reach,
+                     p.attackT, p.blocking, game.stats(i).reach,
                      game.weapon(i).stats.bladeWidth, p.bodyRoll(), p.severed},
                     c);
     }
@@ -552,7 +558,7 @@ int main() {
         if (state == AppState::Playing) {
             PlayerInput inputs[2] = {
                 readInput(window, GLFW_KEY_A, GLFW_KEY_D, GLFW_KEY_W, GLFW_KEY_S,
-                          GLFW_KEY_SPACE),
+                          GLFW_KEY_SPACE, GLFW_KEY_LEFT_SHIFT),
                 {}, // player 2 is the bot, filled per fixed step below
             };
 

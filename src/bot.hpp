@@ -7,7 +7,7 @@
 // Drives one fighter from the sim's public state, producing the same
 // PlayerInput a human would. Deliberately simple: close to strike range,
 // line up in depth, swing on a randomized cooldown, and occasionally
-// strafe, back off, or jump so it doesn't play like a homing missile.
+// strafe, back off, block, or jump so it doesn't play like a homing missile.
 // Lives outside Game so the sim stays a pure function of its two inputs.
 class Bot {
 public:
@@ -24,6 +24,7 @@ private:
     float m_modeTimer = 0.0f;     // s left before re-picking a mode
     float m_strafeSign = 1.0f;    // z direction while strafing
     float m_attackDelay = 0.0f;   // s before it's willing to swing again
+    float m_blockTimer = 0.0f;    // s left holding the guard up
     bool m_jumpQueued = false;    // one-shot hop, decided with the mode
     bool m_foeWasWinding = false; // edge-detect the foe's windup for dodging
 };

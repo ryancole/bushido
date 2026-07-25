@@ -119,6 +119,28 @@ std::vector<float> synthThud(float rate) {
     return pcm;
 }
 
+// Block: steel catching steel — a hard noise strike on the front with a
+// bright inharmonic clang (detuned high partials) ringing down behind it.
+std::vector<float> synthBlock(float rate) {
+    std::vector<float> pcm(static_cast<std::size_t>(rate * 0.28f));
+    std::uint32_t rng = 0xb10c5eedu;
+    constexpr float kPartials[4] = {1170.0f, 1780.0f, 2460.0f, 3310.0f};
+    float phase[4] = {};
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        float t = static_cast<float>(i) / rate; // seconds
+        float ring = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            phase[k] += 2.0f * kPi * kPartials[k] / rate;
+            ring += std::sin(phase[k]) * std::exp(-t * (16.0f + 7.0f * k)) /
+                    (1.0f + 0.7f * k);
+        }
+        float strike = noise(rng) * std::exp(-t * 90.0f);
+        pcm[i] = ring + 0.8f * strike;
+    }
+    normalizePeak(pcm, 0.70f);
+    return pcm;
+}
+
 } // namespace
 
 struct Audio::Impl {
@@ -150,6 +172,7 @@ Audio::Audio() : m_impl(std::make_unique<Impl>()) {
     m_impl->pcm[static_cast<int>(Sfx::Hit)] = synthHit(rate);
     m_impl->pcm[static_cast<int>(Sfx::Dismember)] = synthDismember(rate);
     m_impl->pcm[static_cast<int>(Sfx::Thud)] = synthThud(rate);
+    m_impl->pcm[static_cast<int>(Sfx::Block)] = synthBlock(rate);
 
     for (int s = 0; s < kSfxCount; ++s) {
         for (int v = 0; v < kVoicesPerSfx; ++v) {
