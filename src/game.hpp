@@ -2,7 +2,7 @@
 
 #include "audio.hpp"     // Sfx ids for sound cues
 #include "characters/character.hpp" // per-fighter stats
-#include "weapon.hpp"    // per-fighter sword loadout
+#include "weapons/weapon.hpp"    // per-fighter sword loadout
 
 #include <glm/glm.hpp>
 

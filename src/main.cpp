@@ -23,7 +23,7 @@
 #include "levels/level.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
-#include "weapon.hpp"
+#include "weapons/weapon.hpp"
 
 namespace {
 

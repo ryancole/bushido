@@ -2,11 +2,16 @@
 
 #include <glm/glm.hpp>
 
-// A selectable sword. Same contract as the character roster (characters/character.hpp):
-// compiled-in constant data, so a match is fully described by two
-// (character, weapon) index pairs — peers would exchange indices/ids, never
-// stats. Weapons modify the wielder's swing rather than replacing it: the
-// character stats stay the baseline and these scale/offset them.
+// A selectable sword. Same contract as the character roster
+// (characters/character.hpp): compiled-in constant data, so a match is fully
+// described by two (character, weapon) index pairs — peers would exchange
+// indices/ids, never stats. Weapons modify the wielder's swing rather than
+// replacing it: the character stats stay the baseline and these scale/offset
+// them.
+//
+// This header is the whole public surface. Each blade lives in its own file
+// beside it (katana.cpp, wakizashi.cpp, odachi.cpp) and is wired up through
+// registry.hpp; weapon.cpp is nothing but the index → definition dispatch.
 
 struct WeaponStats {
     float swingScale;     // multiplies windup/active/recovery times; <1 = faster

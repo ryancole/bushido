@@ -80,7 +80,10 @@ add_executable(bushido
     src/characters/shinobi.cpp
     src/characters/oni.cpp
     src/characters/kensei.cpp
-    src/weapon.cpp
+    src/weapons/weapon.cpp
+    src/weapons/katana.cpp
+    src/weapons/wakizashi.cpp
+    src/weapons/odachi.cpp
     src/game.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp

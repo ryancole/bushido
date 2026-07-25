@@ -7,8 +7,8 @@
 class Renderer;
 
 // A selectable battleground. Same compiled-in-roster contract as characters
-// (characters/character.hpp) and weapons (weapon.hpp): constant data addressed
-// by index, so a match setup stays a handful of roster indices — peers would
+// (characters/character.hpp) and weapons (weapons/weapon.hpp): constant data
+// addressed by index, so a match stays a handful of roster indices — peers
 // exchange the level index/id, never scene data. Levels share the arena depth
 // (Game::kArenaHalfDepth) but own their width; beyond what's drawn, a level
 // contributes solid obstacle boxes (Hanami's bank stones, tree trunks, and
