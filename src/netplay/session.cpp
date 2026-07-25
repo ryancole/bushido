@@ -9,7 +9,7 @@ namespace {
 // Bumped whenever the packet layout or the meaning of a field changes. Two
 // builds that disagree here refuse each other at the handshake rather than
 // desyncing ten seconds in, where the cause would be much harder to see.
-constexpr std::uint32_t kProtocol = 3;
+constexpr std::uint32_t kProtocol = 4;
 
 enum class Msg : std::uint8_t {
     Hello = 0,   // client -> host: I would like a match, and here is my fighter
@@ -148,8 +148,8 @@ void Session::pump(float dt) {
         m_state == State::Running || m_role == Role::Client;
     if (expectingSomeone && m_sinceHeard > kTimeout) {
         setState(State::Lost, m_state == State::Running
-                                  ? "the opponent stopped responding"
-                                  : "could not reach the host");
+                                  ? "the opponent stopped responding - Esc to leave"
+                                  : "could not reach the host - Esc to leave");
         return;
     }
 
@@ -183,7 +183,15 @@ void Session::sendInputs() {
     Writer w{buf, kMaxPacket};
     w.u8(static_cast<std::uint8_t>(Msg::Inputs));
     w.u32(m_match);
-    w.u8(m_wantRematch ? 1u : 0u);
+    w.u8(static_cast<std::uint8_t>(static_cast<std::uint8_t>(m_intent) |
+                                   (m_loadoutReady ? 0x04u : 0x00u)));
+    // Our half of the next match, on every packet. Twelve bytes to avoid a
+    // negotiation: the peer always holds our current pick, so a reselect needs
+    // no more handshaking than the intent flag does.
+    const int mine = localSlot();
+    w.i32(m_setup.chars[mine]);
+    w.i32(m_setup.weapons[mine]);
+    w.i32(m_setup.level);
     // Our clock, and the newest of theirs we have seen. They echo ours back
     // the same way, so each side can measure a round trip against its own
     // clock alone — no synchronisation, no agreement on what time it is.
@@ -235,7 +243,7 @@ void Session::receiveAll() {
                 continue;
             }
             if (version != kProtocol) {
-                setState(State::Lost, "the opponent is running a different build");
+                setState(State::Lost, "the opponent is running a different build - Esc to leave");
                 return;
             }
             m_sinceHeard = 0.0f;
@@ -274,7 +282,7 @@ void Session::receiveAll() {
                 continue;
             }
             if (version != kProtocol) {
-                setState(State::Lost, "the host is running a different build");
+                setState(State::Lost, "the host is running a different build - Esc to leave");
                 return;
             }
             m_sinceHeard = 0.0f;
@@ -291,6 +299,9 @@ void Session::receiveAll() {
 
         std::uint32_t theirMatch = r.u32();
         std::uint8_t flags = r.u8();
+        std::int32_t theirChar = r.i32();
+        std::int32_t theirWeapon = r.i32();
+        std::int32_t theirLevel = r.i32();
         std::uint32_t theirStamp = r.u32();
         std::uint32_t echoed = r.u32();
         std::int64_t first = static_cast<std::int64_t>(r.u32());
@@ -309,6 +320,11 @@ void Session::receiveAll() {
         }
         m_sinceHeard = 0.0f; // alive, whichever match they are on
         m_peerStamp = theirStamp;
+        // Kept even from a packet of a match we have left: it is their pick for
+        // the *next* one, and it is the thing we need if they roll first.
+        m_peerChar = theirChar;
+        m_peerWeapon = theirWeapon;
+        m_peerLevel = theirLevel;
 
         // Round trip: our own clock, minus the value of it they sent back.
         // Smoothed the RTP way — a running mean plus a running mean deviation
@@ -339,7 +355,11 @@ void Session::receiveAll() {
         if (theirMatch != m_match) {
             continue; // a match we have already left; nothing here applies
         }
-        m_peerWantsRematch = (flags & 1u) != 0;
+        const std::uint8_t rawIntent = flags & 0x03u;
+        m_peerIntent = rawIntent <= static_cast<std::uint8_t>(Intent::Reselect)
+                           ? static_cast<Intent>(rawIntent)
+                           : Intent::None;
+        m_peerLoadoutReady = (flags & 0x04u) != 0;
 
         // Deliberately no "promote to Running on Inputs" shortcut here: the
         // host cannot start without the client's fighter, which only arrives
@@ -363,7 +383,7 @@ void Session::receiveAll() {
             confirmFrame > m_frame - kRing && m_sumsHas[confirmFrame % kRing] &&
             m_sums[confirmFrame % kRing] != confirmSum) {
             char why[96];
-            std::snprintf(why, sizeof why, "desynced at frame %lld",
+            std::snprintf(why, sizeof why, "desynced at frame %lld - Esc to leave",
                           static_cast<long long>(confirmFrame));
             std::fprintf(stderr,
                          "\nnet: DESYNC at frame %lld — ours %08x, theirs %08x\n"
@@ -408,6 +428,16 @@ bool Session::nextStep(const PlayerInput& local, PlayerInput out[2]) {
         setState(State::Running, "connected");
     }
     return true;
+}
+
+void Session::submitLoadout(int character, int weapon, int level) {
+    const int mine = localSlot();
+    m_setup.chars[mine] = character;
+    m_setup.weapons[mine] = weapon;
+    if (m_role == Role::Host) {
+        m_setup.level = level; // the ground is the host's to give
+    }
+    m_loadoutReady = true;
 }
 
 int Session::targetDelay() const {
@@ -464,9 +494,19 @@ void Session::beginRematch() {
     m_frame = 0;
     m_stalls = 0;
     m_stalling = false;
-    m_wantRematch = false;
-    m_peerWantsRematch = false;
+    // Fold in whatever the peer last told us they were bringing. After a plain
+    // rematch this is unchanged; after a reselect it is their new fighter.
+    const int theirs = 1 - localSlot();
+    m_setup.chars[theirs] = m_peerChar;
+    m_setup.weapons[theirs] = m_peerWeapon;
+    if (m_role == Role::Client) {
+        m_setup.level = m_peerLevel; // the host owns the ground
+    }
+    m_intent = Intent::None;
+    m_peerIntent = Intent::None;
     m_peerAhead = false;
+    m_loadoutReady = false;
+    m_peerLoadoutReady = false;
     for (int i = 0; i < kRing; ++i) {
         m_remoteHas[i] = false;
         m_sumsHas[i] = false;

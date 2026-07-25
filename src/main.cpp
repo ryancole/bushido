@@ -930,8 +930,17 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
             ImGui::TextUnformatted("waiting for your opponent...");
             ImGui::PopFont();
             ImGui::PopStyleColor();
-        } else if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
-            action = OverAction::Rematch;
+        } else {
+            if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+                action = OverAction::Rematch;
+            }
+            ImGui::SetCursorPosX(buttonX);
+            // Changing fighters keeps the connection: the alternative is
+            // disconnecting and redoing the whole host-and-join dance to swap
+            // a sword.
+            if (ImGui::Button("Change Fighters", {buttonWidth, 0.0f})) {
+                action = OverAction::Select;
+            }
         }
         ImGui::SetCursorPosX(buttonX);
         if (ImGui::Button("Disconnect", {buttonWidth, 0.0f})) {
@@ -1272,6 +1281,10 @@ int main(int argc, char** argv) {
     SetupMode setupMode = SetupMode::Solo;
     int selectingPlayer = 0;
     NetScreen netScreen;
+    // True while a select screen is re-picking into an *existing* session
+    // rather than setting one up, which is the difference between submitting a
+    // loadout over the wire and opening a fresh handshake.
+    bool netReselect = false;
     // Opens one pass of the select screen. `chooseLevel` is false for whoever
     // picks second into a ground someone else already settled: local versus's
     // player 2, and a netplay client, whose host owns the battleground. Their
@@ -1473,7 +1486,31 @@ int main(int argc, char** argv) {
 
         // The handshake landed: the host's match description is in hand, so
         // this machine can finally build the same Game the host did.
-        if (state == AppState::NetWait &&
+        // Re-picking into a live session: both halves are in when each peer has
+        // said it is ready — or when the peer has already rolled forward, which
+        // is the same race the rematch flag has and is closed the same way.
+        if (state == AppState::NetWait && netReselect &&
+            (session.loadoutsExchanged() ||
+             session.agreedIntent() == Session::Intent::Rematch)) {
+            netReselect = false;
+            session.beginRematch(); // merges their half in, rolls the match on
+            const MatchSetup& merged = session.setup();
+            if (!setupIsSane(merged)) {
+                std::fprintf(stderr, "net: the opponent picked a fighter, blade or "
+                                     "battleground this build does not have\n");
+                session.stop();
+                state = AppState::Menu;
+            } else {
+                for (int i = 0; i < 2; ++i) {
+                    matchChars[i] = merged.chars[i];
+                    matchWeapons[i] = merged.weapons[i];
+                }
+                matchLevel = merged.level;
+                startMatch();
+            }
+        }
+
+        if (state == AppState::NetWait && !netReselect &&
             session.state() == Session::State::Running) {
             const MatchSetup& setup = session.setup();
             if (!setupIsSane(setup)) {
@@ -1505,9 +1542,30 @@ int main(int argc, char** argv) {
         // and rebuilds the same fresh Game. They need not do it on the same
         // frame: lockstep resynchronises at frame 0 of the new match the same
         // way it did at the start of the first one.
-        if (state == AppState::Playing && session.active() && session.rematchAgreed()) {
-            session.beginRematch();
-            startMatch();
+        if (state == AppState::Playing && session.active()) {
+            const Session::Intent agreed = session.agreedIntent();
+            if (agreed == Session::Intent::Rematch) {
+                session.beginRematch();
+                startMatch();
+            } else if (agreed == Session::Intent::Reselect) {
+                netReselect = true;
+                if (autoMatch) {
+                    // Nobody at this keyboard to pick again: keep the fighter
+                    // and let the human on the other end change theirs.
+                    const int mine = session.localSlot();
+                    session.submitLoadout(matchChars[mine], matchWeapons[mine],
+                                          matchLevel);
+                    state = AppState::NetWait;
+                } else {
+                    // Back to the select screen with the connection intact —
+                    // the new picks travel over the live session, so nobody
+                    // re-hosts or re-joins to swap a sword.
+                    const bool hosting = session.localSlot() == 0;
+                    beginSelect(hosting ? SetupMode::NetHost : SetupMode::NetClient,
+                                hosting ? 0 : 1, hosting);
+                    state = AppState::CharacterSelect;
+                }
+            }
         }
 
         if (state == AppState::Playing) {
@@ -1636,7 +1694,14 @@ int main(int argc, char** argv) {
             // above, where it can stop on an exact frame.)
             if (autoMatch && session.active() && game->over() &&
                 game->overTime() > 2.0f) {
-                session.requestRematch();
+                // A bot peer goes along with whatever the human asked for, so
+                // one driven window is enough to exercise either agreement.
+                const Session::Intent theirs = session.peerRequested();
+                if (theirs != Session::Intent::None) {
+                    session.request(theirs);
+                } else if (session.requested() == Session::Intent::None) {
+                    session.request(Session::Intent::Rematch);
+                }
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1696,7 +1761,7 @@ int main(int argc, char** argv) {
                     overAction = drawWinOverlay(
                         *game, matchSources[1] == InputSource::Local1,
                         session.active() ? session.localSlot() : 0, session.active(),
-                        session.rematchRequested());
+                        session.requested() != Session::Intent::None);
                 }
             }
             renderer.endFrame();
@@ -1800,6 +1865,12 @@ int main(int argc, char** argv) {
                 matchSources[0] = InputSource::Local0;
                 matchSources[1] = InputSource::Local1;
                 startMatch();
+            } else if (netReselect) {
+                // Re-picking mid-session: the connection is already up, so the
+                // pick goes straight down it rather than through a handshake.
+                session.submitLoadout(matchChars[selectingPlayer],
+                                      matchWeapons[selectingPlayer], matchLevel);
+                state = AppState::NetWait;
             } else {
                 // Netplay: this half of the match goes to the session, and the
                 // arena waits on the handshake for the other half.
@@ -1813,15 +1884,17 @@ int main(int argc, char** argv) {
             // Offline it happens now; across a wire it is a request, and the
             // restart lands for both peers when the other agrees.
             if (session.active()) {
-                session.requestRematch();
+                session.request(Session::Intent::Rematch);
             } else {
                 startMatch();
             }
         } else if (overAction == OverAction::Select) {
-            // Back into whichever offline mode this was; netplay offers
-            // Disconnect instead, a rematch there needing both peers to agree.
-            beginSelect(setupMode, 0, true);
-            state = AppState::CharacterSelect;
+            if (session.active()) {
+                session.request(Session::Intent::Reselect); // also has to be agreed
+            } else {
+                beginSelect(setupMode, 0, true);
+                state = AppState::CharacterSelect;
+            }
         } else if (overAction == OverAction::Disconnect) {
             session.stop();
             state = AppState::Menu;

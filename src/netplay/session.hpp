@@ -87,19 +87,34 @@ public:
     // compares it against their own for the same frame.
     void stepped(std::uint32_t checksum);
 
-    // Rematch is *agreed*, not commanded — one player cannot restart the other's
-    // game. Each peer sets its own flag and both flags ride on every input
-    // packet, so the request is a level rather than an edge: it repeats until
-    // the state changes, and there is no ack to lose and nothing to retransmit.
-    // The same property that lets the input stream drop packets safely.
-    void requestRematch() { m_wantRematch = true; }
-    bool rematchRequested() const { return m_wantRematch; }
-    // Both sides want it — or the peer has already rolled onto the next match,
-    // which they only do after seeing our own request, so their agreement is
-    // implied even if their last flag never reached us.
-    bool rematchAgreed() const {
-        return (m_wantRematch && m_peerWantsRematch) || m_peerAhead;
+    // What a peer wants to do once the match is over. Both are *agreed*, not
+    // commanded — one player cannot restart the other's game, nor drag them
+    // back to a select screen. Each peer's intent rides on every input packet,
+    // so a request is a level rather than an edge: it repeats until the state
+    // changes, and there is no ack to lose and nothing to retransmit. The same
+    // property that lets the input stream drop packets safely.
+    enum class Intent : std::uint8_t { None = 0, Rematch = 1, Reselect = 2 };
+
+    void request(Intent intent) { m_intent = intent; }
+    Intent requested() const { return m_intent; }
+    Intent peerRequested() const { return m_peerIntent; }
+    // What both sides asked for, or None while they disagree. A peer already
+    // on the next match implies a Rematch: they only roll forward after seeing
+    // our own request.
+    Intent agreedIntent() const {
+        if (m_peerAhead) {
+            return Intent::Rematch;
+        }
+        return m_intent != Intent::None && m_intent == m_peerIntent ? m_intent
+                                                                    : Intent::None;
     }
+
+    // After a Reselect, each side picks again and submits its own half; the
+    // level is the host's to give. Both halves travel on every packet, so the
+    // merge needs no more handshaking than the intent did.
+    void submitLoadout(int character, int weapon, int level);
+    bool loadoutSubmitted() const { return m_loadoutReady; }
+    bool loadoutsExchanged() const { return m_loadoutReady && m_peerLoadoutReady; }
     // Rolls onto the next match: frame counter and input rings clear, and the
     // match index moves so packets still in flight from the finished match are
     // ignored rather than replayed into the new one. The setup is unchanged.
@@ -166,9 +181,17 @@ private:
     // Which match of this session we are on. Travels on every input packet so
     // a peer one match behind (or ahead) can tell the streams apart.
     std::uint32_t m_match = 0;
-    bool m_wantRematch = false;
-    bool m_peerWantsRematch = false;
+    Intent m_intent = Intent::None;
+    Intent m_peerIntent = Intent::None;
     bool m_peerAhead = false; // peer has already started the next match
+    // Each side's half of the next match. The peer's is kept from every packet
+    // rather than only from a "ready" one, so if they roll forward before their
+    // ready flag reaches us we still hold the pick they rolled with.
+    bool m_loadoutReady = false;
+    bool m_peerLoadoutReady = false;
+    std::int32_t m_peerChar = 0;
+    std::int32_t m_peerWeapon = 0;
+    std::int32_t m_peerLevel = 0;
 
     std::uint16_t m_local[kRing] = {};
     std::uint16_t m_remote[kRing] = {};
