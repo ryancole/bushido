@@ -18,12 +18,12 @@
 #include "audio.hpp"
 #include "bot.hpp"
 #include "camera.hpp"
-#include "character.hpp"
+#include "characters/character.hpp"
 #include "game.hpp"
-#include "level.hpp"
+#include "levels/level.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
-#include "weapon.hpp"
+#include "weapons/weapon.hpp"
 
 namespace {
 

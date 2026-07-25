@@ -1,8 +1,8 @@
 #pragma once
 
 #include "audio.hpp"     // Sfx ids for sound cues
-#include "character.hpp" // per-fighter stats
-#include "weapon.hpp"    // per-fighter sword loadout
+#include "characters/character.hpp" // per-fighter stats
+#include "weapons/weapon.hpp"    // per-fighter sword loadout
 
 #include <glm/glm.hpp>
 
@@ -139,7 +139,7 @@ public:
     // scale, reach bonus, and knockback scale already applied. Everything
     // outside Game (bot, rendering) should read these, not the raw roster.
     const CharacterStats& stats(int i) const { return m_stats[i]; }
-    // The battleground this match was built on (roster index into level.hpp);
+    // The battleground this match was built on (roster index into levels/level.hpp);
     // main draws the matching scenery.
     int level() const { return m_level; }
 
@@ -192,7 +192,7 @@ private:
     std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
     int m_level = 0;        // battleground roster index (scenery + obstacles)
     float m_arenaHalfWidth = kArenaHalfWidth; // this match's playable half width
-    // The level's water volume footprint (xz), mirrored from level.hpp so
+    // The level's water volume footprint (xz), mirrored from levels/level.hpp so
     // blood marks can be suppressed in the stream; Physics holds the rest.
     bool m_hasWater = false;
     glm::vec2 m_waterMinXZ{0.0f};

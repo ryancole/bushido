@@ -6,6 +6,10 @@
 // match is fully described by two character indices — important for
 // multiplayer later: peers only ever need to exchange indices (or the stable
 // `id` slugs), never stats, and the sim stays deterministic across machines.
+//
+// This header is the whole public surface. Each fighter lives in its own file
+// beside it (ronin.cpp, shinobi.cpp, …) and is wired up through registry.hpp;
+// character.cpp is nothing but the index → definition dispatch.
 
 struct CharacterStats {
     float moveSpeed;    // m/s ground speed

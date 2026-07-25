@@ -75,13 +75,26 @@ add_executable(bushido
     src/renderer.cpp
     src/camera.cpp
     src/bot.cpp
-    src/character.cpp
-    src/weapon.cpp
+    src/characters/character.cpp
+    src/characters/ronin.cpp
+    src/characters/shinobi.cpp
+    src/characters/oni.cpp
+    src/characters/kensei.cpp
+    src/weapons/weapon.cpp
+    src/weapons/katana.cpp
+    src/weapons/wakizashi.cpp
+    src/weapons/odachi.cpp
     src/game.cpp
-    src/level.cpp
+    src/levels/level.cpp
+    src/levels/dojo.cpp
+    src/levels/hanami.cpp
     src/physics.cpp
     src/samurai.cpp
     src/audio.cpp)
+
+# Headers are included relative to src/ ("game.hpp", "levels/level.hpp") so
+# sources in subdirectories don't need ../ paths.
+target_include_directories(bushido PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(bushido PRIVATE
     Vulkan::Vulkan

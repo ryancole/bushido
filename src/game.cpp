@@ -1,6 +1,6 @@
 #include "game.hpp"
 
-#include "level.hpp" // static obstacle boxes for the chosen battleground
+#include "levels/level.hpp" // static obstacle boxes for the chosen battleground
 #include "physics.hpp"
 #include "samurai.hpp" // limb bounds double as gameplay hit regions
 

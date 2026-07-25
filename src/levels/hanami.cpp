@@ -1,36 +1,23 @@
-#include "level.hpp"
+#include "levels/registry.hpp"
 
 #include "game.hpp" // arena bounds — scenery is sized off the playable area
-#include "renderer.hpp"
+#include "levels/scenery.hpp"
 
-#include <glm/gtc/matrix_transform.hpp>
-
-#include <algorithm>
 #include <cmath>
 
+// Hanami: a cherry blossom grove cut by a carved stream, with the shinobi no
+// ie holding the widened left flank. Every solid thing here is authored once
+// and shared between the drawing and the colliders, so a rock you see is a
+// rock you bump into.
+
+namespace levels::hanami {
 namespace {
-
-void box(Renderer& r, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
-    glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
-    model = glm::scale(model, size);
-    r.drawBox(model, color);
-}
-
-// Cheap deterministic 0..1 hash for scattering scenery; keeps every frame
-// identical without any stored state.
-float hash01(int i) {
-    std::uint32_t h = static_cast<std::uint32_t>(i) * 2654435761u;
-    h ^= h >> 15;
-    h *= 2246822519u;
-    h ^= h >> 13;
-    return static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
-}
 
 // The stream's placement is shared by the water, the stones, the carved
 // ground channel, and the water volume, so it lives here rather than inside
-// drawHanami. It sits at x = -6: left of center for composition, but clear
-// of player 1's spawn at x = -3 — the channel is genuinely recessed, and
-// nobody should start the match standing in it.
+// draw(). It sits at x = -6: left of center for composition, but clear of
+// player 1's spawn at x = -3 — the channel is genuinely recessed, and nobody
+// should start the match standing in it.
 constexpr float kStreamX = -6.0f;
 constexpr float kStreamW = 1.9f;
 // The channel: bed 0.35 m down — under the characters' 0.4 m step-up, so
@@ -42,7 +29,7 @@ constexpr float kStreamSurfaceY = -0.02f;
 // Hanami plays wider than the baseline arena — the extra room on the left
 // belongs to the shinobi house. The def below and the floor/wall math both
 // read this so the drawn stage and the physics walls agree.
-constexpr float kHanamiHalfWidth = 16.0f;
+constexpr float kHalfWidth = 16.0f;
 
 float trunkHeight(int seed) { return 2.4f + hash01(seed) * 0.9f; }
 
@@ -50,9 +37,9 @@ float trunkHeight(int seed) { return 2.4f + hash01(seed) * 0.9f; }
 // same boxes are drawn AND handed to Physics as static colliders, so a rock
 // you see is a rock you (and tumbling debris) bump into. Stones that would
 // crowd a fighter's spawn point are skipped.
-const std::vector<LevelObstacle>& hanamiStones() {
-    static const std::vector<LevelObstacle> stones = [] {
-        std::vector<LevelObstacle> v;
+const std::vector<LevelObstacle>& stones() {
+    static const std::vector<LevelObstacle> v = [] {
+        std::vector<LevelObstacle> out;
         const float floorD = Game::kArenaHalfDepth * 2.0f + 4.0f;
         const glm::vec2 spawns[2] = {{-3.0f, 0.0f}, {3.0f, 0.0f}};
         for (int i = 0; i < 14; ++i) {
@@ -68,11 +55,11 @@ const std::vector<LevelObstacle>& hanamiStones() {
             if (nearSpawn) {
                 continue;
             }
-            v.push_back({{bx, sz * 0.35f, bz}, {sz * 0.7f, sz * 0.35f, sz * 0.5f}});
+            out.push_back({{bx, sz * 0.35f, bz}, {sz * 0.7f, sz * 0.35f, sz * 0.5f}});
         }
-        return v;
+        return out;
     }();
-    return stones;
+    return v;
 }
 
 // The grove, dispersed through the level. In-field trees stand inside the
@@ -81,12 +68,12 @@ const std::vector<LevelObstacle>& hanamiStones() {
 // trees stand past the playable depth for parallax. Only in-field trunks get
 // colliders — canopy and branch stay cosmetic, so fighters jump through
 // blossoms but never through wood.
-struct HanamiTree {
+struct Tree {
     float x, z;
     int seed;
     bool backdrop;
 };
-constexpr HanamiTree kHanamiTrees[] = {
+constexpr Tree kTrees[] = {
     {-9.5f, -3.2f, 3, false},
     {-8.6f, 1.8f, 20, false},
     {-0.8f, -3.5f, 37, false},
@@ -117,7 +104,7 @@ constexpr glm::vec4 kWoodDark{0.26f, 0.19f, 0.13f, 1.0f};
 constexpr glm::vec4 kWoodFloor{0.52f, 0.38f, 0.25f, 1.0f};
 constexpr glm::vec4 kRoofDark{0.17f, 0.13f, 0.11f, 1.0f};
 constexpr glm::vec4 kShoji{0.88f, 0.84f, 0.72f, 1.0f};
-constexpr HouseBox kShinobiHouse[] = {
+constexpr HouseBox kHouse[] = {
     // Raised floor platform (engawa) and its entry step stone.
     {{kHouseX, 0.18f, kHouseZ}, {2.4f, 0.18f, 2.2f}, kWoodFloor, true},
     {{-12.4f, 0.09f, 1.75f}, {0.4f, 0.09f, 0.3f}, {0.42f, 0.41f, 0.38f, 1.0f}, true},
@@ -136,71 +123,14 @@ constexpr HouseBox kShinobiHouse[] = {
     {{kHouseX, 2.76f, kHouseZ}, {1.9f, 0.13f, 1.8f}, {0.23f, 0.18f, 0.15f, 1.0f}, true},
 };
 
-// Everything solid in Hanami: the bank stones, the in-field tree trunks
-// (half extents matching the drawn 0.32-wide trunk exactly), and the house's
-// structural boxes.
-const std::vector<LevelObstacle>& hanamiObstacles() {
-    static const std::vector<LevelObstacle> obstacles = [] {
-        std::vector<LevelObstacle> v = hanamiStones();
-        for (const HanamiTree& t : kHanamiTrees) {
-            if (t.backdrop) {
-                continue;
-            }
-            float h = trunkHeight(t.seed);
-            v.push_back({{t.x, h * 0.5f, t.z}, {0.16f, h * 0.5f, 0.16f}});
-        }
-        for (const HouseBox& b : kShinobiHouse) {
-            if (b.solid) {
-                v.push_back({b.center, b.halfExtent});
-            }
-        }
-        return v;
-    }();
-    return obstacles;
-}
-
-// Hanami's ground colliders: the flat slab is replaced by two banks with the
-// stream channel carved between them, bed at kStreamBedY. Extents match the
-// default slab's (1 m overhang past walls) so behavior at the walls is
-// unchanged.
-const std::vector<LevelObstacle>& hanamiGround() {
-    static const std::vector<LevelObstacle> ground = [] {
-        const float hw = kHanamiHalfWidth + 1.0f;
-        const float hd = Game::kArenaHalfDepth + 1.0f;
-        const float xL = kStreamX - kStreamW * 0.5f;
-        const float xR = kStreamX + kStreamW * 0.5f;
-        std::vector<LevelObstacle> v;
-        v.push_back({{(-hw + xL) * 0.5f, -0.5f, 0.0f}, {(xL + hw) * 0.5f, 0.5f, hd}});
-        v.push_back({{(xR + hw) * 0.5f, -0.5f, 0.0f}, {(hw - xR) * 0.5f, 0.5f, hd}});
-        v.push_back(
-            {{kStreamX, kStreamBedY - 0.5f, 0.0f}, {kStreamW * 0.5f, 0.5f, hd}});
-        return v;
-    }();
-    return ground;
-}
-
 // The stream's water volume: spans the channel for the floor's whole depth,
 // surface at kStreamSurfaceY, flowing toward the camera (+z) — the same
 // direction the ripple glints scroll.
-constexpr LevelWater kHanamiWater = {
+constexpr LevelWater kWater = {
     {kStreamX - kStreamW * 0.5f, kStreamBedY, -(Game::kArenaHalfDepth + 2.0f)},
     {kStreamX + kStreamW * 0.5f, kStreamSurfaceY, Game::kArenaHalfDepth + 2.0f},
     {0.0f, 0.0f, 0.55f},
 };
-
-// The original arena: dark stone slab with pillars behind for depth reference.
-void drawDojo(Renderer& r, float) {
-    box(r, {0.0f, -0.5f, 0.0f},
-        {Game::kArenaHalfWidth * 2.0f + 8.0f, 1.0f, Game::kArenaHalfDepth * 2.0f + 4.0f},
-        {0.16f, 0.15f, 0.13f, 1.0f});
-
-    const float pillarX[] = {-14.0f, -7.0f, 0.0f, 7.0f, 14.0f};
-    const float pillarH[] = {4.5f, 3.2f, 5.5f, 3.8f, 4.8f};
-    for (int i = 0; i < 5; ++i) {
-        box(r, {pillarX[i], pillarH[i] * 0.5f, -Game::kArenaHalfDepth - 1.5f},
-            {1.2f, pillarH[i], 1.2f}, {0.10f, 0.10f, 0.14f, 1.0f});
-    }
-}
 
 // A cherry tree: trunk plus a clump of blossom boxes that sway together.
 // Everything hangs off (x, z) at the ground; `seed` varies the build so the
@@ -235,17 +165,71 @@ void drawCherryTree(Renderer& r, float x, float z, int seed, float time, bool le
         pinkLight);
 }
 
-// Cherry blossom grove cut by a stream: grass floor, a water band flowing
-// toward the camera with drifting ripple glints, stone banks, sakura trees
-// behind the arena, and petals falling across the playfield. All ambient
-// motion is a pure function of `time` — nothing here touches the sim.
-void drawHanami(Renderer& r, float time) {
-    const float floorW = kHanamiHalfWidth * 2.0f + 8.0f;
+} // namespace
+
+const LevelDef kDef = {
+    "hanami",
+    "Hanami",
+    "Petals drift over quiet water",
+    {0.83f, 0.54f, 0.62f, 0.75f},
+    kHalfWidth,
+};
+
+// Everything solid here: the bank stones, the in-field tree trunks (half
+// extents matching the drawn 0.32-wide trunk exactly), and the house's
+// structural boxes.
+const std::vector<LevelObstacle>& obstacles() {
+    static const std::vector<LevelObstacle> v = [] {
+        std::vector<LevelObstacle> out = stones();
+        for (const Tree& t : kTrees) {
+            if (t.backdrop) {
+                continue;
+            }
+            float h = trunkHeight(t.seed);
+            out.push_back({{t.x, h * 0.5f, t.z}, {0.16f, h * 0.5f, 0.16f}});
+        }
+        for (const HouseBox& b : kHouse) {
+            if (b.solid) {
+                out.push_back({b.center, b.halfExtent});
+            }
+        }
+        return out;
+    }();
+    return v;
+}
+
+// Ground colliders: the flat slab is replaced by two banks with the stream
+// channel carved between them, bed at kStreamBedY. Extents match the default
+// slab's (1 m overhang past walls) so behavior at the walls is unchanged.
+const std::vector<LevelObstacle>& ground() {
+    static const std::vector<LevelObstacle> v = [] {
+        const float hw = kHalfWidth + 1.0f;
+        const float hd = Game::kArenaHalfDepth + 1.0f;
+        const float xL = kStreamX - kStreamW * 0.5f;
+        const float xR = kStreamX + kStreamW * 0.5f;
+        std::vector<LevelObstacle> out;
+        out.push_back({{(-hw + xL) * 0.5f, -0.5f, 0.0f}, {(xL + hw) * 0.5f, 0.5f, hd}});
+        out.push_back({{(xR + hw) * 0.5f, -0.5f, 0.0f}, {(hw - xR) * 0.5f, 0.5f, hd}});
+        out.push_back(
+            {{kStreamX, kStreamBedY - 0.5f, 0.0f}, {kStreamW * 0.5f, 0.5f, hd}});
+        return out;
+    }();
+    return v;
+}
+
+const LevelWater* water() { return &kWater; }
+
+// Grass floor, a water band flowing toward the camera with drifting ripple
+// glints, stone banks, sakura through the playfield, the house on the left
+// flank, and petals falling across everything. All ambient motion is a pure
+// function of `time` — nothing here touches the sim.
+void draw(Renderer& r, float time) {
+    const float floorW = kHalfWidth * 2.0f + 8.0f;
     const float floorD = Game::kArenaHalfDepth * 2.0f + 4.0f;
 
     // Grass banks flanking the carved stream channel (the physics ground is
-    // carved the same way — see hanamiGround). The channel floor is mud, and
-    // the water surface is a translucent sheet just below bank level, so the
+    // carved the same way — see ground()). The channel floor is mud, and the
+    // water surface is a translucent sheet just below bank level, so the
     // stream is genuinely sunken: fighters wade shin-deep and severed pieces
     // bob half-submerged as the current carries them off.
     const float xL = kStreamX - kStreamW * 0.5f;
@@ -273,19 +257,19 @@ void drawHanami(Renderer& r, float time) {
 
     // Bank stones — drawn from the shared obstacle list so they sit exactly
     // where their colliders are.
-    for (const LevelObstacle& stone : hanamiStones()) {
+    for (const LevelObstacle& stone : stones()) {
         box(r, stone.center, stone.halfExtent * 2.0f, {0.42f, 0.41f, 0.38f, 1.0f});
     }
 
     // The grove, dispersed through the playfield with a backdrop rank behind
-    // it. In-field trunks are solid (see hanamiObstacles).
-    for (const HanamiTree& t : kHanamiTrees) {
+    // it. In-field trunks are solid (see obstacles()).
+    for (const Tree& t : kTrees) {
         drawCherryTree(r, t.x, t.z, t.seed, time, t.backdrop);
     }
 
     // Shinobi no ie on the left flank, drawn from the same authored boxes
     // whose solid entries are the colliders.
-    for (const HouseBox& b : kShinobiHouse) {
+    for (const HouseBox& b : kHouse) {
         box(r, b.center, b.halfExtent * 2.0f, b.color);
     }
 
@@ -308,52 +292,4 @@ void drawHanami(Renderer& r, float time) {
     }
 }
 
-const LevelDef kLevels[kLevelCount] = {
-    {
-        "dojo",
-        "Dojo",
-        "Stone, shadow, and discipline",
-        {0.22f, 0.21f, 0.26f, 0.75f},
-        Game::kArenaHalfWidth,
-    },
-    {
-        "hanami",
-        "Hanami",
-        "Petals drift over quiet water",
-        {0.83f, 0.54f, 0.62f, 0.75f},
-        kHanamiHalfWidth,
-    },
-};
-
-} // namespace
-
-const LevelDef& levelDef(int index) {
-    return kLevels[std::clamp(index, 0, kLevelCount - 1)];
-}
-
-const std::vector<LevelObstacle>& levelObstacles(int index) {
-    static const std::vector<LevelObstacle> kNone;
-    switch (std::clamp(index, 0, kLevelCount - 1)) {
-    case 1: return hanamiObstacles();
-    default: return kNone;
-    }
-}
-
-const std::vector<LevelObstacle>& levelGround(int index) {
-    static const std::vector<LevelObstacle> kFlat;
-    switch (std::clamp(index, 0, kLevelCount - 1)) {
-    case 1: return hanamiGround();
-    default: return kFlat;
-    }
-}
-
-const LevelWater* levelWater(int index) {
-    return std::clamp(index, 0, kLevelCount - 1) == 1 ? &kHanamiWater : nullptr;
-}
-
-void drawLevel(Renderer& renderer, int index, float time) {
-    switch (std::clamp(index, 0, kLevelCount - 1)) {
-    case 0: drawDojo(renderer, time); break;
-    case 1: drawHanami(renderer, time); break;
-    }
-}
+} // namespace levels::hanami
