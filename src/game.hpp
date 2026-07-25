@@ -1,7 +1,7 @@
 #pragma once
 
 #include "audio.hpp"     // Sfx ids for sound cues
-#include "character.hpp" // per-fighter stats
+#include "characters/character.hpp" // per-fighter stats
 #include "weapon.hpp"    // per-fighter sword loadout
 
 #include <glm/glm.hpp>

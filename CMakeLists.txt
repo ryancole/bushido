@@ -75,7 +75,11 @@ add_executable(bushido
     src/renderer.cpp
     src/camera.cpp
     src/bot.cpp
-    src/character.cpp
+    src/characters/character.cpp
+    src/characters/ronin.cpp
+    src/characters/shinobi.cpp
+    src/characters/oni.cpp
+    src/characters/kensei.cpp
     src/weapon.cpp
     src/game.cpp
     src/levels/level.cpp

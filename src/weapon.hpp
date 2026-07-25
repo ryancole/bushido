@@ -2,7 +2,7 @@
 
 #include <glm/glm.hpp>
 
-// A selectable sword. Same contract as the character roster (character.hpp):
+// A selectable sword. Same contract as the character roster (characters/character.hpp):
 // compiled-in constant data, so a match is fully described by two
 // (character, weapon) index pairs — peers would exchange indices/ids, never
 // stats. Weapons modify the wielder's swing rather than replacing it: the
