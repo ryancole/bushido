@@ -97,6 +97,7 @@ add_executable(bushido
     src/netplay/replay.cpp
     src/netplay/session.cpp
     src/netplay/simlink.cpp
+    src/netplay/steamtransport.cpp
     src/netplay/transport.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp
@@ -119,6 +120,36 @@ target_link_libraries(bushido PRIVATE
     imgui
     tomlplusplus::tomlplusplus
     ws2_32) # netplay's UDP transport (src/netplay/transport.cpp)
+
+# Steam networking. Every other dependency here arrives by FetchContent; this
+# one cannot, because the Steamworks SDK is licence-gated — you accept an
+# agreement and download it while signed in. So it is opt-in: point
+# STEAM_SDK_DIR at the extracted `sdk` directory (the one holding public/ and
+# redistributable_bin/) and the Steam transport compiles in. Without it the
+# game still builds and still plays over direct IP; SteamTransport stubs out
+# and reports itself unavailable.
+set(STEAM_SDK_DIR "" CACHE PATH "Steamworks SDK 'sdk' directory (optional)")
+if(STEAM_SDK_DIR)
+    if(NOT EXISTS "${STEAM_SDK_DIR}/public/steam/steam_api.h")
+        message(FATAL_ERROR
+            "STEAM_SDK_DIR is set to '${STEAM_SDK_DIR}' but "
+            "public/steam/steam_api.h is not there. It should be the 'sdk' "
+            "directory from inside the Steamworks SDK zip.")
+    endif()
+    target_include_directories(bushido PRIVATE "${STEAM_SDK_DIR}/public")
+    target_link_libraries(bushido PRIVATE
+        "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.lib")
+    target_compile_definitions(bushido PRIVATE BUSHIDO_STEAM)
+    # steam_api64.dll has to sit beside the exe or it will not start.
+    add_custom_command(TARGET bushido POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.dll"
+                "$<TARGET_FILE_DIR:bushido>"
+        COMMENT "Copying steam_api64.dll beside bushido.exe")
+    message(STATUS "Steam networking: ENABLED (${STEAM_SDK_DIR})")
+else()
+    message(STATUS "Steam networking: disabled (set STEAM_SDK_DIR to enable)")
+endif()
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)
