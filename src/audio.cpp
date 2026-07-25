@@ -413,6 +413,9 @@ struct Audio::Impl {
     ma_engine engine;
     bool engineInited = false;
     bool ok = false;
+    // The device's rate, captured once the engine is up: every synth step runs
+    // after initDevice and composes straight at the output rate (no resampling).
+    float rate = 48000.0f;
 
     std::vector<float> pcm[kSfxCount];
     // Each voice owns its own read cursor (ma_audio_buffer) over the shared
@@ -435,22 +438,53 @@ struct Audio::Impl {
     float sfxVolume = 1.0f;
 };
 
-Audio::Audio() : m_impl(std::make_unique<Impl>()) {
+Audio::Audio() : m_impl(std::make_unique<Impl>()) {}
+
+void Audio::initDevice() {
     if (ma_engine_init(nullptr, &m_impl->engine) != MA_SUCCESS) {
         std::fprintf(stderr, "audio: engine init failed; continuing without sound\n");
         return;
     }
     m_impl->engineInited = true;
+    m_impl->rate = static_cast<float>(ma_engine_get_sample_rate(&m_impl->engine));
+}
 
-    const float rate = static_cast<float>(ma_engine_get_sample_rate(&m_impl->engine));
+void Audio::initSfx() {
+    if (!m_impl->engineInited) {
+        return;
+    }
+    const float rate = m_impl->rate;
     m_impl->pcm[static_cast<int>(Sfx::Swing)] = synthSwing(rate);
     m_impl->pcm[static_cast<int>(Sfx::Hit)] = synthHit(rate);
     m_impl->pcm[static_cast<int>(Sfx::Dismember)] = synthDismember(rate);
     m_impl->pcm[static_cast<int>(Sfx::Thud)] = synthThud(rate);
     m_impl->pcm[static_cast<int>(Sfx::Block)] = synthBlock(rate);
-    m_impl->musicPcm[static_cast<int>(Music::Menu)] = synthMenuMusic(rate);
-    m_impl->musicPcm[static_cast<int>(Music::Dojo)] = synthDojoMusic(rate);
-    m_impl->musicPcm[static_cast<int>(Music::Hanami)] = synthHanamiMusic(rate);
+}
+
+void Audio::initMusic(Music track) {
+    if (!m_impl->engineInited) {
+        return;
+    }
+    const float rate = m_impl->rate;
+    switch (track) {
+    case Music::Menu:
+        m_impl->musicPcm[static_cast<int>(track)] = synthMenuMusic(rate);
+        break;
+    case Music::Dojo:
+        m_impl->musicPcm[static_cast<int>(track)] = synthDojoMusic(rate);
+        break;
+    case Music::Hanami:
+        m_impl->musicPcm[static_cast<int>(track)] = synthHanamiMusic(rate);
+        break;
+    }
+}
+
+// The last startup step: one playback cursor per voice over the PCM the synth
+// steps produced. Everything stays silent until this succeeds for all of them.
+void Audio::initVoices() {
+    if (!m_impl->engineInited) {
+        return;
+    }
 
     auto initVoice = [&](Impl::Voice& voice, const std::vector<float>& pcm) {
         ma_audio_buffer_config cfg = ma_audio_buffer_config_init(
@@ -483,6 +517,9 @@ Audio::Audio() : m_impl(std::make_unique<Impl>()) {
             return;
         }
         ma_sound_set_looping(&m_impl->music[t].sound, MA_TRUE);
+        // The player's level may have been set before these voices existed
+        // (setMusicVolume stores it either way), so seat it now.
+        ma_sound_set_volume(&m_impl->music[t].sound, m_impl->musicVolume);
     }
     m_impl->ok = true;
 }

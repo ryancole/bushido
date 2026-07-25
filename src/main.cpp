@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <random>
 #include <string>
@@ -29,8 +31,22 @@
 
 namespace {
 
-enum class AppState { Menu, Options, CharacterSelect, Playing };
+enum class AppState { Loading, Menu, Options, CharacterSelect, Playing };
 enum class MenuAction { None, Play, Options, Quit };
+
+// One piece of startup work. The app opens straight into `Loading` and runs
+// exactly one step per frame, so the window stays responsive and the bar
+// advances on real completions rather than on a timer. `weight` is the step's
+// measured cost in milliseconds (debug build, one machine) — the steps are
+// wildly uneven, a single music loop being ~25 s of synthesized audio against
+// a level prewarm that rounds to nothing, so a bar driven by step *count*
+// would sit still and then leap. The numbers only have to hold their ratios:
+// they're a shape for the bar, not a promise about the clock.
+struct LoadStep {
+    const char* label;
+    float weight;
+    std::function<void()> run;
+};
 
 // Select-screen state. Three stages on one screen: pick the fighter, then the
 // blade, then the battleground. `shown*` are the indices being previewed (the
@@ -84,6 +100,59 @@ void setupMenuStyle() {
     style.Colors[ImGuiCol_FrameBgActive] = {0.55f, 0.09f, 0.09f, 0.70f};
     style.Colors[ImGuiCol_SliderGrab] = {0.72f, 0.13f, 0.13f, 1.0f};
     style.Colors[ImGuiCol_SliderGrabActive] = {0.85f, 0.70f, 0.25f, 1.0f};
+}
+
+// Loading screen: the title over a progress bar and the name of the work in
+// hand. `fill` is the eased bar position (0..1) and `label` the step about to
+// run. Drawn over the bare clear color — at this point the arena the menus sit
+// in front of hasn't been built yet.
+void drawLoadingScreen(float fill, const char* label) {
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("loading", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    // Same title as the main menu, so the screen it hands off to looks like the
+    // same screen with the bar swapped for the buttons.
+    ImGui::PushFont(nullptr, 88.0f);
+    const float titleWidth = ImGui::CalcTextSize("BUSHIDO").x;
+    ImGui::TextUnformatted("BUSHIDO");
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 10.0f});
+
+    // The bar borrows the blood bars' palette — black trough, crimson fill,
+    // cream hairline — so the HUD and the front end speak the same language.
+    // Drawn straight to the draw list; ImGui only reserves the space.
+    const float barW = titleWidth, barH = 12.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 mn = ImGui::GetCursorScreenPos();
+    const ImVec2 mx{mn.x + barW, mn.y + barH};
+    dl->AddRectFilled(mn, mx, IM_COL32(0, 0, 0, 130), 3.0f);
+    if (fill > 0.0f) {
+        dl->AddRectFilled(mn, {mn.x + barW * fill, mx.y}, IM_COL32(214, 44, 44, 220),
+                          3.0f);
+    }
+    dl->AddRect(mn, mx, IM_COL32(232, 222, 204, 70), 3.0f, 0, 1.5f);
+    ImGui::Dummy({barW, barH});
+
+    // Step name on the left, percentage right-aligned to the bar's end.
+    ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 17.0f);
+    ImGui::TextUnformatted(label);
+    char percent[8];
+    // Rounded, not truncated: the bar hands off a hair under full, and a
+    // loading screen whose last word is "99%" reads as a stall.
+    std::snprintf(percent, sizeof(percent), "%d%%",
+                  static_cast<int>(fill * 100.0f + 0.5f));
+    ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + barW -
+                    ImGui::CalcTextSize(percent).x);
+    ImGui::TextUnformatted(percent);
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+
+    ImGui::End();
 }
 
 MenuAction drawMainMenu() {
@@ -775,23 +844,62 @@ int main() {
     setupMenuStyle();
 
     Audio audio; // logs and stays silent if no device; the game runs regardless
-    // The initial Game is just the arena diorama behind the menu; every
-    // lock-in on the select screen replaces it with a fresh match.
-    auto game = std::make_unique<Game>(0, 0, 1, 0, 0);
+    // The arena diorama behind the menu, built by the last load step; every
+    // lock-in on the select screen replaces it with a fresh match. Null until
+    // then, which is why the loading branch of the loop returns early.
+    std::unique_ptr<Game> game;
     Bot bot; // drives player 2; re-seeded per match
     FramingCamera camera;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
-    AppState state = AppState::Menu;
+    AppState state = AppState::Loading;
     SelectScreen select;
     // Player settings, from %APPDATA%/bushido/bushido.toml if it's there; a
     // missing or broken file just leaves the defaults standing (loadConfig says
     // which). The mixer levels have to be pushed to Audio; the keybinds are
     // read straight out of `settings` every frame.
     Settings settings;
-    loadConfig(settings);
-    audio.setMusicVolume(settings.audio.music);
-    audio.setSfxVolume(settings.audio.sfx);
     OptionsScreen options;
+
+    // Everything that has to happen before the menu can come up, one step per
+    // frame. Nothing here is busywork padding a bar: the audio steps are the
+    // synthesis that used to stall inside Audio's constructor, and the last two
+    // pull the first match's one-time costs forward out of the first match.
+    const LoadStep loadSteps[] = {
+        {"Opening the hall", 25.0f, [&] { audio.initDevice(); }},
+        {"Reading your settings", 0.5f,
+         [&] {
+             loadConfig(settings);
+             // Safe this early: the levels are stored either way and seated on
+             // the tracks when their voices are built a few steps down.
+             audio.setMusicVolume(settings.audio.music);
+             audio.setSfxVolume(settings.audio.sfx);
+         }},
+        {"Forging the blades", 3.0f, [&] { audio.initSfx(); }},
+        {"Tuning the koto", 81.0f, [&] { audio.initMusic(Music::Menu); }},
+        {"Beating the taiko", 87.0f, [&] { audio.initMusic(Music::Dojo); }},
+        {"Scattering the petals", 124.0f, [&] { audio.initMusic(Music::Hanami); }},
+        {"Taking up the voices", 0.5f, [&] { audio.initVoices(); }},
+        {"Raising the battlegrounds", 0.5f,
+         [&] {
+             // Each level's static geometry is generated once, on the first
+             // ask, and cached — asking now moves that hitch off the first
+             // match onto the bar, where it's expected.
+             for (int i = 0; i < kLevelCount; ++i) {
+                 levelObstacles(i);
+                 levelGround(i);
+             }
+         }},
+        {"Squaring the arena", 3.0f,
+         [&] { game = std::make_unique<Game>(0, 0, 1, 0, 0); }}, // boots Jolt
+    };
+    const int loadStepCount = static_cast<int>(std::size(loadSteps));
+    int loadStep = 0;      // the next step to run
+    float loadDone = 0.0f; // weight completed so far
+    float loadTotal = 0.0f;
+    for (const LoadStep& s : loadSteps) {
+        loadTotal += s.weight;
+    }
+    float loadShown = 0.0f; // the drawn bar, easing toward loadDone/loadTotal
     std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
     // The current match's loadout — (character, weapon) roster indices per
     // player — kept outside Game so Rematch can rebuild the same pairing.
@@ -841,7 +949,11 @@ int main() {
         // fighter stage, match/select -> menu, menu -> quit.
         bool escDown = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         if (escDown && !escHeld) {
-            if (state == AppState::Options && options.capturing >= 0) {
+            if (state == AppState::Loading) {
+                // Nothing to back out to, and the menu can't be entered
+                // half-built — Esc during the load just leaves.
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            } else if (state == AppState::Options && options.capturing >= 0) {
                 options.capturing = -1; // cancel the rebind, stay on the screen
             } else if (state == AppState::CharacterSelect && select.pickedWeapon >= 0) {
                 select.pickedWeapon = -1;
@@ -859,6 +971,33 @@ int main() {
         float frameTime = std::chrono::duration<float>(now - lastTime).count();
         lastTime = now;
         elapsed += frameTime;
+
+        if (state == AppState::Loading) {
+            // The bar eases toward the completed fraction instead of snapping
+            // to it: nine steps of uneven cost would otherwise jump the fill in
+            // visible chunks. It only ever chases real completions, so it can't
+            // run ahead of the work — and on a fast machine the whole load
+            // reads as one sweep rather than a single frame at 100%.
+            const float target = loadDone / loadTotal;
+            loadShown += (target - loadShown) * (1.0f - std::exp(-9.0f * frameTime));
+
+            const bool stepsLeft = loadStep < loadStepCount;
+            if (renderer.beginFrame()) {
+                drawLoadingScreen(loadShown,
+                                  stepsLeft ? loadSteps[loadStep].label : "Ready");
+                renderer.endFrame();
+            }
+            // The step runs *after* the frame naming it is on screen, so the
+            // label the player is reading is the work they're waiting on.
+            if (stepsLeft) {
+                loadSteps[loadStep].run();
+                loadDone += loadSteps[loadStep].weight;
+                ++loadStep;
+            } else if (loadShown > 0.995f) {
+                state = AppState::Menu;
+            }
+            continue; // nothing below this exists yet
+        }
 
         if (state == AppState::Playing) {
             PlayerInput inputs[2] = {
