@@ -26,6 +26,21 @@ public:
     Audio();
     ~Audio();
 
+    // Staged startup. Opening the device and synthesizing every effect and
+    // all three music loops is the bulk of the app's load time, and a loading
+    // screen can only report honest progress if that work runs a piece at a
+    // time. So the constructor costs nothing and main's load-step table drives
+    // these in order — initDevice, initSfx, initMusic once per track, then
+    // initVoices, which builds the playback cursors over the finished PCM.
+    // Until initVoices lands, play and playMusic are silent no-ops (as they
+    // are for the whole run if the device didn't open). The mixer levels may
+    // be set at any point: whatever they hold when initVoices runs is what the
+    // tracks start at, so loading the player's settings needn't come first.
+    void initDevice();
+    void initSfx();
+    void initMusic(Music track);
+    void initVoices();
+
     // pan: -1 full left .. +1 full right. pitch: 1 = as synthesized; small
     // per-play jitter keeps repeated effects from sounding stamped-out.
     // gain: 0..1 scale on the effect's baked level (e.g. impact strength).
