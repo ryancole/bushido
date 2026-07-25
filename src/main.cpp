@@ -24,6 +24,7 @@
 #include "characters/character.hpp"
 #include "config.hpp"
 #include "game.hpp"
+#include "input.hpp"
 #include "levels/level.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
@@ -729,20 +730,6 @@ void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 col
     renderer.drawBox(model, color);
 }
 
-// The held-state half of the player's controls; the attack edges are latched in
-// the main loop instead (they have to survive zero-step frames).
-PlayerInput readInput(GLFWwindow* window, const Keybinds& keys) {
-    PlayerInput in;
-    if (bindHeld(window, keys[Action::MoveLeft])) in.move.x -= 1.0f;
-    if (bindHeld(window, keys[Action::MoveRight])) in.move.x += 1.0f;
-    if (bindHeld(window, keys[Action::MoveAway])) in.move.y -= 1.0f;   // into the screen (-z)
-    if (bindHeld(window, keys[Action::MoveToward])) in.move.y += 1.0f; // toward the camera (+z)
-    in.jump = bindHeld(window, keys[Action::Jump]);
-    in.block = bindHeld(window, keys[Action::Block]);
-    in.crouch = bindHeld(window, keys[Action::Crouch]);
-    return in;
-}
-
 void drawScene(Renderer& renderer, const Game& game, float time) {
     // Level scenery (floor, backdrop, ambient animation) goes down first so
     // everything gameplay draws sits on top of it. The game knows its own
@@ -910,23 +897,22 @@ int main() {
     // The battleground index rides beside the loadout so Rematch keeps the
     // arena; Game bakes it in at construction (scenery + obstacle colliders).
     int matchLevel = 0;
+    // Who drives each fighter. Rides with the loadout for the same reason —
+    // Rematch keeps it — and is the one place a local-versus or netplay match
+    // would differ from this one.
+    InputSource matchSources[2] = {InputSource::Local0, InputSource::Bot};
 
     constexpr float kFixedDt = 1.0f / 120.0f;
     float accumulator = 0.0f;
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
-    // Attack inputs are edge-detected per render frame but consumed by fixed
-    // steps; latch them so a press landing on a zero-step frame is not lost.
-    // The attack control fires on *release* — a tap is the normal swing, a
-    // hold past kHeavyHoldTime charges the heavy — so both share one control.
-    // The jab control fires on press.
-    constexpr float kHeavyHoldTime = 0.28f; // s of hold that makes it a heavy
-    bool attackHeld = false;
-    bool jabHeld = false;
-    bool attackSuppressed = false; // ignore the release of a pre-match click
-    float attackHoldTime = 0.0f;
-    bool attackPending = false;
-    AttackKind pendingKind = AttackKind::Light;
+    // One latch per local control set (see input.hpp): the held controls are
+    // read per render frame, the attack edges wait here for a fixed step.
+    LocalInput localInputs[2];
+    // Which control set a local slot reads. Both slots share one set today; a
+    // second one is a struct in config.hpp, a [keybinds_p2] table on disk, and
+    // a tab in drawOptions — this is the single call site it would change.
+    auto localKeys = [&](int) -> const Keybinds& { return settings.keybinds; };
     bool escHeld = false;
 
     // Fresh match from matchChars. Seeding the button latches from the live
@@ -940,13 +926,16 @@ int main() {
         audio.loadMusic(levelMusic(matchLevel));
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1], matchLevel);
-        bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
-        attackHeld = bindHeld(window, settings.keybinds[Action::Attack]);
-        jabHeld = bindHeld(window, settings.keybinds[Action::Jab]);
-        attackSuppressed = attackHeld;
-        attackHoldTime = 0.0f;
-        attackPending = false;
+        for (int i = 0; i < 2; ++i) {
+            if (matchSources[i] == InputSource::Bot) {
+                bot = Bot{i, rng()}; // fresh brain (and rng stream) each match
+            }
+            int slot = localSlot(matchSources[i]);
+            if (slot >= 0) {
+                localInputs[slot].beginMatch(window, localKeys(slot));
+            }
+        }
     };
 
     while (!glfwWindowShouldClose(window)) {
@@ -1007,50 +996,44 @@ int main() {
         }
 
         if (state == AppState::Playing) {
-            PlayerInput inputs[2] = {
-                readInput(window, settings.keybinds),
-                {}, // player 2 is the bot, filled per fixed step below
-            };
-
-            // Attack: light on a tap's release, heavy on a long hold's release.
-            bool attack = bindHeld(window, settings.keybinds[Action::Attack]);
-            if (attack && !attackHeld) {
-                attackHoldTime = 0.0f; // fresh press: start the charge clock
-            }
-            if (attack) {
-                attackHoldTime += frameTime;
-            } else if (attackHeld) { // release edge
-                if (attackSuppressed) {
-                    attackSuppressed = false; // the click that started the match
-                } else if (!attackPending) {
-                    pendingKind = attackHoldTime >= kHeavyHoldTime ? AttackKind::Heavy
-                                                                  : AttackKind::Light;
-                    attackPending = true;
+            // Local controls are read once per render frame — the attack edges
+            // live on the latch until a step takes them.
+            for (int i = 0; i < 2; ++i) {
+                int slot = localSlot(matchSources[i]);
+                if (slot >= 0) {
+                    localInputs[slot].poll(window, localKeys(slot), frameTime);
                 }
             }
-            attackHeld = attack;
 
-            // Jab on press.
-            bool jab = bindHeld(window, settings.keybinds[Action::Jab]);
-            if (jab && !jabHeld && !attackPending) {
-                pendingKind = AttackKind::Jab;
-                attackPending = true;
-            }
-            jabHeld = jab;
-
-            inputs[0].attack = attackPending;
-            inputs[0].attackKind = pendingKind;
+            // One slot's input for one step. The bot is asked per step rather
+            // than per frame because it reads sim state the last step moved.
+            auto stepInput = [&](int i) -> PlayerInput {
+                switch (matchSources[i]) {
+                case InputSource::Local0:
+                case InputSource::Local1:
+                    return localInputs[localSlot(matchSources[i])].current();
+                case InputSource::Bot:
+                    // Once the match is decided the bot stands down; the human
+                    // keeps control (walking off — or desecrating the corpse).
+                    return game->over() ? PlayerInput{} : bot.think(*game, kFixedDt);
+                case InputSource::Remote:
+                    break; // no peer yet: the fighter stands still
+                }
+                return PlayerInput{};
+            };
 
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
             while (accumulator >= kFixedDt) {
-                // Once the match is decided the bot stands down; the human
-                // keeps control (walking off — or desecrating the corpse).
-                inputs[1] = game->over() ? PlayerInput{} : bot.think(*game, kFixedDt);
+                PlayerInput inputs[2] = {stepInput(0), stepInput(1)};
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
-                attackPending = false;
-                inputs[0].attack = false;
+                for (int i = 0; i < 2; ++i) {
+                    int slot = localSlot(matchSources[i]);
+                    if (slot >= 0) {
+                        localInputs[slot].consumeAttack();
+                    }
+                }
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1138,6 +1121,11 @@ int main() {
                 std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
             matchWeapons[1] =
                 std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
+            // The select screen is single-player: one human, one bot. A local
+            // versus or netplay pick would set the second slot differently and
+            // change nothing else about the match.
+            matchSources[0] = InputSource::Local0;
+            matchSources[1] = InputSource::Bot;
             startMatch();
         }
 

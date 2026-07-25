@@ -93,6 +93,7 @@ add_executable(bushido
     src/weapons/wakizashi.cpp
     src/weapons/odachi.cpp
     src/game.cpp
+    src/input.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp
     src/levels/hanami.cpp
