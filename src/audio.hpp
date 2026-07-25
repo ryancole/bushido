@@ -4,8 +4,8 @@
 
 // Sound effect ids. The PCM for each is synthesized at startup — no asset
 // files — in the same procedural spirit as the box-built samurai.
-enum class Sfx { Swing = 0, Hit, Dismember, Thud };
-inline constexpr int kSfxCount = 4;
+enum class Sfx { Swing = 0, Hit, Dismember, Thud, Block };
+inline constexpr int kSfxCount = 5;
 
 // miniaudio wrapper (pimpl; miniaudio headers only in the .cpp). If the audio
 // device can't be opened the game keeps running silent.

@@ -24,6 +24,10 @@ const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 // match game.cpp's kAttackTuning so the cut lands where the blade is drawn:
 // light chops overhead-to-front, heavy from further past overhead, and the
 // jab snaps a short arc to horizontal — a forward thrust.
+// Guard: the sword arm holds the drawn blade level at the foe, between the
+// jab's start and end angles — clearly "up", clearly not a swing.
+constexpr float kGuardAngle = 1.30f;
+
 float swordArmAngle(int attackState, int attackKind, float t) {
     constexpr float kStart[3] = {2.60f, 2.95f, 1.20f}; // light, heavy, jab
     constexpr float kEnd[3] = {0.55f, 0.45f, 1.55f};
@@ -129,10 +133,13 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
             part(upper, {0.0f, 1.28f, s * 0.26f}, {0.10f, 0.10f, 0.10f}, kStump);
             continue;
         }
-        bool swordArm = s == swordSide && pose.attackState != 0;
+        const bool guarding = pose.blocking && pose.attackState == 0;
+        bool swordArm = s == swordSide && (pose.attackState != 0 || guarding);
         float swing;
         if (swordArm) {
-            swing = swordArmAngle(pose.attackState, pose.attackKind, pose.attackT);
+            swing = guarding ? kGuardAngle
+                             : swordArmAngle(pose.attackState, pose.attackKind,
+                                             pose.attackT);
         } else if (pose.grounded) {
             swing = std::sin(pose.walkPhase + (s > 0.0f ? pi : 0.0f)) * 0.45f * pose.moveAmount;
         } else {

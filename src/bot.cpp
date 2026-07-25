@@ -33,13 +33,20 @@ PlayerInput Bot::think(const Game& game, float dt) {
 
     m_modeTimer -= dt;
     m_attackDelay -= dt;
+    m_blockTimer -= dt;
 
-    // Seeing the foe start a windup in range sometimes triggers a dodge:
-    // step out of the blade's path instead of trading.
+    // Seeing the foe start a windup in range triggers a defensive read:
+    // sometimes raise the guard and catch the blow, sometimes step out of
+    // the blade's path — and sometimes just trade.
     const bool foeWinding = foe.attackState == AttackState::Windup;
-    if (foeWinding && !m_foeWasWinding && adx < foeReach + 0.7f && frand() < 0.45f) {
-        m_mode = Mode::Retreat;
-        m_modeTimer = 0.20f + 0.20f * frand();
+    if (foeWinding && !m_foeWasWinding && adx < foeReach + 0.7f) {
+        float roll = frand();
+        if (roll < 0.25f && self.attackState == AttackState::None && !self.downed()) {
+            m_blockTimer = 0.30f + 0.30f * frand();
+        } else if (roll < 0.55f) {
+            m_mode = Mode::Retreat;
+            m_modeTimer = 0.20f + 0.20f * frand();
+        }
     }
     m_foeWasWinding = foeWinding;
 
@@ -76,9 +83,16 @@ PlayerInput Bot::think(const Game& game, float dt) {
         m_jumpQueued = false;
     }
 
+    // A caught blow drops the guard for the counter: the riposte window
+    // outranks whatever the block timer had left.
+    in.block = m_blockTimer > 0.0f && self.riposteTime <= 0.0f;
+
     // Swing when lined up and off cooldown. The cooldown is what makes the
-    // bot beatable: it won't re-swing the instant recovery ends.
-    if (m_attackDelay <= 0.0f && self.attackState == AttackState::None &&
+    // bot beatable: it won't re-swing the instant recovery ends — except a
+    // riposte, which it takes the moment it's earned. The guard wins while
+    // it's up (the sim would drop the press anyway).
+    if ((m_attackDelay <= 0.0f || self.riposteTime > 0.0f) && !in.block &&
+        self.attackState == AttackState::None &&
         adx < st.reach + 0.25f && std::abs(dz) < kDepthAligned) {
         in.attack = true;
         // Pick the blow: mostly the standard cut. The heavy's long windup

@@ -14,6 +14,7 @@ namespace {
 // reach, knockback) is now per-character: see character.cpp's roster.
 constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
+constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard is up
 
 // Per-attack tuning, indexed by AttackKind. Each attack scales the wielder's
 // resolved stats (character + weapon) rather than replacing them, the same
@@ -99,6 +100,25 @@ constexpr float kBleedPerLimb = 0.25f;   // blood/s drained per missing limb
 constexpr float kKnockbackPop = 3.0f;   // upward pop on hit (divided by weight)
 constexpr float kKnockbackDecay = 6.0f; // 1/s exponential decay
 constexpr float kHitstunTime = 0.35f;
+
+// Blocking. A raised guard catches any attack from the front: no blood, no
+// cut — just a clang, a brief stagger, and a fraction of the shove leaking
+// through. The heavy still moves a blocker plenty via its knockback scale.
+constexpr float kBlockKnockbackScale = 0.35f; // on the shove that leaks through
+constexpr float kBlockstunTime = 0.12f;       // stagger on catching a blow
+
+// Riposte: catching a blow opens a counter window while the attacker is
+// still stuck in their swing — an attack started inside it comes out with a
+// fraction of its windup. Heavier caught blows leave longer openings (the
+// window scales with the caught attack's hitstunScale), and taking a real
+// hit erases any opening earned.
+constexpr float kRiposteWindow = 0.45f;       // s, before the hitstunScale factor
+constexpr float kRiposteWindupScale = 0.35f;  // on the riposte swing's windup
+
+// An attack press made while the fighter can't yet swing (blockstun after a
+// catch, tail of hitstun, recovery) waits this long instead of dropping —
+// without it, clicking at the clang would eat the riposte it just earned.
+constexpr float kAttackBufferTime = 0.15f;
 
 // Segment-vs-AABB slab test.
 bool segmentHitsBox(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& center,
@@ -197,6 +217,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.hitstun > 0.0f) {
             p.hitstun = std::max(0.0f, p.hitstun - dt);
         }
+        if (p.riposteTime > 0.0f) {
+            p.riposteTime = std::max(0.0f, p.riposteTime - dt);
+        }
 
         // Open stumps keep bleeding; this can decide a match on its own.
         if (!p.dead()) {
@@ -259,11 +282,31 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // off hand when the sword arm is gone.
         bool canSwing = !p.severed[static_cast<int>(Limb::ArmFront)] ||
                         !p.severed[static_cast<int>(Limb::ArmBack)];
-        if (p.attackState == AttackState::None && p.hitstun <= 0.0f && in.attack &&
-            canSwing) {
+        // Guard: held while standing and not mid-swing. It takes an arm to
+        // hold the blade up, and it wins over an attack press — the sword is
+        // committed to the guard.
+        p.blocking = in.block && p.attackState == AttackState::None &&
+                     !p.downed() && canSwing;
+        // A fresh press (re)arms the buffer; otherwise it counts down. The
+        // swing fires from the buffer the first tick the fighter is able.
+        if (in.attack) {
+            p.attackBuffer = kAttackBufferTime;
+            p.bufferedKind = in.attackKind;
+        } else if (p.attackBuffer > 0.0f) {
+            p.attackBuffer = std::max(0.0f, p.attackBuffer - dt);
+        }
+        if (p.attackState == AttackState::None && p.hitstun <= 0.0f &&
+            p.attackBuffer > 0.0f && canSwing && !p.blocking) {
             p.attackState = AttackState::Windup;
-            p.attackKind = in.attackKind;
-            p.attackTimer = attackDuration(st, p.attackKind, p.attackState);
+            p.attackKind = p.bufferedKind;
+            p.attackBuffer = 0.0f;
+            // Started inside the post-block window this swing is a riposte:
+            // it snaps out with a fraction of the windup. Window consumed.
+            p.attackWindupScale =
+                p.riposteTime > 0.0f ? kRiposteWindupScale : 1.0f;
+            p.riposteTime = 0.0f;
+            p.attackTimer = attackDuration(st, p.attackKind, p.attackState) *
+                            p.attackWindupScale;
             p.attackLanded = false;
             // The whoosh's swell is tuned to peak right as the blade goes
             // active; the jab's is quieter to match the shorter cut.
@@ -271,11 +314,15 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 {Sfx::Swing, p.pos.x,
                  p.attackKind == AttackKind::Jab ? 0.7f : 1.0f});
         }
+        // Phase progress; the windup's duration carries the riposte scale so
+        // a riposte's pose still sweeps 0..1, just faster.
+        float phaseLen = attackDuration(st, p.attackKind, p.attackState);
+        if (p.attackState == AttackState::Windup) {
+            phaseLen *= p.attackWindupScale;
+        }
         p.attackT = p.attackState == AttackState::None
                         ? 0.0f
-                        : std::clamp(1.0f - p.attackTimer / attackDuration(
-                                                st, p.attackKind, p.attackState),
-                                     0.0f, 1.0f);
+                        : std::clamp(1.0f - p.attackTimer / phaseLen, 0.0f, 1.0f);
 
         // Movement: locked in hitstun, slowed while swinging.
         glm::vec2 move = p.hitstun > 0.0f ? glm::vec2{0.0f} : in.move;
@@ -284,6 +331,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             move /= len; // diagonal movement is not faster
         }
         float speedScale = p.attackState != AttackState::None ? kAttackMoveScale : 1.0f;
+        if (p.blocking) {
+            speedScale *= kBlockMoveScale;
+        }
         if (p.downed()) {
             if (p.fallTilt < kMaxTilt) {
                 speedScale = 0.0f; // mid-fall: no footing at all
@@ -423,12 +473,30 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             hitTorso = true;
         }
         p.attackLanded = true;
-        foe.hitstun = kHitstunTime * tun.hitstunScale;
-        foe.attackState = AttackState::None; // a clean hit interrupts the foe's swing
-        foe.attackTimer = 0.0f;
         glm::vec2 dir{foe.pos.x - p.pos.x, foe.pos.z - p.pos.z};
         float dist = glm::length(dir);
         dir = dist > 1e-4f ? dir / dist : glm::vec2{p.facing, 0.0f};
+
+        // A raised guard catches anything from the front (facing tracks the
+        // opponent, so in practice: anything not landed from behind). The
+        // blade never touches flesh — no blood, no sever, no execution —
+        // but part of the shove still comes through the crossed steel.
+        if (foe.blocking && (p.pos.x - foe.pos.x) * foe.facing >= 0.0f) {
+            foe.hitstun = kBlockstunTime;
+            foe.kbVel = dir * (st.knockback * tun.knockbackScale *
+                               kBlockKnockbackScale / foeSt.weight);
+            // The catch opens the counter window: the attacker is committed
+            // to the rest of their swing, and a heavier caught blow leaves a
+            // longer opening.
+            foe.riposteTime = kRiposteWindow * tun.hitstunScale;
+            m_soundCues.push_back({Sfx::Block, foe.pos.x});
+            continue;
+        }
+
+        foe.hitstun = kHitstunTime * tun.hitstunScale;
+        foe.riposteTime = 0.0f; // a clean hit erases any opening they'd earned
+        foe.attackState = AttackState::None; // a clean hit interrupts the foe's swing
+        foe.attackTimer = 0.0f;
         // Heavier characters shrug off more of the shove; harder hitters
         // deal more of it. Both read straight from the roster stats, scaled
         // by how much weight the attack itself carries.
