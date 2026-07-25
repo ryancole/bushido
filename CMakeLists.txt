@@ -95,6 +95,8 @@ add_executable(bushido
     src/game.cpp
     src/input.cpp
     src/netplay/replay.cpp
+    src/netplay/session.cpp
+    src/netplay/transport.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp
     src/levels/hanami.cpp
@@ -114,7 +116,8 @@ target_link_libraries(bushido PRIVATE
     Jolt
     miniaudio
     imgui
-    tomlplusplus::tomlplusplus)
+    tomlplusplus::tomlplusplus
+    ws2_32) # netplay's UDP transport (src/netplay/transport.cpp)
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

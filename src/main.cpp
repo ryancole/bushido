@@ -28,13 +28,15 @@
 #include "input.hpp"
 #include "levels/level.hpp"
 #include "netplay/replay.hpp"
+#include "netplay/session.hpp"
+#include "netplay/transport.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
 #include "weapons/weapon.hpp"
 
 namespace {
 
-enum class AppState { Loading, Menu, Options, CharacterSelect, Playing };
+enum class AppState { Loading, Menu, Options, CharacterSelect, NetWait, Playing };
 enum class MenuAction { None, Play, Versus, Options, Quit };
 
 // One piece of startup work. The app opens straight into `Loading` and runs
@@ -166,7 +168,26 @@ void drawLoadingScreen(float fill, const char* label) {
     ImGui::End();
 }
 
-MenuAction drawMainMenu() {
+// Roster indices that arrived from outside this process — a replay file, a
+// netplay peer — get checked before they reach a table lookup.
+bool setupIsSane(const MatchSetup& s) {
+    if (s.level < 0 || s.level >= kLevelCount) {
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (s.chars[i] < 0 || s.chars[i] >= kCharacterCount) {
+            return false;
+        }
+        if (s.weapons[i] < 0 || s.weapons[i] >= kWeaponCount) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// `hosting` hides Local Versus: the second fighter is already spoken for by
+// whoever connects, so offering the couch seat would be a lie.
+MenuAction drawMainMenu(bool hosting) {
     MenuAction action = MenuAction::None;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
@@ -192,9 +213,11 @@ MenuAction drawMainMenu() {
     if (ImGui::Button("Play", {buttonWidth, 0.0f})) {
         action = MenuAction::Play;
     }
-    ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
-        action = MenuAction::Versus;
+    if (!hosting) {
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
+            action = MenuAction::Versus;
+        }
     }
     ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
@@ -739,14 +762,19 @@ void drawBloodBars(const Game& game) {
 
 // Post-match overlay, styled after the main menu. Shown once the kill has had
 // a moment to play out; Rematch reruns the same pairing with a fresh Game.
-enum class OverAction { None, Rematch, Select };
+enum class OverAction { None, Rematch, Select, Disconnect };
 
-OverAction drawWinOverlay(const Game& game, bool versus) {
+// `localSlot` is the fighter this machine's player drives — 0 everywhere
+// except a netplay client, which drives fighter 2. `net` swaps the buttons:
+// a rematch would have to be agreed by both peers, which is protocol this
+// build does not have.
+OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net) {
     OverAction action = OverAction::None;
-    // Against the bot the verdict is the player's own; with two humans at one
-    // keyboard, "VICTORY" would be true for exactly one of the people reading it.
+    // Against the bot (or across a wire) the verdict is the reader's own; with
+    // two humans at one keyboard, "VICTORY" would be true for exactly one of
+    // the people looking at the screen.
     const char* title = versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
-                               : (game.winner() == 0 ? "VICTORY" : "SLAIN");
+                               : (game.winner() == localSlot ? "VICTORY" : "SLAIN");
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -770,18 +798,41 @@ OverAction drawWinOverlay(const Game& game, bool versus) {
     const float buttonX = ImGui::GetStyle().WindowPadding.x +
                           (std::max(titleWidth, buttonWidth) - buttonWidth) * 0.5f;
     ImGui::PushFont(nullptr, 30.0f);
-    ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
-        action = OverAction::Rematch;
-    }
-    ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Character Select", {buttonWidth, 0.0f})) {
-        action = OverAction::Select;
+    if (net) {
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Disconnect", {buttonWidth, 0.0f})) {
+            action = OverAction::Disconnect;
+        }
+    } else {
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+            action = OverAction::Rematch;
+        }
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Character Select", {buttonWidth, 0.0f})) {
+            action = OverAction::Select;
+        }
     }
     ImGui::PopFont();
 
     ImGui::End();
     return action;
+}
+
+// Netplay status line, over the arena. Drawn whenever the session isn't
+// quietly running, so a stall waiting on the opponent's input reads as what it
+// is rather than as the game having hung.
+void drawNetBanner(const Session& session) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = 24.0f;
+    const char* text = session.status();
+    const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
+    const ImVec2 at{(vp->Size.x - w) * 0.5f, vp->Size.y * 0.5f - 130.0f};
+    dl->AddRectFilled({at.x - 18.0f, at.y - 9.0f}, {at.x + w + 18.0f, at.y + size + 9.0f},
+                      IM_COL32(0, 0, 0, 150), 4.0f);
+    dl->AddText(font, size, at, IM_COL32(232, 222, 204, 230), text);
 }
 
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
@@ -860,18 +911,27 @@ int main(int argc, char** argv) {
     //   --record <file>  write every match played this run to <file>
     //   --replay <file>  skip the menus, re-run the recorded match, check it
     //   --auto           skip the menus, play a fixed pairing, quit when it ends
+    // And two for netplay (src/netplay/session.hpp), which is direct-IP only —
+    // LAN or a forwarded port, no NAT traversal:
+    //   --host <port>          pick a match as usual, then wait for an opponent
+    //   --join <host:port>     skip the menus, take the match the host sends
     // --auto is what makes recording scriptable: nobody has to click through a
     // select screen, and the bot supplies a whole match of hits, dismemberment
     // and debris against a player who never moves.
     //   bushido --record run.bsdr --auto   then   bushido --replay run.bsdr
     const char* recordPath = nullptr;
     const char* replayPath = nullptr;
+    const char* joinTarget = nullptr;
     bool autoMatch = false;
+    bool netHost = false;
+    std::uint16_t hostPort = 0;
     for (int i = 1; i < argc; ++i) {
         bool wantsArg = std::strcmp(argv[i], "--record") == 0 ||
-                        std::strcmp(argv[i], "--replay") == 0;
+                        std::strcmp(argv[i], "--replay") == 0 ||
+                        std::strcmp(argv[i], "--host") == 0 ||
+                        std::strcmp(argv[i], "--join") == 0;
         if (wantsArg && i + 1 >= argc) {
-            std::fprintf(stderr, "%s needs a file path\n", argv[i]);
+            std::fprintf(stderr, "%s needs an argument\n", argv[i]);
             return 1;
         }
         if (std::strcmp(argv[i], "--record") == 0) {
@@ -880,6 +940,16 @@ int main(int argc, char** argv) {
             replayPath = argv[++i];
         } else if (std::strcmp(argv[i], "--auto") == 0) {
             autoMatch = true;
+        } else if (std::strcmp(argv[i], "--host") == 0) {
+            long port = std::strtol(argv[++i], nullptr, 10);
+            if (port <= 0 || port > 65535) {
+                std::fprintf(stderr, "--host needs a port between 1 and 65535\n");
+                return 1;
+            }
+            netHost = true;
+            hostPort = static_cast<std::uint16_t>(port);
+        } else if (std::strcmp(argv[i], "--join") == 0) {
+            joinTarget = argv[++i];
         } else {
             std::fprintf(stderr, "unknown argument '%s'\n", argv[i]);
             return 1;
@@ -891,6 +961,26 @@ int main(int argc, char** argv) {
     }
     if (replayPath && autoMatch) {
         std::fprintf(stderr, "--replay already runs one match and quits; drop --auto\n");
+        return 1;
+    }
+    if (netHost && joinTarget) {
+        std::fprintf(stderr, "--host and --join are mutually exclusive\n");
+        return 1;
+    }
+    if ((netHost || joinTarget) && replayPath) {
+        std::fprintf(stderr, "netplay cannot be combined with --replay\n");
+        return 1;
+    }
+    // --auto alongside netplay means "let the bot drive my fighter", which is
+    // sound rather than a hack: the bot is an input source like any other, its
+    // choices are scheduled and sent exactly as a human's would be, and the
+    // peer replays them without knowing the difference. It is also the only
+    // way to soak-test the protocol without two people.
+    // Resolved up front so a typo fails before a window opens.
+    std::string joinHost;
+    std::uint16_t joinPort = 0;
+    if (joinTarget && !parseEndpoint(joinTarget, joinHost, joinPort)) {
+        std::fprintf(stderr, "--join wants host:port, e.g. 192.168.1.20:7777\n");
         return 1;
     }
 
@@ -1004,6 +1094,11 @@ int main(int argc, char** argv) {
     // Rematch keeps it — and is the one place a local-versus or netplay match
     // would differ from this one.
     InputSource matchSources[2] = {InputSource::Local0, InputSource::Bot};
+    // Netplay. The transport is a plain UDP socket; the session is the
+    // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless
+    // --host or --join was passed.
+    UdpTransport transport;
+    Session session;
     // Local versus sets a match up in two passes — one human picks, hands the
     // keyboard over, the other picks — so the flow has to remember which of
     // them is at the screen and whether a second pass is still owed.
@@ -1012,6 +1107,19 @@ int main(int argc, char** argv) {
     // Opens the select screen for one fighter. The second player in a versus
     // inherits the battleground rather than choosing it again, which also makes
     // their blade click the one that starts the match.
+    // Opens the lockstep session on the match this machine picked and hands it
+    // to the client. Shared by the select screen and --auto.
+    auto beginHostSession = [&] {
+        matchSources[0] = autoMatch ? InputSource::Bot : InputSource::Local0;
+        matchSources[1] = InputSource::Remote;
+        MatchSetup setup;
+        for (int i = 0; i < 2; ++i) {
+            setup.chars[i] = matchChars[i];
+            setup.weapons[i] = matchWeapons[i];
+        }
+        setup.level = matchLevel;
+        session.start(&transport, Session::Role::Host, setup);
+    };
     auto beginSelect = [&](bool versus, int player) {
         versusSetup = versus;
         selectingPlayer = player;
@@ -1096,6 +1204,10 @@ int main(int argc, char** argv) {
             } else if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
                 select.pickedCharacter = -1;
             } else if (state != AppState::Menu) {
+                // Backing out of a netplay match drops the connection: the
+                // peer's timeout is what tells them, since there is nothing
+                // useful to say once this side has stopped stepping.
+                session.stop();
                 state = AppState::Menu;
             } else {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -1132,11 +1244,26 @@ int main(int argc, char** argv) {
             } else if (loadShown > 0.995f) {
                 // --replay skips the front end: the log names the match, so
                 // there is nothing left to pick.
-                if (!replayPath && autoMatch) {
+                if (joinTarget) {
+                    // A client has nothing to pick — the host names the match
+                    // — so the front end is skipped and the wait for the
+                    // handshake is the only screen before the arena.
+                    if (!transport.join(joinHost.c_str(), joinPort)) {
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    } else {
+                        session.start(&transport, Session::Role::Client, MatchSetup{});
+                        state = AppState::NetWait;
+                    }
+                } else if (netHost && !transport.host(hostPort)) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE); // port taken; it said so
+                } else if (!replayPath && autoMatch) {
                     // Nobody picks, so the pairing is fixed. Hanami rather
                     // than Dojo: carved ground, solid stones and water mean
                     // strictly more physics for two runs to disagree about.
                     matchLevel = kLevelCount > 1 ? 1 : 0;
+                    if (netHost) {
+                        beginHostSession();
+                    }
                     startMatch();
                 } else if (!replayPath) {
                     state = AppState::Menu;
@@ -1144,15 +1271,7 @@ int main(int argc, char** argv) {
                     glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
                 } else {
                     const MatchSetup& setup = replayer.setup();
-                    // The roster indices come off disk, so they get checked
-                    // before they reach a table lookup.
-                    bool sane = setup.level >= 0 && setup.level < kLevelCount;
-                    for (int i = 0; i < 2; ++i) {
-                        sane = sane && setup.chars[i] >= 0 &&
-                               setup.chars[i] < kCharacterCount &&
-                               setup.weapons[i] >= 0 && setup.weapons[i] < kWeaponCount;
-                    }
-                    if (!sane) {
+                    if (!setupIsSane(setup)) {
                         std::fprintf(stderr,
                                      "replay: setup names a fighter, blade or "
                                      "battleground this build does not have\n");
@@ -1168,6 +1287,37 @@ int main(int argc, char** argv) {
                 }
             }
             continue; // nothing below this exists yet
+        }
+
+        // Netplay runs on the render frame, not the fixed step: packets have to
+        // keep flowing during a stall — ours are exactly what the peer is
+        // waiting for — and a stall means no fixed step runs at all.
+        if (session.active()) {
+            session.pump(frameTime);
+        }
+
+        // The handshake landed: the host's match description is in hand, so
+        // this machine can finally build the same Game the host did.
+        if (state == AppState::NetWait &&
+            session.state() == Session::State::Running) {
+            const MatchSetup& setup = session.setup();
+            if (!setupIsSane(setup)) {
+                std::fprintf(stderr, "net: the host named a fighter, blade or "
+                                     "battleground this build does not have\n");
+                session.stop();
+                state = AppState::Menu;
+            } else {
+                for (int i = 0; i < 2; ++i) {
+                    matchChars[i] = setup.chars[i];
+                    matchWeapons[i] = setup.weapons[i];
+                }
+                matchLevel = setup.level;
+                // The client drives fighter 2 — with their own player-1
+                // controls, since it is their only keyboard.
+                matchSources[0] = InputSource::Remote;
+                matchSources[1] = autoMatch ? InputSource::Bot : InputSource::Local0;
+                startMatch();
+            }
         }
 
         if (state == AppState::Playing) {
@@ -1217,6 +1367,13 @@ int main(int argc, char** argv) {
                         break;
                     }
                     checked = true;
+                } else if (session.active()) {
+                    // Lockstep: this machine's sample goes in, both fighters'
+                    // inputs for this frame come out — or nothing does, and
+                    // neither machine moves until the opponent's arrives.
+                    if (!session.nextStep(stepInput(session.localSlot()), inputs)) {
+                        break;
+                    }
                 } else {
                     inputs[0] = stepInput(0);
                     inputs[1] = stepInput(1);
@@ -1231,9 +1388,9 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                // Only walked when the harness is on; a normal match never
-                // pays for the hash.
-                if (checked || recorder.active()) {
+                // Only walked when the harness or a peer needs it; an offline
+                // match never pays for the hash.
+                if (checked || recorder.active() || session.active()) {
                     // A source emitting something the wire format can't carry
                     // would have the sim play one input and the log keep
                     // another — a desync with no cause anywhere near where it
@@ -1257,7 +1414,18 @@ int main(int argc, char** argv) {
                         glfwSetWindowShouldClose(window, GLFW_TRUE);
                     }
                     recorder.step(packInput(inputs[0]), packInput(inputs[1]), sum);
+                    if (session.active()) {
+                        session.stepped(sum); // the peer compares it against theirs
+                    }
                 }
+            }
+
+            // A stall must not bank time. Without this the accumulator grows
+            // for the whole wait and then sprints through the backlog the
+            // instant the opponent's input lands: a few frames of catch-up is
+            // recovery, a second of it is a teleport.
+            if (session.active()) {
+                accumulator = std::min(accumulator, kFixedDt * 8.0f);
             }
 
             // --auto is hands-off: once the match is decided and the debris
@@ -1302,19 +1470,25 @@ int main(int argc, char** argv) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
             if (state == AppState::Menu) {
-                action = drawMainMenu();
+                action = drawMainMenu(netHost);
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
+            } else if (state == AppState::NetWait) {
+                drawNetBanner(session); // the only thing on screen before a match
             } else {
                 drawBloodBars(*game);
+                if (session.active() && session.waiting()) {
+                    drawNetBanner(session);
+                }
                 // Give the killing blow a beat to land before the overlay.
                 // Not while replaying: Rematch would rebuild the Game out from
                 // under the log and report a desync that is purely the click's.
                 if (!replayer.active() && game->over() && game->overTime() > 1.2f) {
                     overAction = drawWinOverlay(
-                        *game, matchSources[1] == InputSource::Local1);
+                        *game, matchSources[1] == InputSource::Local1,
+                        session.active() ? session.localSlot() : 0, session.active());
                 }
             }
             renderer.endFrame();
@@ -1366,10 +1540,18 @@ int main(int argc, char** argv) {
                     matchWeapons[1] =
                         std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
                 }
-                // The only thing separating the two modes: who drives slot 1.
-                matchSources[0] = InputSource::Local0;
-                matchSources[1] =
-                    versusSetup ? InputSource::Local1 : InputSource::Bot;
+                // The only thing separating the modes: who drives slot 1. The
+                // host names the match and the client takes it whole,
+                // including the fighter it will be driving — picking your own
+                // across a wire is UI this build doesn't have, so the opponent
+                // is drawn exactly as the bot's would be.
+                if (netHost) {
+                    beginHostSession();
+                } else {
+                    matchSources[0] = InputSource::Local0;
+                    matchSources[1] =
+                        versusSetup ? InputSource::Local1 : InputSource::Bot;
+                }
                 startMatch();
             }
         }
@@ -1379,9 +1561,13 @@ int main(int argc, char** argv) {
         } else if (overAction == OverAction::Select) {
             beginSelect(versusSetup, 0); // back into whichever mode this was
             state = AppState::CharacterSelect;
+        } else if (overAction == OverAction::Disconnect) {
+            session.stop();
+            state = AppState::Menu;
         }
     }
 
+    session.stop(); // reports the frame and stall counts on the way out
     renderer.shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();
