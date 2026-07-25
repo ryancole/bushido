@@ -30,6 +30,7 @@
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
 #include "netplay/simlink.hpp"
+#include "netplay/steamtransport.hpp"
 #include "netplay/transport.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
@@ -254,7 +255,8 @@ MenuAction drawMainMenu() {
 struct NetScreen {
     char port[16] = "7777";
     char address[64] = "127.0.0.1:7777";
-    char error[96] = ""; // last thing that went wrong, shown under the fields
+    char steamId[24] = ""; // a friend's SteamID, when playing over Steam
+    char error[96] = "";   // last thing that went wrong, shown under the fields
 };
 
 struct NetSetupResult {
@@ -263,7 +265,9 @@ struct NetSetupResult {
     bool join = false;
 };
 
-NetSetupResult drawNetSetup(NetScreen& s) {
+// `steam` swaps the screen from addresses to people: over the relay there is
+// no port to forward and no IP to read out, only the SteamID a friend types in.
+NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId) {
     NetSetupResult result;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
@@ -274,13 +278,15 @@ NetSetupResult drawNetSetup(NetScreen& s) {
                      ImGuiWindowFlags_NoSavedSettings);
 
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted("ONLINE");
+    ImGui::TextUnformatted(steam ? "ONLINE - STEAM" : "ONLINE");
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 8.0f});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
-    const float labelW = 120.0f;
+    // "Friend ID" is wider at 22pt than the address labels, and would sit under
+    // the input box at the narrower column.
+    const float labelW = steam ? 140.0f : 120.0f;
     const float fieldW = 250.0f;
     const float contentW = labelW + fieldW;
 
@@ -305,9 +311,27 @@ NetSetupResult drawNetSetup(NetScreen& s) {
         return clicked;
     };
 
-    result.host = row("Port", "port", s.port, sizeof s.port, "Host a Match");
-    ImGui::Dummy({0.0f, 10.0f});
-    result.join = row("Address", "address", s.address, sizeof s.address, "Join a Match");
+    if (steam) {
+        // Nothing to type to host: your own ID *is* the address, and the
+        // friend joining is the one who types.
+        char mine[32];
+        std::snprintf(mine, sizeof mine, "%llu", selfId);
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::TextUnformatted("Your ID");
+        ImGui::SameLine(labelW);
+        ImGui::TextUnformatted(selfId ? mine : "(Steam not running)");
+        ImGui::SetCursorPosX(labelW);
+        result.host = ImGui::Button("Host a Match", {fieldW, 0.0f});
+        ImGui::PopFont();
+        ImGui::Dummy({0.0f, 10.0f});
+        result.join =
+            row("Friend ID", "steamid", s.steamId, sizeof s.steamId, "Join a Match");
+    } else {
+        result.host = row("Port", "port", s.port, sizeof s.port, "Host a Match");
+        ImGui::Dummy({0.0f, 10.0f});
+        result.join =
+            row("Address", "address", s.address, sizeof s.address, "Join a Match");
+    }
 
     ImGui::PopStyleVar(2);
     ImGui::Dummy({0.0f, 10.0f});
@@ -323,11 +347,14 @@ NetSetupResult drawNetSetup(NetScreen& s) {
     ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{0.85f, 0.30f, 0.28f, 0.95f}
                                                 : ImVec4{0.91f, 0.87f, 0.80f, 0.65f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextWrapped("%s",
-                       failed ? s.error
-                              : "A direct connection - the same network, or a "
-                                "forwarded port. The host chooses the battleground; "
-                                "you both choose your own fighter.");
+    ImGui::TextWrapped(
+        "%s", failed ? s.error
+              : steam ? "Over Steam's relay - no ports, no addresses. Read your "
+                        "ID out to a friend, or type in theirs. You both choose "
+                        "your own fighter."
+                      : "A direct connection - the same network, or a forwarded "
+                        "port. The host chooses the battleground; you both choose "
+                        "your own fighter.");
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -1087,6 +1114,7 @@ int main(int argc, char** argv) {
     // LAN or a forwarded port, no NAT traversal:
     //   --host <port>          pick a match as usual, then wait for an opponent
     //   --join <host:port>     skip the menus, take the match the host sends
+    //   --steam                play over Steam's relay instead of direct IP
     //   --netsim <l[,j[,loss]]>  imitate a worse link (ms, ms, percent)
     //   --delay <frames>       pin the input delay; default is to measure it
     // --auto is what makes recording scriptable: nobody has to click through a
@@ -1100,6 +1128,7 @@ int main(int argc, char** argv) {
     bool netHost = false;
     std::uint16_t hostPort = 0;
     bool netSim = false;
+    bool steamMode = false;
     SimulatedLink::Conditions simConditions;
     int inputDelay = 0; // 0 = measure the link and choose; --delay pins it
     for (int i = 1; i < argc; ++i) {
@@ -1129,6 +1158,8 @@ int main(int argc, char** argv) {
             hostPort = static_cast<std::uint16_t>(port);
         } else if (std::strcmp(argv[i], "--join") == 0) {
             joinTarget = argv[++i];
+        } else if (std::strcmp(argv[i], "--steam") == 0) {
+            steamMode = true;
         } else if (std::strcmp(argv[i], "--netsim") == 0) {
             if (!parseConditions(argv[++i], simConditions)) {
                 std::fprintf(stderr, "--netsim wants latencyMs[,jitterMs[,loss%%]], "
@@ -1172,7 +1203,9 @@ int main(int argc, char** argv) {
     // Resolved up front so a typo fails before a window opens.
     std::string joinHost;
     std::uint16_t joinPort = 0;
-    if (joinTarget && !parseEndpoint(joinTarget, joinHost, joinPort)) {
+    // Under --steam the target is a person, not an endpoint, so there is
+    // nothing here to resolve.
+    if (joinTarget && !steamMode && !parseEndpoint(joinTarget, joinHost, joinPort)) {
         std::fprintf(stderr, "--join wants host:port, e.g. 192.168.1.20:7777\n");
         return 1;
     }
@@ -1296,13 +1329,24 @@ int main(int argc, char** argv) {
     constexpr float kFixedDt = 1.0f / 120.0f;
 
     UdpTransport transport;
-    // --netsim slips a deliberately worse link in front of the socket. The
+    SteamTransport steamTransport;
+    // --steam swaps direct IP for Steam's relay. Opt-in rather than the
+    // default because it cannot be tested from one machine — one Steam client
+    // is one person, so two peers here would both be you.
+    if (steamMode && !steamTransport.start()) {
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1; // it said why
+    }
+    Transport& baseLink =
+        steamMode ? static_cast<Transport&>(steamTransport) : transport;
+    // --netsim slips a deliberately worse link in front of whichever it is. The
     // session only ever sees a Transport, which is the point of the interface.
     std::unique_ptr<SimulatedLink> simLink;
     if (netSim) {
-        simLink = std::make_unique<SimulatedLink>(transport, simConditions, 0xa17e51u);
+        simLink = std::make_unique<SimulatedLink>(baseLink, simConditions, 0xa17e51u);
     }
-    Transport* netLink = simLink ? static_cast<Transport*>(simLink.get()) : &transport;
+    Transport* netLink = simLink ? static_cast<Transport*>(simLink.get()) : &baseLink;
     Session session;
     // Local versus sets a match up in two passes — one human picks, hands the
     // keyboard over, the other picks — so the flow has to remember which of
@@ -1457,9 +1501,16 @@ int main(int argc, char** argv) {
                 // --replay skips the front end: the log names the match, so
                 // there is nothing left to pick.
                 const bool netFlag = netHost || joinTarget;
+                // Same two shortcuts either way; over Steam --join names a
+                // person, which is what the two-machine test will use.
                 const bool socketOpen =
-                    !netFlag || (joinTarget ? transport.join(joinHost.c_str(), joinPort)
-                                            : transport.host(hostPort));
+                    !netFlag ? true
+                    : steamMode
+                        ? (netHost ? steamTransport.listen()
+                                   : steamTransport.connectTo(
+                                         std::strtoull(joinTarget, nullptr, 10)))
+                        : (joinTarget ? transport.join(joinHost.c_str(), joinPort)
+                                      : transport.host(hostPort));
                 if (netFlag && !socketOpen) {
                     glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
                 } else if (netFlag && autoMatch) {
@@ -1508,6 +1559,12 @@ int main(int argc, char** argv) {
         // Netplay runs on the render frame, not the fixed step: packets have to
         // keep flowing during a stall — ours are exactly what the peer is
         // waiting for — and a stall means no fixed step runs at all.
+        // Steam's callbacks only fire from RunCallbacks, and one of them is how
+        // a host learns someone is calling — so it ticks from the moment the
+        // Online screen is up, not just once a session exists.
+        if (steamMode) {
+            steamTransport.pump();
+        }
         if (session.active()) {
             if (simLink) {
                 simLink->advance(frameTime); // nothing is released until it ticks
@@ -1779,7 +1836,7 @@ int main(int argc, char** argv) {
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
             } else if (state == AppState::NetSetup) {
-                netResult = drawNetSetup(netScreen);
+                netResult = drawNetSetup(netScreen, steamMode, steamTransport.selfId());
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
             } else if (state == AppState::NetWait) {
@@ -1846,7 +1903,29 @@ int main(int argc, char** argv) {
         } else if (netResult.host || netResult.join) {
             netScreen.error[0] = '\0';
             bool ready = false;
-            if (netResult.host) {
+            if (steamMode) {
+                // Over the relay there is nothing to bind and nothing to
+                // resolve: hosting is just agreeing to answer, and joining is
+                // naming a person.
+                if (netResult.host) {
+                    ready = steamTransport.listen();
+                } else {
+                    char* end = nullptr;
+                    unsigned long long id =
+                        std::strtoull(netScreen.steamId, &end, 10);
+                    if (!end || *end != '\0' || id == 0ull) {
+                        std::snprintf(netScreen.error, sizeof netScreen.error,
+                                      "\"%s\" is not a SteamID - it is 17 digits.",
+                                      netScreen.steamId);
+                    } else {
+                        ready = steamTransport.connectTo(id);
+                    }
+                }
+                if (!ready && netScreen.error[0] == '\0') {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Steam is not ready.");
+                }
+            } else if (netResult.host) {
                 long port = std::strtol(netScreen.port, nullptr, 10);
                 if (port <= 0 || port > 65535) {
                     std::snprintf(netScreen.error, sizeof netScreen.error,

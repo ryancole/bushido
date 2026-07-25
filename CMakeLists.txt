@@ -136,17 +136,25 @@ if(STEAM_SDK_DIR)
             "public/steam/steam_api.h is not there. It should be the 'sdk' "
             "directory from inside the Steamworks SDK zip.")
     endif()
-    target_include_directories(bushido PRIVATE "${STEAM_SDK_DIR}/public")
+    # SYSTEM: the SDK headers trip /W4 (deprecated strncpy in matchmakingtypes.h)
+    # and they are not ours to fix.
+    target_include_directories(bushido SYSTEM PRIVATE "${STEAM_SDK_DIR}/public")
     target_link_libraries(bushido PRIVATE
         "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.lib")
     target_compile_definitions(bushido PRIVATE BUSHIDO_STEAM)
+    # SteamAPI_Init reads the app id from a file in the working directory. 480
+    # is Valve's public test app ("Spacewar"), which is what you develop
+    # against until the game has an id of its own.
+    set(STEAM_APP_ID "480" CACHE STRING "Steam app id used at runtime")
+    file(GENERATE OUTPUT "$<TARGET_FILE_DIR:bushido>/steam_appid.txt"
+         CONTENT "${STEAM_APP_ID}")
     # steam_api64.dll has to sit beside the exe or it will not start.
     add_custom_command(TARGET bushido POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.dll"
                 "$<TARGET_FILE_DIR:bushido>"
         COMMENT "Copying steam_api64.dll beside bushido.exe")
-    message(STATUS "Steam networking: ENABLED (${STEAM_SDK_DIR})")
+    message(STATUS "Steam networking: ENABLED (${STEAM_SDK_DIR}), app id ${STEAM_APP_ID}")
 else()
     message(STATUS "Steam networking: disabled (set STEAM_SDK_DIR to enable)")
 endif()
