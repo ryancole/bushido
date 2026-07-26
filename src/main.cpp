@@ -48,7 +48,14 @@ enum class AppState {
     NetWait, // picked, waiting on the handshake to agree the match
     Playing
 };
-enum class MenuAction { None, Play, Versus, Online, Options, Quit };
+// The two online entries are deliberately separate buttons rather than one
+// that leads to whichever transport happened to come up. A single "Online"
+// meant the Steam fields appeared or did not depending on whether the client
+// was running when the game launched, which reads as a broken build from the
+// outside — you cannot tell "Steam said no" from "this build has no Steam" by
+// looking. Naming the transport at the menu makes the choice the player's, and
+// gives the Steam screen somewhere to explain itself when Steam is not there.
+enum class MenuAction { None, Play, Versus, OnlineSteam, OnlineDirect, Options, Quit };
 
 // How the match being set up will be driven. Chosen when the flow starts — a
 // menu button or a command-line flag — and read once the select screen
@@ -233,8 +240,12 @@ MenuAction drawMainMenu() {
         action = MenuAction::Versus;
     }
     ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Online", {buttonWidth, 0.0f})) {
-        action = MenuAction::Online;
+    if (ImGui::Button("Online (Steam)", {buttonWidth, 0.0f})) {
+        action = MenuAction::OnlineSteam;
+    }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Online (Direct)", {buttonWidth, 0.0f})) {
+        action = MenuAction::OnlineDirect;
     }
     ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
@@ -264,11 +275,16 @@ struct NetSetupResult {
     bool back = false;
     bool host = false;
     bool join = false;
+    bool retry = false; // ask Steam again, for a client that was not up yet
 };
 
 // `steam` swaps the screen from addresses to people: over the relay there is
 // no port to forward and no IP to read out, only the SteamID a friend types in.
-NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId) {
+// Which of the two this is comes from the menu now, not from what happened to
+// initialise, so the Steam screen has to be able to draw itself with no Steam
+// behind it: `selfId` is 0 then, and `steamStatus` says why in a sentence.
+NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId,
+                            const char* steamStatus) {
     NetSetupResult result;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
@@ -279,7 +295,9 @@ NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId)
                      ImGuiWindowFlags_NoSavedSettings);
 
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted(steam ? "ONLINE - STEAM" : "ONLINE");
+    // Both titled now that both are reachable from the menu: "ONLINE" alone
+    // said nothing about which of the two the player had opened.
+    ImGui::TextUnformatted(steam ? "ONLINE - STEAM" : "ONLINE - DIRECT");
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
@@ -312,7 +330,14 @@ NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId)
         return clicked;
     };
 
+    // Steam not being there is a state of this screen rather than a reason to
+    // send the player somewhere else: the fields are drawn and disabled, so
+    // what they came here to do is still visible, and Retry is the one control
+    // that works. Asking again is the whole point — the usual cause is a client
+    // that had not finished starting when the game did.
+    const bool steamReady = selfId != 0;
     if (steam) {
+        ImGui::BeginDisabled(!steamReady);
         // Nothing to type to host: your own ID *is* the address, and the
         // friend joining is the one who types.
         char mine[32];
@@ -320,13 +345,21 @@ NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId)
         ImGui::PushFont(nullptr, 22.0f);
         ImGui::TextUnformatted("Your ID");
         ImGui::SameLine(labelW);
-        ImGui::TextUnformatted(selfId ? mine : "(Steam not running)");
+        ImGui::TextUnformatted(steamReady ? mine : "-");
         ImGui::SetCursorPosX(labelW);
         result.host = ImGui::Button("Host a Match", {fieldW, 0.0f});
         ImGui::PopFont();
         ImGui::Dummy({0.0f, 10.0f});
         result.join =
             row("Friend ID", "steamid", s.steamId, sizeof s.steamId, "Join a Match");
+        ImGui::EndDisabled();
+        if (!steamReady) {
+            ImGui::Dummy({0.0f, 10.0f});
+            ImGui::PushFont(nullptr, 22.0f);
+            ImGui::SetCursorPosX(labelW);
+            result.retry = ImGui::Button("Retry", {fieldW, 0.0f});
+            ImGui::PopFont();
+        }
     } else {
         result.host = row("Port", "port", s.port, sizeof s.port, "Host a Match");
         ImGui::Dummy({0.0f, 10.0f});
@@ -342,20 +375,29 @@ NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId)
     // Fixed-height, for the same reason drawOptions' footer is — the window is
     // centered and auto-sized, so a three-line hint collapsing to a one-line
     // error would jump the whole panel (and the Back button) up as you click.
-    const bool failed = s.error[0] != '\0';
+    // Steam being absent is reported here too, in the same red as a bad port,
+    // because it is the same kind of thing: the reason the buttons above did
+    // not work, said where the player is looking.
+    const bool failed = s.error[0] != '\0' || (steam && !steamReady);
     ImGui::BeginChild("hint", {contentW, 64.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{0.85f, 0.30f, 0.28f, 0.95f}
                                                 : ImVec4{0.91f, 0.87f, 0.80f, 0.65f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextWrapped(
-        "%s", failed ? s.error
-              : steam ? "Over Steam's relay - no ports, no addresses. Read your "
-                        "ID out to a friend, or type in theirs. You both choose "
-                        "your own fighter."
-                      : "A direct connection - the same network, or a forwarded "
-                        "port. The host chooses the battleground; you both choose "
-                        "your own fighter.");
+    if (steam && !steamReady) {
+        ImGui::TextWrapped("%s Start it, then Retry - or go back and use Online "
+                           "(Direct) instead.",
+                           steamStatus);
+    } else {
+        ImGui::TextWrapped(
+            "%s", failed ? s.error
+                  : steam ? "Over Steam's relay - no ports, no addresses. Read your "
+                            "ID out to a friend, or type in theirs. You both choose "
+                            "your own fighter."
+                          : "A direct connection - the same network, or a forwarded "
+                            "port. The host chooses the battleground; you both "
+                            "choose your own fighter.");
+    }
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -1370,15 +1412,22 @@ int main(int argc, char** argv) {
     UdpTransport transport;
     SteamTransport steamTransport;
     SteamLobby steamLobby;
-    // Steam's relay is the default now that it has carried a real match: it
-    // needs no port forwarded and addresses a person rather than a machine.
-    // Three things fall back to direct IP — --no-steam, a build without the
-    // SDK, or a Steam client that is not running — and none of them is an
-    // error. Giving --host or --join *without* --steam also means direct IP,
-    // since a port and an address are not things Steam has.
+    // Two separate questions, which used to be one and should not have been.
+    // `steamUp` is whether the Steam API answered — which decides whether the
+    // relay *can* carry a match, and whether the lobby callbacks are worth
+    // pumping. `netSteam` is which of the two Online screens the player asked
+    // for, and now comes from the menu: choosing Steam gets the Steam screen
+    // whatever Steam has to say for itself, and choosing Direct gets a UDP
+    // socket even on a machine where Steam is running perfectly well.
+    //
+    // The flags still decide it for a run that skips the menu: --host/--join
+    // without --steam mean direct IP, since a port and an address are not
+    // things Steam has, and --steam forces the issue and fails rather than
+    // falling back, which is what a test run wants.
     const bool wantDirect =
         steamRefused || ((netHost || joinTarget) && !steamForced);
-    bool steamMode = false;
+    bool steamUp = false;
+    bool netSteam = !wantDirect;
     if (!wantDirect) {
         if (!SteamTransport::available()) {
             if (steamForced) {
@@ -1389,27 +1438,41 @@ int main(int argc, char** argv) {
                 return 1;
             }
         } else if (steamTransport.start()) {
-            steamMode = true;
+            steamUp = true;
         } else if (steamForced) {
-            std::fprintf(stderr, "--steam, but Steam did not answer: is the client "
-                                 "running, and is steam_appid.txt in the working "
-                                 "directory?\n");
+            std::fprintf(stderr, "--steam, but %s Is the client running, and is "
+                                 "steam_appid.txt in the working directory?\n",
+                         steamTransport.status());
             glfwDestroyWindow(window);
             glfwTerminate();
             return 1;
         } else {
-            std::fprintf(stderr, "steam: not running - Online will use direct IP\n");
+            std::fprintf(stderr, "steam: %s Online (Steam) will say so\n",
+                         steamTransport.status());
         }
     }
-    Transport& baseLink =
-        steamMode ? static_cast<Transport&>(steamTransport) : transport;
-    // --netsim slips a deliberately worse link in front of whichever it is. The
-    // session only ever sees a Transport, which is the point of the interface.
     std::unique_ptr<SimulatedLink> simLink;
-    if (netSim) {
-        simLink = std::make_unique<SimulatedLink>(baseLink, simConditions, 0xa17e51u);
-    }
-    Transport* netLink = simLink ? static_cast<Transport*>(simLink.get()) : &baseLink;
+    Transport* netLink = nullptr;
+    // Which link a session opens on is settled whenever the answer changes
+    // rather than once at launch: the two Online buttons pick a transport, and
+    // the Steam screen's Retry can bring one up that was not there a moment
+    // ago — someone who started the client after the game did should not have
+    // to restart the game.
+    auto bindLink = [&]() {
+        Transport& base = netSteam && steamUp
+                              ? static_cast<Transport&>(steamTransport)
+                              : transport;
+        // --netsim slips a deliberately worse link in front of whichever it is.
+        // The session only ever sees a Transport, which is the point of the
+        // interface.
+        if (netSim) {
+            simLink = std::make_unique<SimulatedLink>(base, simConditions, 0xa17e51u);
+            netLink = simLink.get();
+        } else {
+            netLink = &base;
+        }
+    };
+    bindLink();
     Session session;
     // Local versus sets a match up in two passes — one human picks, hands the
     // keyboard over, the other picks — so the flow has to remember which of
@@ -1570,7 +1633,7 @@ int main(int argc, char** argv) {
                 // person, which is what the two-machine test will use.
                 const bool socketOpen =
                     !netFlag ? true
-                    : steamMode
+                    : netSteam
                         ? (netHost ? steamTransport.listen()
                                    : steamTransport.connectTo(
                                          std::strtoull(joinTarget, nullptr, 10)))
@@ -1627,7 +1690,10 @@ int main(int argc, char** argv) {
         // Steam's callbacks only fire from RunCallbacks, and one of them is how
         // a host learns someone is calling — so it ticks from the moment the
         // Online screen is up, not just once a session exists.
-        if (steamMode) {
+        // Keyed off Steam being up rather than off the player having chosen the
+        // Steam screen: an invite can land while they are anywhere, and it is
+        // the callbacks that deliver it.
+        if (steamUp) {
             steamTransport.pump(); // also drives the lobby's callbacks
 
             // A friend's invite arrives one of two ways: Steam launched us
@@ -1646,6 +1712,11 @@ int main(int argc, char** argv) {
                 steamLobby.join(invited);
                 lobbyJoinPending = true;
                 netScreen.error[0] = '\0';
+                // An invite is a choice of transport as much as of opponent —
+                // it may well arrive while the player is sitting on the direct
+                // screen, and the match it leads to is over the relay.
+                netSteam = true;
+                bindLink();
                 state = AppState::NetSetup;
             }
 
@@ -1938,12 +2009,14 @@ int main(int argc, char** argv) {
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
             } else if (state == AppState::NetSetup) {
-                netResult = drawNetSetup(netScreen, steamMode, steamTransport.selfId());
+                netResult = drawNetSetup(netScreen, netSteam,
+                                         steamTransport.selfId(),
+                                         steamTransport.status());
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
             } else if (state == AppState::NetWait) {
                 drawNetBanner(session); // the only thing on screen before a match
-                if (steamMode && steamLobby.state() == SteamLobby::State::Hosting) {
+                if (netSteam && steamLobby.state() == SteamLobby::State::Hosting) {
                     inviteClicked = drawInviteButton(overlayRefused);
                 }
             } else {
@@ -1973,8 +2046,18 @@ int main(int argc, char** argv) {
         } else if (action == MenuAction::Versus) {
             beginSelect(SetupMode::LocalVersus, 0, true);
             state = AppState::CharacterSelect;
-        } else if (action == MenuAction::Online) {
+        } else if (action == MenuAction::OnlineSteam ||
+                   action == MenuAction::OnlineDirect) {
             netScreen.error[0] = '\0';
+            netSteam = action == MenuAction::OnlineSteam;
+            // Ask Steam again on the way in, and again from the screen's Retry.
+            // It was asked once at startup, and a no there is usually only "the
+            // client had not finished starting" — an answer that used to be
+            // taken once and never revisited, so it cost the whole run.
+            if (netSteam && !steamUp && SteamTransport::available()) {
+                steamUp = steamTransport.start();
+            }
+            bindLink();
             state = AppState::NetSetup;
         } else if (action == MenuAction::Options) {
             state = AppState::Options;
@@ -2009,10 +2092,16 @@ int main(int argc, char** argv) {
         // after they have gone and picked a fighter.
         if (netResult.back) {
             state = AppState::Menu;
+        } else if (netResult.retry) {
+            // The one control the Steam screen offers while Steam is down.
+            // Nothing to undo if it fails again: the screen simply keeps
+            // saying so, with whatever Steam's reason is now.
+            steamUp = steamTransport.start();
+            bindLink();
         } else if (netResult.host || netResult.join) {
             netScreen.error[0] = '\0';
             bool ready = false;
-            if (steamMode) {
+            if (netSteam) {
                 // Over the relay there is nothing to bind and nothing to
                 // resolve: hosting is just agreeing to answer, and joining is
                 // naming a person.
