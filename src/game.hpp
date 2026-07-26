@@ -102,6 +102,17 @@ struct Player {
     float facing = 1.0f;     // +1 toward +x; faces the opponent (locked mid-attack)
     float animPhase = 0.0f;  // walk-cycle phase in radians, advances with ground speed
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed this tick
+    // 0..1 ease into a full-length stride. Not a fraction of speed: a fighter
+    // walking slowly takes full steps less often, not short ones. It exists
+    // only so the legs come back together when they stop rather than freezing
+    // mid-split, and so a standing fighter isn't holding a bent knee.
+    float strideBlend = 0.0f;
+    // +1 walking the way they face, -1 backing up. Which leg is the planted
+    // one depends on it: backing away from an opponent, the foot on the ground
+    // travels forward relative to the body rather than back, so the knee has
+    // to fold on the other leg or the model lifts the foot it is standing on
+    // and drags the one it is swinging.
+    float strideSign = 1.0f;
 
     AttackState attackState = AttackState::None;
     AttackKind attackKind = AttackKind::Light; // which attack is in flight

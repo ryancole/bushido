@@ -12,9 +12,34 @@ struct SamuraiColors {
     glm::vec4 accent; // obi belt, sword grip wrap
 };
 
+// Stride geometry. These are the model's own dimensions, public because the
+// sim moves the body against them: a step covers whatever ground the leg
+// actually reaches, so Game derives its walk cadence *and* its per-step
+// velocity from these numbers rather than authoring a stride length of its
+// own. Two copies of that arithmetic would drift, and the symptom would be
+// exactly the thing they exist to prevent — feet skating over the floor.
+inline constexpr float kHipPivotY = 0.85f;  // hip joint height (drawSamurai)
+inline constexpr float kFootY = 0.05f;      // sandal center height
+inline constexpr float kLegLength = kHipPivotY - kFootY; // hip → foot lever arm
+inline constexpr float kStrideAngle = 0.55f; // max hip swing either side, radians
+// One step covers 2·legLength·sin(amp) — the foot swinging from one extreme of
+// the hip's arc to the other — and a full cycle is two of those, one per leg.
+// Game::update is where that turns into a cadence and a velocity.
+
 struct SamuraiPose {
     float walkPhase = 0.0f;  // radians through the stride cycle
-    float moveAmount = 0.0f; // 0..1 fraction of max ground speed; scales the stride
+    float moveAmount = 0.0f; // 0..1 fraction of max ground speed; drives bob and lean
+    // Hip swing amplitude in radians, 0..kStrideAngle — how long a step this
+    // fighter is taking. It comes from the sim (Player::strideBlend) rather
+    // than from moveAmount, because the sim moves the body exactly as far as
+    // this amplitude carries the foot; the model is not free to reinterpret
+    // it. Scaling the stride by moveAmount here, as this used to, meant a
+    // fighter walking at half speed took half-length steps while the body
+    // still travelled a full stride between footfalls — the glide.
+    float strideAmp = 0.0f;
+    // +1 walking the way they face, -1 backing up (Player::strideSign). Says
+    // which leg is the planted one, and so which knee folds.
+    float strideSign = 1.0f;
     bool grounded = true;
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery

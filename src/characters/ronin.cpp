@@ -4,7 +4,8 @@
 // against these numbers, so a change to this file is a change to what
 // "average" means. Ratings sit at 3 across the board for the same reason.
 // Every stat here is the old pre-roster global constant except moveSpeed,
-// which the whole roster was slowed by a quarter (see CharacterStats).
+// which the whole roster was slowed to a deliberate step (see
+// CharacterStats); 0.85 is the anchor the other three are authored against.
 
 namespace characters::ronin {
 
@@ -14,7 +15,7 @@ const CharacterDef kDef = {
     .epithet = "The wandering blade",
     .stats =
         {
-            .moveSpeed = 1.50f,
+            .moveSpeed = 0.85f,
             .jumpVelocity = 10.0f,
             .windupTime = 0.12f,
             .activeTime = 0.14f,

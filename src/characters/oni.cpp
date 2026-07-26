@@ -15,7 +15,7 @@ const CharacterDef kDef = {
     .epithet = "The mountain that walks",
     .stats =
         {
-            .moveSpeed = 1.15f,
+            .moveSpeed = 0.65f,
             .jumpVelocity = 8.5f,
             .windupTime = 0.19f,
             .activeTime = 0.16f,
