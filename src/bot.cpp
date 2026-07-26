@@ -16,6 +16,12 @@ constexpr float kDepthAligned = 0.50f; // |dz| where a swing can still connect
 // early is harmless (the sim just says no) but it reads as fumbling, and
 // stopping short of the range would be a bot standing over a sword forever.
 constexpr float kGrabRange = 0.75f;
+// Ground past the strike band worth crossing at a run rather than in the
+// stance. A sprint gives up the guard and turns the body away, so it is only
+// ever the long part of an approach — this is the margin the bot wants back on
+// its feet and squared up before anything can reach it, which at the turn rate
+// the sim uses is a fraction of a second's walking.
+constexpr float kSprintRange = 2.0f;
 } // namespace
 
 Bot::Bot(int self, std::uint32_t seed) : m_self(self), m_rng(seed | 1u) {}
@@ -47,7 +53,7 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // *downed bot's* own blade sweeps from a shoulder that has swung just as
     // far out of line. Upright, sin(0) is 0 and this is exactly what it was.
     auto lieZ = [](const Player& p) {
-        return p.pos.z + p.facing * std::sin(p.bodyRoll()) * Player::kHalfHeight;
+        return p.pos.z + p.lieOffset().y * Player::kHalfHeight;
     };
 
     const float dx = foe.pos.x - self.pos.x;
@@ -112,6 +118,10 @@ PlayerInput Bot::think(const Game& game, float dt) {
         PlayerInput grab;
         grab.move.x = quantizeAxis((bestAt.x - self.pos.x) * 2.0f);
         grab.move.y = quantizeAxis((bestAt.z - self.pos.z) * 2.0f);
+        // Run for it. A sprint costs the guard and the swing, which is nothing
+        // at all to a fighter who has neither — every second spent empty-handed
+        // is spent being cut at, so this is the one place the trade is free.
+        grab.sprint = bestDist > kSprintRange;
         grab.drop = bestDist < kGrabRange;
         return grab;
     }
@@ -153,6 +163,14 @@ PlayerInput Bot::think(const Game& game, float dt) {
         in.jump = true;
         m_jumpQueued = false;
     }
+
+    // Close the long part of the gap at a run. Only while approaching, and only
+    // from outside any distance a blade could answer from: a sprint turns the
+    // body away from the foe and throws the guard away with it, so it is a way
+    // of crossing the arena, never a way of arriving. The band it stops at is
+    // the same one the strike band is measured against, so the bot is back in
+    // its stance well before it is in reach.
+    in.sprint = m_mode == Mode::Approach && adx > st.reach * kBandHi + kSprintRange;
 
     // A caught blow drops the guard for the counter: the riposte window
     // outranks whatever the block timer had left.

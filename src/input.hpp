@@ -7,7 +7,7 @@
 
 struct GLFWwindow;
 
-// A PlayerInput in eleven bits. This is the replay record *and* the netplay
+// A PlayerInput in twelve bits. This is the replay record *and* the netplay
 // wire format, defined once so a recorded match and a transmitted one can
 // never drift apart. move.x/move.y only ever take -1, 0 or +1 (readHeld
 // builds each from two opposed buttons), so two bits apiece is lossless — and
@@ -15,7 +15,7 @@ struct GLFWwindow;
 // where it would be a desync waiting to happen.
 //
 // Layout: [1:0] move.x + 1, [3:2] move.y + 1, [4] jump, [5] block,
-//         [6] crouch, [7] attack, [9:8] attackKind, [10] drop.
+//         [6] crouch, [7] attack, [9:8] attackKind, [10] drop, [11] sprint.
 // Bits are only ever appended: the packet is a fixed two bytes either way, so
 // widening the meaning of a spare bit costs nothing on the wire, and an older
 // recording replays with the new bit clear, which is exactly right — nobody

@@ -187,7 +187,7 @@ void dumpDesync(const Game& game, std::int64_t frame, std::uint32_t expected,
         std::fprintf(stderr,
                      "player %d\n"
                      "  pos      %+.9g %+.9g %+.9g\n"
-                     "  vy       %+.9g   grounded %d   facing %+.9g\n"
+                     "  vy       %+.9g   grounded %d   yaw %+.9g   sprint %d\n"
                      "  anim     phase %+.9g  move %+.9g\n"
                      "  attack   state %d kind %d timer %+.9g t %+.9g landed %d\n"
                      "  windup   scale %+.9g  buffer %+.9g kind %d\n"
@@ -197,8 +197,9 @@ void dumpDesync(const Game& game, std::int64_t frame, std::uint32_t expected,
                      "  severed  %d%d%d%d%d   blood %+.9g\n"
                      "  weapon   %d\n"
                      "  topple   tilt %+.9g vel %+.9g side %+.9g\n",
-                     i, p.pos.x, p.pos.y, p.pos.z, p.vy, p.grounded ? 1 : 0, p.facing,
-                     p.animPhase, p.moveAmount, static_cast<int>(p.attackState),
+                     i, p.pos.x, p.pos.y, p.pos.z, p.vy, p.grounded ? 1 : 0, p.yaw,
+                     p.sprinting ? 1 : 0, p.animPhase, p.moveAmount,
+                     static_cast<int>(p.attackState),
                      static_cast<int>(p.attackKind), p.attackTimer, p.attackT,
                      p.attackLanded ? 1 : 0, p.attackWindupScale, p.attackBuffer,
                      static_cast<int>(p.bufferedKind), p.hitstun, p.blocking ? 1 : 0,

@@ -29,11 +29,38 @@ struct Hasher {
     void v3(const glm::vec3& v) { f(v.x); f(v.y); f(v.z); }
 };
 
+constexpr float kPi = 3.14159265358979f;
+
 // Fighter tuning that used to live here (move/jump speed, swing timings,
 // reach, knockback) is now per-character: see character.cpp's roster.
 constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard is up
+
+// Sprinting: hold the control and the fighter breaks their stance to run.
+//
+// The whole of it is a trade. A duel is fought at a shuffle — the approach is
+// the negotiation, and closing two meters is meant to cost enough seconds for
+// the other fighter to answer it — so a way of covering ground faster has to
+// give up what the shuffle was buying: there is no guard and no swing out of a
+// sprint, and the body is turned the wrong way for either. That last part is
+// the point rather than a side effect. A running fighter faces where they are
+// going instead of squaring up to their foe, which is what makes movement in
+// depth mean something (the fight stops being an argument about who is on the
+// left) and is exactly why they cannot fight out of it: the blade is not
+// pointed at anybody. Turning back out of a run costs the same rate again.
+//
+// The scale is bounded by the legs rather than by feel, and it is worth knowing
+// which. A sprint buys speed as *cadence only*: kShuffleStride is fixed, and it
+// is fixed by geometry — a leg is a fixed-length lever, so a longer step needs
+// a lower hip to keep both feet planted, and twice this step would want the hip
+// at 0.40 m, which is a squat rather than a run (see samurai.hpp). So the
+// fighter shuffles faster, never further, and the walk's already-brisk ~3.1
+// foot movements a second scale with this number. 2.2 is about as far as that
+// reads as running rather than scurrying. Past it the honest fix is a second
+// gait — feet crossing, a real stride — not a bigger multiplier here.
+constexpr float kSprintMoveScale = 2.2f; // on the character's move speed
+constexpr float kSprintTurnRate = 12.0f; // rad/s the body turns, into a run and out
 // Meters covered by one full walk cycle — two steps, one per leg — which is
 // what the stride animation is paced against rather than a fixed cadence. A
 // samurai's step is roughly 0.85 m, so the cycle is a shade under 1.7. Every
@@ -212,12 +239,30 @@ glm::vec3 rollLocal(const Player& p, const glm::vec3& v) {
     return {v.x, v.y * c - v.z * s, v.y * s + v.z * c};
 }
 
+// Turns a model-local direction to face the way the body is turned (about +Y).
+// At yaw 0 and pi this is exactly the ±1 mirror it replaced; in between is a
+// fighter mid-sprint, looking where they are running.
+glm::vec3 yawLocal(const Player& p, const glm::vec3& v) {
+    const float c = std::cos(p.yaw), s = std::sin(p.yaw);
+    return {c * v.x + s * v.z, v.y, c * v.z - s * v.x};
+}
+
 // Model-local point (feet origin, +x forward) to world space, applying the
-// topple roll and the facing mirror — must match drawSamurai's base transform.
+// topple roll and the body's yaw — must match drawSamurai's base transform.
 glm::vec3 modelToWorld(const Player& p, const glm::vec3& local) {
-    glm::vec3 v = rollLocal(p, local);
-    return {p.pos.x + p.facing * v.x, p.pos.y - Player::kHalfHeight + v.y,
-            p.pos.z + p.facing * v.z};
+    const glm::vec3 v = yawLocal(p, rollLocal(p, local));
+    return {p.pos.x + v.x, p.pos.y - Player::kHalfHeight + v.y, p.pos.z + v.z};
+}
+
+// Shortest signed representation of an angle, in (-pi, pi]. Yaw is turned by
+// increments and would otherwise wander off forever.
+float wrapAngle(float a) {
+    constexpr float kTwoPi = 2.0f * kPi;
+    a = std::fmod(a + kPi, kTwoPi);
+    if (a < 0.0f) {
+        a += kTwoPi;
+    }
+    return a - kPi;
 }
 
 // AABB half extents of a model-local box after the topple roll (a lying
@@ -279,8 +324,8 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
     equip(1, p1Weapon);
     m_players[0].pos = {-3.0f, Player::kHalfHeight, 0.0f};
     m_players[1].pos = {3.0f, Player::kHalfHeight, 0.0f};
-    m_players[0].facing = 1.0f;
-    m_players[1].facing = -1.0f;
+    m_players[0].yaw = 0.0f; // squared up to each other across the arena
+    m_players[1].yaw = kPi;
     // Physics characters are positioned by their feet; ground surface is y = 0.
     // The level dictates the arena's width (side-wall placement), its
     // obstacle boxes (stones, trunks, the house) become static colliders
@@ -414,11 +459,6 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         bool hasArm = !p.severed[static_cast<int>(Limb::ArmFront)] ||
                       !p.severed[static_cast<int>(Limb::ArmBack)];
         bool canSwing = hasArm && p.armed();
-        // Guard: held while standing and not mid-swing. It takes an arm to
-        // hold the blade up, and it wins over an attack press — the sword is
-        // committed to the guard.
-        p.blocking = in.block && p.attackState == AttackState::None &&
-                     !p.downed() && canSwing;
         // Crouch: held while grounded and upright. The pose (and every
         // crouch-dependent hurtbox) chases the held state instead of
         // snapping so ducking reads as a motion, not a teleport.
@@ -427,6 +467,19 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.crouchAmount = p.crouchAmount < crouchTarget
                              ? std::min(crouchTarget, p.crouchAmount + kCrouchRate * dt)
                              : std::max(crouchTarget, p.crouchAmount - kCrouchRate * dt);
+        // Sprint: only while actually travelling — the control on its own is
+        // not a state, and a fighter standing still holding it has neither
+        // broken their stance nor any reason to be looking anywhere else.
+        // Never out of a swing, hitstun, a crouch or a fall. Resolved before
+        // the guard and the swing because it takes both away.
+        p.sprinting = in.sprint && p.hitstun <= 0.0f &&
+                      p.attackState == AttackState::None && !p.crouching &&
+                      !p.downed() && glm::length(in.move) > 0.01f;
+        // Guard: held while standing and not mid-swing. It takes an arm to
+        // hold the blade up, and it wins over an attack press — the sword is
+        // committed to the guard. A sprint has already thrown it away.
+        p.blocking = in.block && p.attackState == AttackState::None &&
+                     !p.downed() && canSwing && !p.sprinting;
         // A fresh press (re)arms the buffer; otherwise it counts down. The
         // swing fires from the buffer the first tick the fighter is able.
         if (in.attack) {
@@ -435,8 +488,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         } else if (p.attackBuffer > 0.0f) {
             p.attackBuffer = std::max(0.0f, p.attackBuffer - dt);
         }
+        // A press made mid-sprint is not lost, it waits: the buffer holds it
+        // for kAttackBufferTime, so letting go of the run swings.
         if (p.attackState == AttackState::None && p.hitstun <= 0.0f &&
-            p.attackBuffer > 0.0f && canSwing && !p.blocking) {
+            p.attackBuffer > 0.0f && canSwing && !p.blocking && !p.sprinting) {
             p.attackState = AttackState::Windup;
             p.attackKind = p.bufferedKind;
             p.attackBuffer = 0.0f;
@@ -477,6 +532,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.crouching) {
             speedScale *= kCrouchMoveScale;
         }
+        if (p.sprinting) {
+            speedScale *= kSprintMoveScale;
+        }
         if (p.downed()) {
             if (p.fallTilt < kMaxTilt) {
                 speedScale = 0.0f; // mid-fall: no footing at all
@@ -507,13 +565,17 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 ? std::min(strideTarget, p.strideBlend + kStrideBlendRate * dt)
                 : std::max(strideTarget, p.strideBlend - kStrideBlendRate * dt);
         // Which way the travel is going, in the fighter's own frame — local +x
-        // is whichever way they face, and `facing` tracks the opponent rather
-        // than the direction of travel, so this is not a formality. It decides
-        // which foot moves first and which way the step is taken. Held through
-        // a stop so the feet keep the sense they had rather than snapping.
+        // is whichever way they face, which in a duel tracks the opponent
+        // rather than the direction of travel, so this is not a formality. It
+        // decides which foot moves first and which way the step is taken. Held
+        // through a stop so the feet keep the sense they had rather than
+        // snapping. It is also the angle a sprinting body turns through: the
+        // travel direction measured in the body's own frame *is* how far the
+        // body has to come round, so nothing has to carry a second copy of it.
         if (glm::length(move) > 0.01f) {
             const glm::vec2 world = glm::normalize(move);
-            p.strideDir = {world.x * p.facing, world.y * p.facing};
+            const glm::vec2 fwd = p.forward(), side = p.sideAxis();
+            p.strideDir = {glm::dot(world, fwd), glm::dot(world, side)};
         }
 
         // One cycle carries the body kShuffleStride, whatever the fighter's
@@ -640,8 +702,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         for (int k = 1; k <= kSweepSamples && hitLimb < 0; ++k) {
             float t = glm::mix(tPrev, tCur, static_cast<float>(k) / kSweepSamples);
             float angle = glm::mix(arc.start, arc.end, t);
-            glm::vec3 dir = rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f});
-            dir = {p.facing * dir.x, dir.y, p.facing * dir.z};
+            glm::vec3 dir =
+                yawLocal(p, rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f}));
             glm::vec3 s0 = pivot + dir * kBladeRoot;
             glm::vec3 s1 = pivot + dir * st.reach;
 
@@ -685,13 +747,16 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.attackLanded = true;
         glm::vec2 dir{foe.pos.x - p.pos.x, foe.pos.z - p.pos.z};
         float dist = glm::length(dir);
-        dir = dist > 1e-4f ? dir / dist : glm::vec2{p.facing, 0.0f};
+        dir = dist > 1e-4f ? dir / dist : p.forward();
 
-        // A raised guard catches anything from the front (facing tracks the
-        // opponent, so in practice: anything not landed from behind). The
-        // blade never touches flesh — no blood, no sever, no execution —
-        // but part of the shove still comes through the crossed steel.
-        if (foe.blocking && (p.pos.x - foe.pos.x) * foe.facing >= 0.0f) {
+        // A raised guard catches anything from the front — anything, that is,
+        // on the side of the defender their blade is on. A guard is only ever
+        // held squared up to the foe, so in practice this is "not landed from
+        // behind". The blade never touches flesh — no blood, no sever, no
+        // execution — but part of the shove still comes through crossed steel.
+        if (foe.blocking &&
+            glm::dot(glm::vec2{p.pos.x - foe.pos.x, p.pos.z - foe.pos.z},
+                     foe.forward()) >= 0.0f) {
             foe.hitstun = kBlockstunTime;
             foe.kbVel = dir * (st.knockback * tun.knockbackScale *
                                kBlockKnockbackScale / foeSt.weight);
@@ -763,22 +828,52 @@ void Game::update(const PlayerInput inputs[2], float dt) {
     Player& a = m_players[0];
     Player& b = m_players[1];
 
-    // Facing tracks the opponent, but locks while a swing is in progress.
-    // A toppled body must not swing around when facing flips: negating
-    // fallSide together with facing keeps the world-space lie direction
-    // (facing · fallSide) unchanged, so only the sword side mirrors.
-    auto faceToward = [](Player& self, const Player& other) {
+    // Which way each body is turned. In a duel that is not a choice: a fighter
+    // squares up to their opponent and holds it, so the yaw only ever takes the
+    // two values that mirror the model — and it locks entirely while a swing is
+    // in flight, since a blade already travelling cannot be steered.
+    //
+    // A sprint is the exception, and the reason this is an angle at all: a
+    // running fighter turns to look where they are going. Coming out of one the
+    // body walks its yaw back to the guard at the same rate rather than
+    // snapping, which is why the instant flip below is taken only from a body
+    // already square — the exact comparison is asking precisely that, and those
+    // two values are the only ones ever written there.
+    auto orient = [dt](Player& self, const Player& other) {
         if (self.attackState != AttackState::None) {
             return;
         }
-        float facing = other.pos.x >= self.pos.x ? 1.0f : -1.0f;
-        if (facing != self.facing && self.downed()) {
-            self.fallSide = -self.fallSide;
+        const float step = kSprintTurnRate * dt;
+        if (self.sprinting) {
+            // strideDir is the travel direction in the body's own frame, so the
+            // angle to it is the turn itself — no wrapping, and no second copy
+            // of the direction to keep in step with this one.
+            const float turn = std::atan2(-self.strideDir.y, self.strideDir.x);
+            self.yaw = wrapAngle(self.yaw + std::clamp(turn, -step, step));
+            return;
         }
-        self.facing = facing;
+        const float duelYaw = other.pos.x >= self.pos.x ? 0.0f : kPi;
+        // A body on the ground never comes round gradually — it is not walking
+        // its feet anywhere — which also keeps the fallSide mirror below to the
+        // one case it was written for. A toppled body must not swing about when
+        // the facing flips: negating fallSide alongside it leaves the
+        // world-space lie direction unchanged, so only the sword side mirrors.
+        if (self.downed() || self.yaw == 0.0f || self.yaw == kPi) {
+            if (duelYaw != self.yaw && self.downed()) {
+                self.fallSide = -self.fallSide;
+            }
+            self.yaw = duelYaw;
+            return;
+        }
+        const float turn = wrapAngle(duelYaw - self.yaw);
+        // Landing exactly on the axis is what hands the body back to the
+        // instant flip above; easing toward it forever never would.
+        self.yaw = std::abs(turn) <= step
+                       ? duelYaw
+                       : wrapAngle(self.yaw + (turn > 0.0f ? step : -step));
     };
-    faceToward(a, b);
-    faceToward(b, a);
+    orient(a, b);
+    orient(b, a);
 
     if (m_winner >= 0) {
         m_overTime += dt;
@@ -887,10 +982,14 @@ void Game::dropWeapon(int i) {
         p, {0.0f, kHandHeight - p.crouchAmount * kCrouchDrop,
             swordSide * kShoulderSide});
     const float steel = bladeSteelLength(weaponDef(weapon).stats.reachBonus);
-    const glm::vec3 vel{p.facing * kDropToss, kDropLift, 0.0f};
-    const glm::vec3 angVel{0.0f, 0.0f, -p.facing * kDropSpin};
-    const int id = m_physics->addDebris(hand, p.facing > 0.0f ? 0.0f : 3.14159265358979f,
-                                        droppedBladeHalfExtent(steel), vel, angVel);
+    // Thrown the way the body is turned, and tumbling end over end about its
+    // own side axis, so a blade dropped mid-sprint leaves the hand along the
+    // run rather than off toward wherever the foe happens to be.
+    const glm::vec2 fwd = p.forward(), side = p.sideAxis();
+    const glm::vec3 vel{fwd.x * kDropToss, kDropLift, fwd.y * kDropToss};
+    const glm::vec3 angVel{-side.x * kDropSpin, 0.0f, -side.y * kDropSpin};
+    const int id = m_physics->addDebris(hand, p.yaw, droppedBladeHalfExtent(steel),
+                                        vel, angVel);
     m_dropped.push_back({weapon, id, kDropSettle});
 }
 
@@ -978,10 +1077,9 @@ void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
     // shape drawSeveredLimb draws) but spawns where the crouched limb sits.
     LimbBounds b = samuraiLimbBounds(static_cast<int>(limb));
     glm::vec3 center = modelToWorld(v, crouchedLimbBounds(v, static_cast<int>(limb)).center);
-    float yaw = v.facing > 0.0f ? 0.0f : 3.14159265358979f;
     glm::vec3 vel{impulseDir.x * 4.0f, 4.5f, impulseDir.y * 4.0f};
     glm::vec3 angVel{0.0f, 3.0f, -impulseDir.x * 12.0f};
-    int id = m_physics->addDebris(center, yaw, b.half, vel, angVel);
+    int id = m_physics->addDebris(center, v.yaw, b.half, vel, angVel);
     m_pieces.push_back({victim, limb, id});
 }
 
@@ -1025,7 +1123,8 @@ std::uint32_t Game::checksum() const {
         hs.v3(p.pos);
         hs.f(p.vy);
         hs.b(p.grounded);
-        hs.f(p.facing);
+        hs.f(p.yaw);
+        hs.b(p.sprinting);
         hs.f(p.animPhase);
         hs.f(p.moveAmount);
         hs.f(p.strideBlend);

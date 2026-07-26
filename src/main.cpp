@@ -499,7 +499,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::Dummy({0.0f, 6.0f});
 
     // Rows are dense: the menu style's roomy item spacing and tall frame
-    // padding would push ten keybinds off the bottom of a 720p window.
+    // padding would push eleven keybinds off the bottom of a 720p window.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 6.0f});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
 
@@ -532,10 +532,10 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 4.0f});
 
-    // Fixed-size content area, tall enough for the longest section (the ten
+    // Fixed-size content area, tall enough for the longest section (the eleven
     // keybind rows): the window is centered and auto-sized, so letting it
     // resize per section would jump the whole panel on every tab click.
-    ImGui::BeginChild("section", {contentW, 434.0f}, ImGuiChildFlags_None,
+    ImGui::BeginChild("section", {contentW, 477.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
         for (int i = 0; i < kActionCount; ++i) {
@@ -1173,13 +1173,15 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
     }
 
     // Blob shadows: without these, depth position is unreadable while airborne.
-    // A toppled body stretches its shadow toward the side it lies on.
+    // A toppled body stretches its shadow toward the side it lies on — which is
+    // a direction rather than a z sign, since a body can go down turned any
+    // which way out of a run.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        float lieZ = p.facing * std::sin(p.bodyRoll());
-        drawBox(renderer, {p.pos.x, 0.03f, p.pos.z + lieZ * 0.8f},
-                {Player::kHalfWidth * 2.2f, 0.02f,
-                 Player::kHalfWidth * 1.6f + std::abs(lieZ) * 1.4f},
+        const glm::vec2 lie = p.lieOffset();
+        drawBox(renderer, {p.pos.x + lie.x * 0.8f, 0.03f, p.pos.z + lie.y * 0.8f},
+                {Player::kHalfWidth * 2.2f + std::abs(lie.x) * 1.4f, 0.02f,
+                 Player::kHalfWidth * 1.6f + std::abs(lie.y) * 1.4f},
                 {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
@@ -1187,7 +1189,6 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
     // resolved reach (character + weapon) and its thickness the weapon's.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        float yaw = p.facing > 0.0f ? 0.0f : 3.14159265358979f;
         glm::vec3 feet{p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
         SamuraiColors c = game.character(i).colors;
         if (p.hitstun > 0.0f) {
@@ -1199,7 +1200,7 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
                                 0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
         const WeaponDef* held = game.weapon(i);
-        drawSamurai(renderer, feet, yaw,
+        drawSamurai(renderer, feet, p.yaw,
                     {p.animPhase, p.moveAmount, p.strideBlend, p.strideDir,
                      p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),

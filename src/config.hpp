@@ -30,6 +30,7 @@ enum class Action {
     MoveAway,
     MoveToward,
     Jump,
+    Sprint,
     Block,
     Crouch,
     Attack,

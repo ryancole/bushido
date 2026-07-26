@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -30,6 +31,10 @@ inline constexpr int kAttackKindCount = 3;
 struct PlayerInput {
     glm::vec2 move{0.0f, 0.0f}; // x: left/right, y: depth (+ toward camera), each -1..1
     bool jump = false;
+    // Held: break the stance and run. It buys ground and costs everything the
+    // stance was for — no guard, no swing — and while it is held the fighter
+    // turns to face where they are going rather than the foe.
+    bool sprint = false;
     bool block = false;  // held: keep the guard up (slows the walk, no swinging)
     bool crouch = false; // held: duck low (slows the walk, no jumping)
     bool attack = false; // edge-triggered: true only on the tick(s) after a fresh press
@@ -99,7 +104,17 @@ struct Player {
     glm::vec3 pos{0.0f, 0.0f, 0.0f}; // center of the body box
     float vy = 0.0f;
     bool grounded = true;
-    float facing = 1.0f;     // +1 toward +x; faces the opponent (locked mid-attack)
+    // Which way the body is turned: radians about +Y, 0 facing +x, and exactly
+    // what the model is drawn with (drawSamurai's yaw). This was a ±1 mirror
+    // for as long as a fighter only ever squared up to their opponent — which
+    // is the same thing at 0 and pi and nothing else. A sprinting fighter turns
+    // to face where they are running, so those two values stopped being the
+    // only two there are. Locked while a swing is in flight.
+    float yaw = 0.0f;
+    // Running this tick, rather than holding a stance and shuffling it. The
+    // trade is the whole of it: more than twice the ground covered, and no
+    // guard, no swing, and a body turned away from the foe while it lasts.
+    bool sprinting = false;
     float animPhase = 0.0f;  // walk-cycle phase in radians, advances with ground speed
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed this tick
     // 0..1 ease into a full-length stride. Not a fraction of speed: a fighter
@@ -155,6 +170,14 @@ struct Player {
     float fallVel = 0.0f;  // rad/s
     float fallSide = 0.0f; // ±1 once toppling, toward the severed leg
 
+    // The model's local axes in the world's ground plane (x, z): +x is the way
+    // the fighter faces, +z the sword side. A rotation about +Y matching
+    // drawSamurai's base transform — which at yaw 0 and pi is precisely the
+    // mirror these replaced. Every hit test, shove and thrown object goes
+    // through them, so there is one answer to "which way is this body turned".
+    glm::vec2 forward() const { return {std::cos(yaw), -std::sin(yaw)}; }
+    glm::vec2 sideAxis() const { return {std::sin(yaw), std::cos(yaw)}; }
+
     bool dead() const { return blood <= 0.0f; }
     bool downed() const {
         return dead() || severed[static_cast<int>(Limb::LegFront)] ||
@@ -162,6 +185,12 @@ struct Player {
     }
     // Signed roll about the model's local +x axis (what the renderer applies).
     float bodyRoll() const { return fallSide * fallTilt; }
+    // Ground-plane offset from the capsule to where a toppled body actually
+    // lies. The roll swings the whole model about its local +x at the feet, so
+    // the body travels along the side axis; multiply by a height to ask about a
+    // particular part of it. Zero while upright, which is why every reader can
+    // apply it unconditionally.
+    glm::vec2 lieOffset() const { return sideAxis() * std::sin(bodyRoll()); }
 
     static constexpr float kHalfWidth = 0.45f;
     static constexpr float kHalfHeight = 0.9f;

@@ -151,6 +151,7 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"Move Away", "move_away", "Walk into the screen"},
     {"Move Toward", "move_toward", "Walk toward the camera"},
     {"Jump", "jump", "Leave the ground"},
+    {"Sprint", "sprint", "Hold to break stance and run where you look - no guard, no swing"},
     {"Block", "block", "Hold to guard - catch a blow to open a riposte"},
     {"Crouch", "crouch", "Hold to duck; swings ride a lower lane"},
     {"Attack", "attack", "Tap to cut, hold and release to crush"},
@@ -167,7 +168,10 @@ Keybinds defaultKeybinds() {
     k[Action::MoveAway] = key(GLFW_KEY_W);
     k[Action::MoveToward] = key(GLFW_KEY_S);
     k[Action::Jump] = key(GLFW_KEY_SPACE);
-    k[Action::Block] = key(GLFW_KEY_LEFT_SHIFT);
+    // Shift runs, the way it does everywhere else — which cost block the key it
+    // used to sit on. Q is what the guard hand can reach without leaving WASD.
+    k[Action::Sprint] = key(GLFW_KEY_LEFT_SHIFT);
+    k[Action::Block] = key(GLFW_KEY_Q);
     k[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
     k[Action::Attack] = mouse(GLFW_MOUSE_BUTTON_LEFT);
     k[Action::Jab] = mouse(GLFW_MOUSE_BUTTON_RIGHT);
@@ -188,7 +192,10 @@ Keybinds defaultKeybinds2() {
     k[Action::MoveAway] = key(GLFW_KEY_UP);
     k[Action::MoveToward] = key(GLFW_KEY_DOWN);
     k[Action::Jump] = key(GLFW_KEY_SLASH);
-    k[Action::Block] = key(GLFW_KEY_RIGHT_SHIFT);
+    // Shift runs on this side too, so the one sentence covers both fighters;
+    // block takes the apostrophe, next door to the drop key.
+    k[Action::Sprint] = key(GLFW_KEY_RIGHT_SHIFT);
+    k[Action::Block] = key(GLFW_KEY_APOSTROPHE);
     k[Action::Crouch] = key(GLFW_KEY_RIGHT_CONTROL);
     k[Action::Attack] = key(GLFW_KEY_PERIOD);
     k[Action::Jab] = key(GLFW_KEY_COMMA);
@@ -266,7 +273,7 @@ bool loadConfig(Settings& settings) {
 
     // Sections are read independently: a file predating one of them (or with a
     // section deleted) keeps the defaults for it and loads the rest.
-    auto readKeybinds = [&](const char* table, Keybinds& out) {
+    auto readKeybinds = [&](const char* table, Keybinds& out, const Keybinds& defaults) {
         const toml::table* keys = tbl[table].as_table();
         if (!keys) {
             return;
@@ -289,9 +296,51 @@ bool loadConfig(Settings& settings) {
                              name->data());
             }
         }
+
+        // A file written before an action existed carries no line for it, so it
+        // keeps that action's *current* default — which may be a control the
+        // file has already spoken for. Sprint did exactly this: it took Left
+        // Shift, which every config on disk still names as block, and a shared
+        // control is the one state the options screen never lets you reach and
+        // cannot be clicked out of.
+        //
+        // Resolved the same way the options screen resolves it — every action
+        // stays bound, so there is no unbound state to render or save. The
+        // roster is walked in order, and anything finding its control already
+        // claimed falls back to its own default, then to the first free control
+        // if that is taken too. Earlier rows win, which is what makes the
+        // migration land right: sprint is listed above block and so keeps the
+        // shift, and block drops onto the key its default now names.
+        Bind claimed[kActionCount];
+        int claimedCount = 0;
+        auto taken = [&](Bind b) {
+            for (int n = 0; n < claimedCount; ++n) {
+                if (claimed[n] == b) return true;
+            }
+            return false;
+        };
+        for (int i = 0; i < kActionCount; ++i) {
+            const Action a = static_cast<Action>(i);
+            if (taken(out[a])) {
+                const Bind was = out[a];
+                out[a] = defaults[a];
+                if (taken(out[a])) {
+                    for (const BindEntry& e : kBindTable) {
+                        if (!taken(e.bind)) {
+                            out[a] = e.bind;
+                            break;
+                        }
+                    }
+                }
+                std::fprintf(stderr,
+                             "config: %s.%s wanted \"%s\", already in use - moved to \"%s\"\n",
+                             table, actionKey(a), bindName(was), bindName(out[a]));
+            }
+            claimed[claimedCount++] = out[a];
+        }
     };
-    readKeybinds("keybinds", settings.keybinds);
-    readKeybinds("keybinds_p2", settings.keybinds2);
+    readKeybinds("keybinds", settings.keybinds, defaultKeybinds());
+    readKeybinds("keybinds_p2", settings.keybinds2, defaultKeybinds2());
 
     if (const toml::table* audio = tbl["audio"].as_table()) {
         // Out-of-range levels are clamped rather than refused — a hand-edited
