@@ -3,6 +3,7 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 #include "renderer.hpp"
@@ -16,6 +17,11 @@ const glm::vec4 kLacquer{0.10f, 0.09f, 0.09f, 1.0f};
 const glm::vec4 kTsuba{0.55f, 0.45f, 0.15f, 1.0f};
 const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
+
+// The knee is no longer posed at all — it is solved from where the foot has to
+// be (see the leg block in drawSamurai). A leg is a two-bone chain rather than
+// one post because a rigid leg has exactly one way to reach the ground, which
+// is not enough freedom to hold a stance *and* put both feet on the floor.
 
 // Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up
 // — the convention weapons/stance.hpp documents in full). Windup raises the
@@ -57,19 +63,136 @@ glm::mat4 pivotRotZ(glm::vec3 pivot, float angle) {
     return glm::translate(m, -pivot);
 }
 
+// Places a bone that hangs straight down from `restTop` in the rest pose so it
+// runs from `top` to `bottom` instead. Built from the joint positions rather
+// than from angles because a leg with a pole-picked knee is not confined to
+// any one plane — there is no pair of Euler angles to write. `front` only
+// picks the roll about the bone, keeping the box's width facing sensibly.
+glm::mat4 boneXf(glm::vec3 restTop, glm::vec3 top, glm::vec3 bottom,
+                 glm::vec3 front) {
+    const glm::vec3 yAxis = glm::normalize(top - bottom);
+    glm::vec3 xAxis = front - yAxis * glm::dot(front, yAxis);
+    const float len = glm::length(xAxis);
+    xAxis = len > 1e-4f ? xAxis / len : glm::vec3{1.0f, 0.0f, 0.0f};
+    glm::mat4 r{1.0f};
+    r[0] = glm::vec4(xAxis, 0.0f);
+    r[1] = glm::vec4(yAxis, 0.0f);
+    r[2] = glm::vec4(glm::cross(xAxis, yAxis), 0.0f);
+    return glm::translate(glm::mat4(1.0f), top) * r *
+           glm::translate(glm::mat4(1.0f), -restTop);
+}
+
 bool isSevered(const SamuraiPose& pose, int limb) {
     return pose.severed && pose.severed[limb];
 }
 
 } // namespace
 
+LegPose shuffleLeg(float phase, float strideBlend, glm::vec2 dir, float crouch,
+                   bool grounded, float side) {
+    const float pi = glm::pi<float>();
+    LegPose out{};
+    const float hipY = kStanceHipY - crouch * kCrouchDrop;
+
+    // Where in the cycle, and which half. A cycle is two movements: *widen*,
+    // one foot reaching out along the travel, then *close*, the other coming
+    // up after it. Both feet's excursions are the same either way round — all
+    // that changes with the direction of travel is which of the two is moving,
+    // which is what makes the same leg lead all match while advancing and
+    // retreating still start on the correct foot.
+    const bool closeHalf = phase >= pi;
+    const float t = closeHalf ? phase - pi : phase;
+    // Fraction of this half's ground already covered. This is the integral of
+    // Game's own speed curve (2·sin²) and has to stay exactly that, or the
+    // planted foot creeps: it is the one number holding the sim's travel and
+    // the model's foot together.
+    const float advance = (t - 0.5f * std::sin(2.0f * t)) / pi;
+    // The moving foot is under no such constraint — it is in the air — so it
+    // just eases across and arcs over.
+    const float ts = t / pi;
+    const float ease = ts * ts * (3.0f - 2.0f * ts);
+    const float step = 0.5f * kShuffleStride * strideBlend;
+
+    // Which foot moves first: the one already furthest along the direction of
+    // travel. Its own z offset breaks the tie, so a pure side-step leads with
+    // the leg on the side being stepped toward instead of picking arbitrarily.
+    const glm::vec2 neutral{side * 0.5f * kStanceSep, side * kLegSide};
+    const bool movesOnWiden = neutral.x * dir.x + neutral.y * dir.y > 0.0f;
+    const bool moving = grounded && (closeHalf ? !movesOnWiden : movesOnWiden);
+    // The excursion is ±half a stride along the travel: the foot that goes
+    // first leans out, the other is left behind by the body and catches up.
+    const float reachSign = movesOnWiden ? 1.0f : -1.0f;
+    const float k = moving ? ease : advance;
+    const float f = closeHalf ? 1.0f - k : k;
+    const float excursion = reachSign * step * f;
+
+    glm::vec3 foot{neutral.x + dir.x * excursion, kFootY,
+                   neutral.y + dir.y * excursion};
+    // The lift closes with the step, not just the reach: a fighter who stops
+    // mid-cycle freezes the phase wherever it was, and without this they would
+    // stand there holding one foot in the air.
+    if (moving) {
+        foot.y += kFootLift * strideBlend * std::sin(t);
+    }
+    if (!grounded) {
+        // Nothing to stand on, so the stance opens into a tuck — trailing leg
+        // folded up hard, leading one reaching.
+        foot = {side > 0.0f ? 0.30f : -0.20f,
+                kFootY + (side > 0.0f ? 0.26f : 0.44f), side * kLegSide};
+    }
+    out.footAt = foot;
+
+    // Solve the two-bone chain for that foot rather than swinging the hip and
+    // hoping. With the hip and the foot both fixed the knee is *not* pinned:
+    // it can sit anywhere on a circle about the hip-to-foot axis, and which
+    // point of that circle it takes is the whole difference between a leg and
+    // a horse's hind leg. A pole vector picks it, and the pole is model
+    // forward — always — so both knees point the way the fighter faces.
+    //
+    // Solving inside the vertical plane through hip and foot instead, which is
+    // what this did first, silently bulges the knee toward whichever way the
+    // foot is offset. The lead leg looked right by luck, its foot being ahead;
+    // the rear leg, whose foot is behind, folded backward at the knee.
+    const glm::vec3 hip{0.0f, hipY, side * kLegSide};
+    glm::vec3 toFoot = foot - hip;
+    float dist = glm::length(toFoot);
+    const float maxReach = kLegLength - 0.002f;
+    if (dist > maxReach) { // a leg cannot reach further than it is long
+        toFoot *= maxReach / dist;
+        dist = maxReach;
+        foot = hip + toFoot;
+    }
+    const glm::vec3 axis = toFoot / dist;
+    // Equal-length bones (kThighLen == kShinLen), so the knee stands over the
+    // midpoint of the chord, out by whatever Pythagoras leaves.
+    const float half = 0.5f * dist;
+    const float bulge =
+        std::sqrt(std::max(0.0f, kThighLen * kThighLen - half * half));
+    glm::vec3 pole{1.0f, 0.0f, 0.0f};
+    pole -= axis * glm::dot(pole, axis); // the part of forward across the leg
+    const float poleLen = glm::length(pole);
+
+    out.hipAt = hip;
+    out.footAt = foot;
+    out.kneeAt = hip + axis * half +
+                 (poleLen > 1e-4f ? pole / poleLen : glm::vec3{0.0f, 0.0f, 1.0f}) *
+                     bulge;
+    return out;
+}
+
+// Heights here are authored against a fighter standing tall and then dropped
+// by kStanceDrop, because that is exactly what drawSamurai does to the body
+// they bound. The legs are the exception: theirs move with the shuffle, so
+// this is only their *size* — a representative box for debris and a fallback
+// extent. Where they actually are comes from shuffleLeg, via game.cpp's
+// posedLimbBounds.
 LimbBounds samuraiLimbBounds(int limb) {
     switch (limb) {
-        case 0: return {{0.0f, 1.06f, 0.26f}, {0.06f, 0.27f, 0.06f}};  // arm + hand
-        case 1: return {{0.0f, 1.06f, -0.26f}, {0.06f, 0.27f, 0.06f}};
-        case 2: return {{0.02f, 0.42f, 0.12f}, {0.15f, 0.42f, 0.11f}}; // leg + sandal
-        case 3: return {{0.02f, 0.42f, -0.12f}, {0.15f, 0.42f, 0.11f}};
-        default: return {{0.0f, 1.62f, 0.0f}, {0.19f, 0.18f, 0.19f}};  // head + neck
+        case 0: return {{0.0f, 1.06f - kStanceDrop, 0.26f}, {0.06f, 0.27f, 0.06f}};
+        case 1: return {{0.0f, 1.06f - kStanceDrop, -0.26f}, {0.06f, 0.27f, 0.06f}};
+        case 2: return {{0.09f, 0.38f, kLegSide}, {0.22f, 0.34f, 0.12f}}; // leg + sandal
+        case 3: return {{-0.09f, 0.38f, -kLegSide}, {0.22f, 0.34f, 0.12f}};
+        default: return {{0.0f, 1.62f - kStanceDrop, 0.0f}, {0.19f, 0.18f, 0.19f}};
     }
 }
 
@@ -92,39 +215,50 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
 
     const float pi = glm::pi<float>();
 
-    // Crouch: the legs fold — squashed toward the floor so the feet stay
-    // planted — and everything hip-up rides down with them. The drop and the
-    // 0.85 hip height must match game.cpp's kCrouchDrop/kHipHeight so the
-    // ducked hurtboxes sit where the body is drawn.
-    const float crouchDrop = pose.crouch * 0.45f;
-    const float legSquash = (0.85f - crouchDrop) / 0.85f;
+    // The guard settles onto bent knees, and a duck lowers it further. The hip
+    // height and kCrouchDrop must match game.cpp so the ducked hurtboxes sit
+    // where the body is drawn.
+    const float crouchDrop = pose.crouch * kCrouchDrop;
+    const float hipY = kStanceHipY - crouchDrop;
+    // How far the whole body sits below a fighter standing tall, which the
+    // upper body rides down by — and which every sim height is authored
+    // against too, so the blade cuts where it is drawn.
+    const float stanceDrop = kStanceDrop + crouchDrop;
 
-    // Legs: opposite-phase stride while grounded, a fixed tuck in the air.
     for (float s : {-1.0f, 1.0f}) {
         if (isSevered(pose, s > 0.0f ? 2 : 3)) {
-            // Stump peeking out below the hip skirt (which drops with a crouch).
-            part(glm::mat4(1.0f), {0.0f, 0.74f - crouchDrop, s * 0.12f},
+            // Stump peeking out below the hip skirt.
+            part(glm::mat4(1.0f), {0.0f, hipY - 0.11f, s * kLegSide},
                  {0.18f, 0.10f, 0.20f}, kStump);
             continue;
         }
-        float swing;
-        if (pose.grounded) {
-            swing = std::sin(pose.walkPhase + (s > 0.0f ? 0.0f : pi)) * 0.55f * pose.moveAmount;
-        } else {
-            swing = s > 0.0f ? 0.55f : -0.35f;
-        }
-        // Crouching splits the stance into a slight lunge so the folded legs
-        // read as bent knees rather than shrunken ones.
-        swing += pose.crouch * (s > 0.0f ? 0.30f : -0.30f);
-        glm::mat4 leg = pivotRotZ({0.0f, 0.85f * legSquash, s * 0.12f}, swing);
-        part(leg, {0.0f, 0.44f * legSquash, s * 0.12f},
-             {0.20f, 0.80f * legSquash, 0.22f}, colors.hakama);
-        part(leg, {0.04f, 0.05f * legSquash, s * 0.12f}, {0.26f, 0.10f, 0.16f}, kLacquer);
+        // Solved, not posed — and solved by the same function game.cpp bounds
+        // the leg with, so the fighter is hit where their legs actually are.
+        const LegPose leg = shuffleLeg(pose.walkPhase, pose.strideBlend,
+                                       pose.strideDir, pose.crouch, pose.grounded, s);
+        // Boxes hang from the rest pose — leg straight down from the hip — and
+        // each bone is carried onto the joints the solve produced. The roll
+        // reference is model forward, the same vector the knee was poled with,
+        // so the kneecap faces the way the knee bends.
+        const glm::vec3 front{1.0f, 0.0f, 0.0f};
+        const glm::vec3 kneeRest{0.0f, hipY - kThighLen, s * kLegSide};
+        const glm::mat4 thigh =
+            boneXf(leg.hipAt, leg.hipAt, leg.kneeAt, front);
+        const glm::mat4 shin = boneXf(kneeRest, leg.kneeAt, leg.footAt, front);
+        part(thigh, {0.0f, hipY - 0.5f * kThighLen, s * kLegSide},
+             {0.21f, kThighLen + 0.02f, 0.225f}, colors.hakama);
+        // Kneecap, centered on the pivot so it covers the joint at any fold.
+        part(thigh, kneeRest, {0.20f, 0.19f, 0.23f}, colors.hakama);
+        part(shin, {0.0f, hipY - kThighLen - 0.5f * kShinLen, s * kLegSide},
+             {0.19f, kShinLen + 0.02f, 0.21f}, colors.hakama);
+        part(shin, {0.04f, hipY - kLegLength, s * kLegSide}, {0.26f, 0.10f, 0.16f},
+             kLacquer);
     }
 
-    // Upper body: breathes at rest, bounces with the stride, leans into motion.
-    float bob = 0.015f * std::sin(pose.time * 2.2f) +
-                0.035f * pose.moveAmount * std::fabs(std::sin(pose.walkPhase));
+    // Upper body: breathes at rest, rides the hip, leans into motion. There is
+    // no stride bounce at all any more — a shuffle holds its height, which is
+    // most of why it reads as a fighter moving rather than a person walking.
+    float bob = 0.015f * std::sin(pose.time * 2.2f);
     float lean = -0.12f * pose.moveAmount;
     // Rear back through the windup, drive in through the strike: the heavy
     // exaggerates both, the jab barely coils and lunges into the thrust.
@@ -136,8 +270,9 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         lean -= kDriveIn[pose.attackKind] * pose.attackT;
     }
     lean -= 0.15f * pose.crouch; // hunch forward over the folded legs
-    glm::mat4 upper = glm::translate(glm::mat4(1.0f), {0.0f, bob - crouchDrop, 0.0f}) *
-                      pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
+    glm::mat4 upper =
+        glm::translate(glm::mat4(1.0f), {0.0f, bob - stanceDrop, 0.0f}) *
+        pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
 
     part(upper, {0.0f, 0.86f, 0.0f}, {0.44f, 0.28f, 0.36f}, colors.hakama); // hip skirt
     part(upper, {0.0f, 1.02f, 0.0f}, {0.42f, 0.10f, 0.32f}, colors.accent); // obi

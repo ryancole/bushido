@@ -1200,7 +1200,8 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         }
         const WeaponDef* held = game.weapon(i);
         drawSamurai(renderer, feet, yaw,
-                    {p.animPhase, p.moveAmount, p.grounded, time,
+                    {p.animPhase, p.moveAmount, p.strideBlend, p.strideDir,
+                     p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
                      p.attackT, p.blocking, p.crouchAmount, game.stats(i).reach,
                      held ? held->stats.bladeWidth : 1.0f, game.stance(i),
@@ -1465,7 +1466,10 @@ int main(int argc, char** argv) {
     // drifts that way ends with somebody wedged in the current — a match the
     // bot cannot finish, which now runs out the 99-second clock instead of
     // hanging but is still a soak run spent watching a body bob downstream.
-    // A second and a half of walking puts the pair on dry ground first.
+    // A few seconds of walking puts the pair on dry ground first — the count
+    // is a *distance* dressed as a duration, so it grew when the roster's walk
+    // slowed to a deliberate pace: three seconds now covers what one and a
+    // half used to, with margin for the slowest fighter in the cast.
     //
     // It is an ordinary input rather than a nudge to the sim: it goes through
     // stepInput like any other, carries only what quantizeAxis can express,
@@ -1474,7 +1478,7 @@ int main(int argc, char** argv) {
     // two netplay peers may start walking a frame or two apart (their input
     // delays differ); that is not a divergence, since each fighter's input is
     // whatever their own machine sent, never something the other recomputed.
-    constexpr int kAutoOpeningSteps = 180; // 1.5 s at the fixed step
+    constexpr int kAutoOpeningSteps = 360; // 3 s at the fixed step
     int autoOpening = 0;
     // Netplay. The transport is a plain UDP socket; the session is the
     // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless

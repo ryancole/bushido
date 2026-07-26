@@ -12,7 +12,22 @@
 // character.cpp is nothing but the index → definition dispatch.
 
 struct CharacterStats {
-    float moveSpeed;    // m/s ground speed
+    // Ground speed, in m/s, and deliberately slower than a walk: the roster
+    // sits between 0.65 and 1.05, a pace you read as individual steps rather
+    // than as travel. A hit here can end the match outright, so the approach
+    // is the whole negotiation — closing the last two meters has to cost
+    // enough seconds that the foe gets to answer it. These used to be 4.6–7.6,
+    // a dead sprint that put the entire arena inside a windup.
+    //
+    // The Ronin's 0.85 is the anchor and is exactly half of Game's
+    // kStrideCycle, i.e. **one footfall per second**. That is also where the
+    // model and the floor agree: the drawn stride swings the leg ±0.55 rad
+    // about a hip 0.85 m up, which carries the foot ~0.88 m — so a step
+    // covers the ground it looks like it covers. Anything reading as speed
+    // hangs off this number, since Game paces the stride by distance covered:
+    // a slower fighter takes fewer steps, never shorter ones.
+    float moveSpeed;
+
     float jumpVelocity; // m/s takeoff speed
     float windupTime;   // s from press until the blade goes live
     float activeTime;   // s the blade can connect

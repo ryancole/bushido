@@ -12,9 +12,69 @@ struct SamuraiColors {
     glm::vec4 accent; // obi belt, sword grip wrap
 };
 
+// Stance and stride geometry. The model's own dimensions, public because the
+// sim moves the body against them and both ends have to read one copy — two
+// would drift, and the symptom would be exactly what they exist to prevent:
+// feet skating over the floor.
+inline constexpr float kHipPivotY = 0.85f;  // hip joint height, standing tall
+inline constexpr float kFootY = 0.05f;      // sandal center height
+inline constexpr float kKneePivotY = 0.45f; // knee joint height, standing tall
+inline constexpr float kThighLen = kHipPivotY - kKneePivotY;
+inline constexpr float kShinLen = kKneePivotY - kFootY;
+inline constexpr float kLegLength = kThighLen + kShinLen;
+
+// A fighter with a sword in their hands does not walk. They hold a stance and
+// shuffle it along: one foot always leads, the feet never cross, and a step is
+// the lead reaching out and the rear closing up after it. So the legs are
+// placed by where the *feet* need to be and solved back to joint angles,
+// rather than swung from the hip and hoped over — which also means the stance
+// is what it is because a leg is a fixed-length lever. A hip at full standing
+// height can only reach the floor straight down, so holding the feet any
+// distance apart at all requires settling onto bent knees. These three numbers
+// are locked together by that: widen the stance or lengthen the step and the
+// hip has to come down to keep both feet on the ground.
+inline constexpr float kStanceHipY = 0.70f;    // hip height in the guard
+inline constexpr float kStanceSep = 0.34f;     // lead foot ahead of rear
+inline constexpr float kShuffleStride = 0.55f; // ground covered per cycle
+inline constexpr float kFootLift = 0.07f;      // peak height of a moving foot
+inline constexpr float kLegSide = 0.12f;       // a leg's z offset from center
+// How far the whole body sits below a fighter standing tall. Everything from
+// the hip up rides down by this, so every *sim* height authored against the
+// old upright model — shoulder, hand, torso, arm and head hurtboxes — is that
+// value minus this. Without it the drawn blade sweeps 15 cm under the arc it
+// actually cuts along, and the head you aim at is not the head you must hit.
+inline constexpr float kStanceDrop = kHipPivotY - kStanceHipY;
+inline constexpr float kCrouchDrop = 0.45f; // further drop at full crouch
+
+// One leg, solved. The feet are placed by the shuffle and the joints fall out
+// of them, so this is the single source both ends read: samurai.cpp draws from
+// it and game.cpp builds the leg hurtbox from it. Two copies of this would
+// drift, and the fighter would be hit where their legs are not.
+struct LegPose {
+    glm::vec3 hipAt, kneeAt, footAt; // model-local joint centers
+};
+
+// `side` is the leg's z sign: +1 is the lead (sword-side) leg, which is the
+// front foot and stays the front foot. `dir` is the direction of travel in
+// model-local space (x forward, y = z), and decides which foot moves first —
+// never which one leads.
+LegPose shuffleLeg(float phase, float strideBlend, glm::vec2 dir, float crouch,
+                   bool grounded, float side);
+
 struct SamuraiPose {
     float walkPhase = 0.0f;  // radians through the stride cycle
-    float moveAmount = 0.0f; // 0..1 fraction of max ground speed; scales the stride
+    float moveAmount = 0.0f; // 0..1 fraction of max ground speed; drives bob and lean
+    // 0..1 ease into a full-length step (Player::strideBlend). Not a fraction
+    // of speed: a slow fighter takes full steps less often, not short ones. It
+    // only closes the *stepping* — the stance separation is held either way,
+    // since a guard is a guard whether or not you are moving in it.
+    float strideBlend = 0.0f;
+    // Direction of travel in model-local space, x forward (Player::strideDir).
+    // Says which foot goes first and which way the step is taken — never which
+    // foot *leads*, which is the same one all match. A vector rather than a
+    // sign because a duel is not fought along one axis: stepping in depth used
+    // to slide the fighter sideways on legs doing a forward shuffle.
+    glm::vec2 strideDir{1.0f, 0.0f};
     bool grounded = true;
     float time = 0.0f;       // seconds since start, for idle breathing
     int attackState = 0;     // mirrors game AttackState: 0 none, 1 windup, 2 active, 3 recovery

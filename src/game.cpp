@@ -34,18 +34,26 @@ struct Hasher {
 constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard is up
+// Meters covered by one full walk cycle — two steps, one per leg — which is
+// what the stride animation is paced against rather than a fixed cadence. A
+// samurai's step is roughly 0.85 m, so the cycle is a shade under 1.7. Every
+// movement slowdown above rides this for free: a blocking fighter's shorter,
+// slower shuffle is the same footfalls at the speed they are actually walking.
+// How fast the step opens up when a fighter starts moving and closes away
+// when they stop. Fast enough not to be a transition anyone watches, slow
+// enough that the feet visibly settle back to the guard instead of snapping.
+constexpr float kStrideBlendRate = 10.0f; // 1/s
 
-// Crouching: held input ducks the whole upper body kCrouchDrop meters at full
-// depth — pose, hurtboxes, and the blade pivot all ride crouchAmount, so a
-// crouched fighter is genuinely smaller and their swings sweep a lower lane
-// (a leg-hunting stance). Legs fold rather than drop: their hit boxes squash
-// toward the floor by the same fraction the model compresses them. The drop
-// and the leg pivot height must mirror samurai.cpp's crouch numbers so the
-// cut lands where the body is drawn.
+// Crouching: held input ducks the whole body a further kCrouchDrop meters at
+// full depth — pose, hurtboxes, and the blade pivot all ride crouchAmount, so
+// a crouched fighter is genuinely smaller and their swings sweep a lower lane
+// (a leg-hunting stance). It lowers the hip, and the legs re-solve for the
+// feet they were already standing on, so nothing about the crouch has to be
+// mirrored into the leg hurtboxes any more: they come from the same solve the
+// model is drawn with. kCrouchDrop itself lives in samurai.hpp, beside the
+// stance height it deepens.
 constexpr float kCrouchMoveScale = 0.45f; // movement slowdown while crouched
-constexpr float kCrouchDrop = 0.45f;      // upper-body y drop at full crouch
 constexpr float kCrouchRate = 9.0f;       // crouchAmount approach speed, 1/s
-constexpr float kHipHeight = 0.85f;       // leg pivot height (samurai.cpp legs)
 
 // Per-attack tuning, indexed by AttackKind. Each attack scales the wielder's
 // resolved stats (character + weapon) rather than replacing them, the same
@@ -76,10 +84,14 @@ constexpr AttackTuning kAttackTuning[kAttackKindCount] = {
 // swordArmAngle case 2): the arm pivots at the shoulder along the stance's
 // arc for this attack, with the blade a segment along the arm direction. The
 // tip's distance from the shoulder is the character's reach.
-constexpr float kShoulderHeight = 1.36f;  // above the feet
+// Authored against a fighter standing tall, then dropped by kStanceDrop —
+// which is what drawSamurai does to the body these bound. A guard is held on
+// bent knees (samurai.hpp), so an upright shoulder height would sweep the
+// blade 15 cm above where it is drawn.
+constexpr float kShoulderHeight = 1.36f - kStanceDrop; // above the feet
 constexpr float kShoulderSide = 0.26f;    // sword arm's z offset from center
 constexpr float kBladeRoot = 0.45f;       // blade segment start, distance from shoulder
-constexpr float kHandHeight = 0.84f;      // resting hand (samurai.cpp), where a blade leaves
+constexpr float kHandHeight = 0.84f - kStanceDrop; // resting hand, where a blade leaves
 
 // Throwing the blade down, and taking one back up. Deliberately generous on
 // range and stingy on timing: fumbling for a sword at your feet under a swing
@@ -110,7 +122,7 @@ const glm::vec3 kLimbHitPad[kLimbCount] = {
 
 // Torso region (padded): a blade pass through here that misses every limb
 // still lands as a normal, non-severing hit.
-constexpr float kTorsoCenterY = 1.05f;
+constexpr float kTorsoCenterY = 1.05f - kStanceDrop;
 const glm::vec3 kTorsoHalf{0.30f, 0.48f, 0.30f};
 
 // Blood. Droplets are lighter than fighters so they hang a touch longer;
@@ -221,19 +233,27 @@ glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
 // fraction the model compresses them.
 LimbBounds crouchedLimbBounds(const Player& p, int limb) {
     LimbBounds b = samuraiLimbBounds(limb);
-    const float drop = p.crouchAmount * kCrouchDrop;
-    if (drop <= 0.0f) {
+    const bool isLeg = limb == static_cast<int>(Limb::LegFront) ||
+                       limb == static_cast<int>(Limb::LegBack);
+    if (!isLeg) {
+        b.center.y -= p.crouchAmount * kCrouchDrop;
         return b;
     }
-    if (limb == static_cast<int>(Limb::LegFront) ||
-        limb == static_cast<int>(Limb::LegBack)) {
-        const float squash = (kHipHeight - drop) / kHipHeight;
-        b.center.y *= squash;
-        b.half.y *= squash;
-    } else {
-        b.center.y -= drop;
-    }
-    return b;
+    // The legs are wherever the shuffle has put them, which is nowhere near a
+    // fixed box now that a fighter holds a stance and steps out of it. Built
+    // from `shuffleLeg` — the very function samurai.cpp draws the leg with —
+    // over the hip, knee and foot, so what you have to hit is what you see. A
+    // static box cannot do this job: the same leg is 0.17 m from center in the
+    // guard and 0.45 m out at full extension, so one box either misses the
+    // extended leg or swallows a standing fighter whole.
+    const float side = limb == static_cast<int>(Limb::LegFront) ? 1.0f : -1.0f;
+    const LegPose leg = shuffleLeg(p.animPhase, p.strideBlend, p.strideDir,
+                                   p.crouchAmount, p.grounded, side);
+    glm::vec3 lo = glm::min(glm::min(leg.hipAt, leg.kneeAt), leg.footAt);
+    glm::vec3 hi = glm::max(glm::max(leg.hipAt, leg.kneeAt), leg.footAt);
+    // The joints are a centerline; the limb has width around it.
+    const glm::vec3 pad{0.13f, 0.07f, 0.12f};
+    return {(lo + hi) * 0.5f, (hi - lo) * 0.5f + pad};
 }
 
 float attackDuration(const CharacterStats& st, AttackKind kind, AttackState state) {
@@ -466,12 +486,65 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 speedScale *= kCrawlSpeed[arms];
             }
         }
-        glm::vec2 planarVel = move * (st.moveSpeed * speedScale) + p.kbVel;
-        p.kbVel *= std::exp(-kKnockbackDecay * dt);
-
         p.moveAmount = glm::length(move) * speedScale;
-        p.animPhase = std::fmod(p.animPhase + p.moveAmount * 12.0f * dt,
-                                2.0f * 3.14159265358979f);
+
+        // ── The shuffle ──────────────────────────────────────────────────
+        // The body is moved by the foot, not the other way round: while a foot
+        // is planted it must not move in world space, and the only thing
+        // carrying the fighter along *is* the planted leg driving. That much
+        // is unchanged. What changed is the gait it drives.
+        //
+        // A fighter holding a sword does not walk — the feet never cross and
+        // the same leg leads all match. A cycle is two movements rather than
+        // two crossing steps: the lead foot reaches out, then the rear closes
+        // up behind it (reversed backing off, where the rear goes first). The
+        // foot placement lives in samurai.cpp; what the sim owns is how far a
+        // cycle carries the body and how the seconds are spread inside it.
+        constexpr float kTwoPi = 2.0f * 3.14159265358979f;
+        const float strideTarget = p.moveAmount > 0.0f ? 1.0f : 0.0f;
+        p.strideBlend =
+            p.strideBlend < strideTarget
+                ? std::min(strideTarget, p.strideBlend + kStrideBlendRate * dt)
+                : std::max(strideTarget, p.strideBlend - kStrideBlendRate * dt);
+        // Which way the travel is going, in the fighter's own frame — local +x
+        // is whichever way they face, and `facing` tracks the opponent rather
+        // than the direction of travel, so this is not a formality. It decides
+        // which foot moves first and which way the step is taken. Held through
+        // a stop so the feet keep the sense they had rather than snapping.
+        if (glm::length(move) > 0.01f) {
+            const glm::vec2 world = glm::normalize(move);
+            p.strideDir = {world.x * p.facing, world.y * p.facing};
+        }
+
+        // One cycle carries the body kShuffleStride, whatever the fighter's
+        // speed or how low they are crouched — unlike the walk it replaced,
+        // the step length is a property of the stance rather than of the leg's
+        // swing, so nothing here depends on leg geometry any more. Speed sets
+        // the cadence alone: a slow fighter shuffles less often, never smaller.
+        const float cyclesPerSec = p.moveAmount * st.moveSpeed / kShuffleStride;
+        const float dPhase = cyclesPerSec * kTwoPi * dt;
+
+        // One surge per foot movement — zero while the weight changes feet,
+        // peak as the planted leg drives — hence period π across a two-movement
+        // cycle. 2·sin² averages to exactly 1, so the mean is still precisely
+        // the speed stat and a cycle still covers kShuffleStride; only the
+        // distribution of the seconds inside it is shaped. samurai.cpp
+        // integrates this same curve to place the planted foot, so the two have
+        // to stay the same function.
+        //
+        // Sampled at the midpoint of the tick's phase sweep, so the distance
+        // travelled matches the phase advanced through it.
+        //
+        // Grounded only: in the air there is no planted foot to be moving away
+        // from, and pulsing the air control against an imaginary one would just
+        // feel broken.
+        const float midPhase = p.animPhase + 0.5f * dPhase;
+        const float surge = std::sin(midPhase);
+        const float gait = p.grounded ? 2.0f * surge * surge : 1.0f;
+        p.animPhase = std::fmod(p.animPhase + dPhase, kTwoPi);
+
+        glm::vec2 planarVel = move * (st.moveSpeed * speedScale * gait) + p.kbVel;
+        p.kbVel *= std::exp(-kKnockbackDecay * dt);
 
         if (p.grounded) {
             p.vy = 0.0f;
@@ -955,6 +1028,9 @@ std::uint32_t Game::checksum() const {
         hs.f(p.facing);
         hs.f(p.animPhase);
         hs.f(p.moveAmount);
+        hs.f(p.strideBlend);
+        hs.f(p.strideDir.x);
+        hs.f(p.strideDir.y);
         hs.i(static_cast<int>(p.attackState));
         hs.i(static_cast<int>(p.attackKind));
         hs.f(p.attackTimer);
