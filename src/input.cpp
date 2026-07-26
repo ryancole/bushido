@@ -14,6 +14,7 @@ PlayerInput readHeld(GLFWwindow* window, const Keybinds& keys) {
     if (bindHeld(window, keys[Action::MoveAway])) in.move.y -= 1.0f;   // into the screen (-z)
     if (bindHeld(window, keys[Action::MoveToward])) in.move.y += 1.0f; // toward the camera (+z)
     in.jump = bindHeld(window, keys[Action::Jump]);
+    in.sprint = bindHeld(window, keys[Action::Sprint]);
     in.block = bindHeld(window, keys[Action::Block]);
     in.crouch = bindHeld(window, keys[Action::Crouch]);
     return in;
@@ -35,6 +36,7 @@ std::uint16_t packInput(const PlayerInput& in) {
     if (in.attack) bits |= 1u << 7;
     bits |= static_cast<std::uint16_t>((static_cast<int>(in.attackKind) & 3) << 8);
     if (in.drop) bits |= 1u << 10;
+    if (in.sprint) bits |= 1u << 11;
     return bits;
 }
 
@@ -52,6 +54,7 @@ PlayerInput unpackInput(std::uint16_t bits) {
     in.attackKind = kind < kAttackKindCount ? static_cast<AttackKind>(kind)
                                             : AttackKind::Light;
     in.drop = (bits & (1u << 10)) != 0;
+    in.sprint = (bits & (1u << 11)) != 0;
     return in;
 }
 
