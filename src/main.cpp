@@ -499,7 +499,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::Dummy({0.0f, 6.0f});
 
     // Rows are dense: the menu style's roomy item spacing and tall frame
-    // padding would push nine keybinds off the bottom of a 720p window.
+    // padding would push ten keybinds off the bottom of a 720p window.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 6.0f});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
 
@@ -532,10 +532,10 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 4.0f});
 
-    // Fixed-size content area, tall enough for the longest section (the nine
+    // Fixed-size content area, tall enough for the longest section (the ten
     // keybind rows): the window is centered and auto-sized, so letting it
     // resize per section would jump the whole panel on every tab click.
-    ImGui::BeginChild("section", {contentW, 392.0f}, ImGuiChildFlags_None,
+    ImGui::BeginChild("section", {contentW, 434.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
         for (int i = 0; i < kActionCount; ++i) {
@@ -945,14 +945,45 @@ void drawBloodBars(const Game& game) {
         dl->AddRect(mn, mx, IM_COL32(232, 222, 204, 70), 3.0f, 0, 1.5f);
 
         char label[64];
+        // The blade can change hands mid-match, or be thrown away entirely, so
+        // the bar names what is in the hand now rather than what was picked.
+        const WeaponDef* held = game.weapon(i);
         std::snprintf(label, sizeof(label), "%s - %s", game.character(i).name,
-                      game.weapon(i).name);
+                      held ? held->name : "Empty-handed");
         ImFont* font = ImGui::GetFont();
         const float nameSize = 19.0f;
         const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, label).x;
         dl->AddText(font, nameSize, {i == 0 ? x0 : mx.x - nameW, mx.y + 6.0f},
                     IM_COL32(232, 222, 204, 200), label);
     }
+}
+
+// Match clock, top centre between the blood bars. On screen for the same
+// reason the netplay readout is: the match can now end without anybody dying,
+// and a duel that stops on its own with nothing having said why reads as a
+// bug. Cream while there is time in hand, amber under fifteen seconds, crimson
+// under five — the fight itself is what should be watched, so the colour does
+// the work and the number only confirms it.
+void drawMatchClock(const Game& game) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = 34.0f;
+    const float left = game.timeLeft();
+
+    char text[8];
+    // Rounded up, so the last second is spent showing "1" rather than "0" —
+    // a clock reading zero while the fight is still live is a lie.
+    std::snprintf(text, sizeof text, "%d", static_cast<int>(std::ceil(left)));
+
+    ImU32 color = IM_COL32(232, 222, 204, 200);
+    if (left <= 5.0f) {
+        color = IM_COL32(214, 44, 44, 245);
+    } else if (left <= 15.0f) {
+        color = IM_COL32(224, 176, 72, 225);
+    }
+    const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
+    dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 16.0f}, color, text);
 }
 
 // Post-match overlay, styled after the main menu. Shown once the kill has had
@@ -984,7 +1015,11 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
     ImGui::PopFont();
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
     ImGui::PushFont(nullptr, 22.0f);
-    ImGui::Text("%s takes the duel", game.character(game.winner()).name);
+    // A match called on the clock was won by being in better shape, not by a
+    // killing blow, and saying "takes the duel" over two fighters both still
+    // on their feet would be the screen's one dishonest line.
+    ImGui::Text(game.timedOut() ? "%s is left standing" : "%s takes the duel",
+                game.character(game.winner()).name);
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::Dummy({0.0f, 12.0f});
@@ -1074,7 +1109,8 @@ void drawNetStatus(const Session& session) {
         color = IM_COL32(224, 176, 72, 200);         // ragged but playable
     }
     const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
-    dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 24.0f}, color, text);
+    // Under the match clock, which now owns the top of the centre column.
+    dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 58.0f}, color, text);
 }
 
 // While a Steam host waits, offer Steam's own friend picker. This is the
@@ -1152,11 +1188,13 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
             c.kimono = glm::mix(c.kimono, glm::vec4{0.95f, 0.78f, 0.30f, 1.0f},
                                 0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
+        const WeaponDef* held = game.weapon(i);
         drawSamurai(renderer, feet, yaw,
                     {p.animPhase, p.moveAmount, p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
                      p.attackT, p.blocking, p.crouchAmount, game.stats(i).reach,
-                     game.weapon(i).stats.bladeWidth, p.bodyRoll(), p.severed},
+                     held ? held->stats.bladeWidth : 1.0f, held != nullptr,
+                     p.bodyRoll(), p.severed},
                     c);
     }
 
@@ -1165,6 +1203,16 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         drawSeveredLimb(renderer, game.severedPieceTransform(piece),
                         static_cast<int>(piece.limb),
                         game.character(piece.victim).colors);
+    }
+
+    // Blades lying where they were thrown, tumbling as debris on the same
+    // terms. They belong to nobody now, so they wear the weapon's own tile
+    // color on the grip rather than either fighter's accent.
+    for (const DroppedWeapon& blade : game.droppedWeapons()) {
+        const WeaponStats& w = weaponDef(blade.weapon).stats;
+        drawDroppedBlade(renderer, game.droppedWeaponTransform(blade),
+                         bladeSteelLength(w.reachBonus), w.bladeWidth,
+                         {0.16f, 0.13f, 0.11f, 1.0f});
     }
 
     // Blood droplets in flight.
@@ -1896,7 +1944,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 2; ++i) {
                     int slot = localSlot(matchSources[i]);
                     if (slot >= 0) {
-                        localInputs[slot].consumeAttack();
+                        localInputs[slot].consumeEdges();
                     }
                 }
 
@@ -2021,6 +2069,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 drawBloodBars(*game);
+                drawMatchClock(*game);
                 if (session.active()) {
                     drawNetStatus(session);
                     if (session.waiting()) {

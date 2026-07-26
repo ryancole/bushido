@@ -34,6 +34,7 @@ std::uint16_t packInput(const PlayerInput& in) {
     if (in.crouch) bits |= 1u << 6;
     if (in.attack) bits |= 1u << 7;
     bits |= static_cast<std::uint16_t>((static_cast<int>(in.attackKind) & 3) << 8);
+    if (in.drop) bits |= 1u << 10;
     return bits;
 }
 
@@ -50,6 +51,7 @@ PlayerInput unpackInput(std::uint16_t bits) {
     // hostile packet is not — fall back rather than index a table out of range.
     in.attackKind = kind < kAttackKindCount ? static_cast<AttackKind>(kind)
                                             : AttackKind::Light;
+    in.drop = (bits & (1u << 10)) != 0;
     return in;
 }
 
@@ -57,10 +59,14 @@ void LocalInput::beginMatch(GLFWwindow* window, const Keybinds& keys) {
     m_input = PlayerInput{};
     m_attackHeld = bindHeld(window, keys[Action::Attack]);
     m_jabHeld = bindHeld(window, keys[Action::Jab]);
+    // Seeded like the others so a control already down at the whistle can't
+    // read as a fresh press and throw the blade away on the opening frame.
+    m_dropHeld = bindHeld(window, keys[Action::Drop]);
     m_suppressed = m_attackHeld;
     m_holdTime = 0.0f;
     m_pending = false;
     m_pendingKind = AttackKind::Light;
+    m_dropPending = false;
 }
 
 void LocalInput::poll(GLFWwindow* window, const Keybinds& keys, float frameTime) {
@@ -93,11 +99,23 @@ void LocalInput::poll(GLFWwindow* window, const Keybinds& keys, float frameTime)
     }
     m_jabHeld = jab;
 
+    // Drop / take up on press. One control for both, because which one the
+    // player means is never in doubt from where they are standing — and the
+    // sim is the only thing that knows whether there is a blade in hand.
+    bool drop = bindHeld(window, keys[Action::Drop]);
+    if (drop && !m_dropHeld) {
+        m_dropPending = true;
+    }
+    m_dropHeld = drop;
+
     m_input.attack = m_pending;
     m_input.attackKind = m_pendingKind;
+    m_input.drop = m_dropPending;
 }
 
-void LocalInput::consumeAttack() {
+void LocalInput::consumeEdges() {
     m_pending = false;
     m_input.attack = false;
+    m_dropPending = false;
+    m_input.drop = false;
 }

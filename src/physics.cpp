@@ -104,11 +104,18 @@ public:
         if (speed < kMinAudibleSpeed) {
             return;
         }
+        // The debris handle rides in the body's user data (addDebris puts it
+        // there), which is the only thing available from a contact callback —
+        // and cheaper than a reverse lookup Jolt would be calling from its own
+        // job threads.
+        const JPH::Body& debris =
+            body1.GetObjectLayer() == Layers::DEBRIS ? body1 : body2;
         JPH::RVec3 p = manifold.GetWorldSpaceContactPointOn1(0);
         std::lock_guard<std::mutex> lock(m_mutex);
         m_impacts.push_back({{static_cast<float>(p.GetX()), static_cast<float>(p.GetY()),
                               static_cast<float>(p.GetZ())},
-                             speed});
+                             speed,
+                             static_cast<int>(debris.GetUserData())});
     }
 
     void clear() { m_impacts.clear(); }
@@ -308,6 +315,9 @@ void Physics::step(float dt) {
         constexpr float kAngularDrag = 0.3f;
         JPH::BodyInterface& bodies = im.physicsSystem.GetBodyInterface();
         for (const JPH::BodyID& id : im.debris) {
+            if (id.IsInvalid()) {
+                continue; // a blade somebody picked back up
+            }
             JPH::RVec3 pos = bodies.GetPosition(id);
             if (pos.GetX() < im.water.min.x || pos.GetX() > im.water.max.x ||
                 pos.GetZ() < im.water.min.z || pos.GetZ() > im.water.max.z ||
@@ -354,10 +364,25 @@ int Physics::addDebris(const glm::vec3& center, float yaw, const glm::vec3& half
     settings.mFriction = 0.35f;
     settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     settings.mMassPropertiesOverride.mMass = 0.2f;
+    // The handle travels with the body so the contact listener can name it.
+    const int handle = static_cast<int>(im.debris.size());
+    settings.mUserData = static_cast<JPH::uint64>(handle);
     JPH::BodyID id = im.physicsSystem.GetBodyInterface().CreateAndAddBody(
         settings, JPH::EActivation::Activate);
     im.debris.push_back(id);
-    return static_cast<int>(im.debris.size()) - 1;
+    return handle;
+}
+
+void Physics::removeDebris(int id) {
+    Impl& im = *m_impl;
+    if (id < 0 || id >= static_cast<int>(im.debris.size()) ||
+        im.debris[id].IsInvalid()) {
+        return;
+    }
+    JPH::BodyInterface& bodies = im.physicsSystem.GetBodyInterface();
+    bodies.RemoveBody(im.debris[id]);
+    bodies.DestroyBody(im.debris[id]);
+    im.debris[id] = JPH::BodyID(); // retired, never reissued
 }
 
 void Physics::debrisStates(std::vector<DebrisState>& out) const {
@@ -366,6 +391,9 @@ void Physics::debrisStates(std::vector<DebrisState>& out) const {
     out.clear();
     out.reserve(im.debris.size());
     for (const JPH::BodyID& id : im.debris) {
+        if (id.IsInvalid()) {
+            continue;
+        }
         JPH::RVec3 p = bodies.GetPosition(id);
         JPH::Quat q = bodies.GetRotation(id);
         JPH::Vec3 v = bodies.GetLinearVelocity(id);

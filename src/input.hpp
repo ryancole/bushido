@@ -7,15 +7,19 @@
 
 struct GLFWwindow;
 
-// A PlayerInput in ten bits. This is the replay record *and* the eventual
-// netplay wire format, defined once so a recorded match and a transmitted one
-// can never drift apart. move.x/move.y only ever take -1, 0 or +1 (readHeld
+// A PlayerInput in eleven bits. This is the replay record *and* the netplay
+// wire format, defined once so a recorded match and a transmitted one can
+// never drift apart. move.x/move.y only ever take -1, 0 or +1 (readHeld
 // builds each from two opposed buttons), so two bits apiece is lossless — and
 // saying so here is what keeps a non-canonical float out of the input path,
 // where it would be a desync waiting to happen.
 //
 // Layout: [1:0] move.x + 1, [3:2] move.y + 1, [4] jump, [5] block,
-//         [6] crouch, [7] attack, [9:8] attackKind.
+//         [6] crouch, [7] attack, [9:8] attackKind, [10] drop.
+// Bits are only ever appended: the packet is a fixed two bytes either way, so
+// widening the meaning of a spare bit costs nothing on the wire, and an older
+// recording replays with the new bit clear, which is exactly right — nobody
+// dropped anything in a match played before the control existed.
 std::uint16_t packInput(const PlayerInput& in);
 PlayerInput unpackInput(std::uint16_t bits);
 
@@ -52,11 +56,11 @@ inline int localSlot(InputSource s) {
 // One locally-controlled fighter's input, latched across render frames.
 //
 // The held controls (move/jump/block/crouch) are levels and can be read fresh
-// whenever. The two attack controls are *edges*: the attack control fires on
-// release — a tap is the light swing, a hold past kHeavyHoldTime charges the
-// heavy — and the jab control fires on press. Edges are detected once per
-// render frame but consumed by fixed steps, and a frame can run zero of those,
-// so a press has to sit here until a step takes it. This state used to be six
+// whenever. The rest are *edges*: the attack control fires on release — a tap
+// is the light swing, a hold past kHeavyHoldTime charges the heavy — while
+// the jab and drop controls fire on press. Edges are detected once per render
+// frame but consumed by fixed steps, and a frame can run zero of those, so a
+// press has to sit here until a step takes it. This state used to be six
 // loose locals in the main loop, which worked only for as long as exactly one
 // fighter could ever be human.
 class LocalInput {
@@ -74,16 +78,18 @@ public:
     // What the fixed steps should feed the sim this frame.
     const PlayerInput& current() const { return m_input; }
 
-    // A fixed step has taken the latched attack; later steps in the same frame
-    // must not swing again on the same press.
-    void consumeAttack();
+    // A fixed step has taken the latched edges; later steps in the same frame
+    // must not swing — or throw the blade down — again on the same press.
+    void consumeEdges();
 
 private:
     PlayerInput m_input;
     bool m_attackHeld = false;
     bool m_jabHeld = false;
+    bool m_dropHeld = false;
     bool m_suppressed = false; // ignore the release of a click that predates the match
     float m_holdTime = 0.0f;   // s the attack control has been down
     bool m_pending = false;    // an attack is waiting for a fixed step to take it
     AttackKind m_pendingKind = AttackKind::Light;
+    bool m_dropPending = false; // a drop/take-up is waiting for a fixed step
 };

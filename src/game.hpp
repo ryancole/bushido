@@ -34,6 +34,11 @@ struct PlayerInput {
     bool crouch = false; // held: duck low (slows the walk, no jumping)
     bool attack = false; // edge-triggered: true only on the tick(s) after a fresh press
     AttackKind attackKind = AttackKind::Light; // which attack, when attack is set
+    // Edge-triggered, and one control for both halves of the same idea: throw
+    // the blade down if there is one in hand, otherwise take up whatever is
+    // lying at your feet. Which of the two it means is the sim's to decide —
+    // the input layer has no business knowing what a fighter is holding.
+    bool drop = false;
 
     // Exact equality, so the replay harness can check that an input survives
     // the wire format unchanged (see quantizeAxis in input.hpp).
@@ -74,6 +79,20 @@ struct SeveredPiece {
     int debrisId; // handle into Physics' debris bodies
 };
 
+// A blade lying in the arena, thrown down by whoever was carrying it. It is a
+// debris rigid body on exactly the same terms as a severed limb, so it
+// tumbles, gets kicked around and floats downstream for free — and lands
+// inside the determinism checksum for free with it.
+//
+// Nothing here says who dropped it: a blade on the ground belongs to whoever
+// reaches it, which is the whole point of being able to throw one away, and is
+// the same shape a blade the *level* placed will need.
+struct DroppedWeapon {
+    int weapon;   // armory index (weapons/weapon.hpp)
+    int debrisId; // handle into Physics' debris bodies
+    float settle; // s before it can be taken up, so a drop isn't a no-op
+};
+
 // World: x right, y up, z toward the camera; ground surface at y = 0.
 // Units are meters-ish. Players move freely in the x/z ground plane.
 struct Player {
@@ -99,6 +118,16 @@ struct Player {
     AttackKind bufferedKind = AttackKind::Light; // which attack is waiting
     glm::vec2 kbVel{0.0f};     // knockback velocity in the ground plane
     bool severed[kLimbCount] = {}; // dismembered parts stay lost for the match
+
+    // The blade in hand, as an armory index — or kUnarmed once it has been
+    // thrown down (or taken with both arms). It is per-fighter *state* rather
+    // than part of the match's setup because it changes mid-match: a fighter
+    // can end a duel holding the sword they started it with, none at all, or
+    // the one their opponent threw away. Game::stats is re-resolved whenever
+    // this moves, so everything outside the sim keeps reading one number.
+    static constexpr int kUnarmed = -1;
+    int weapon = 0;
+    bool armed() const { return weapon != kUnarmed; }
 
     // Blood is the health pool and the win condition: torso hits cost a
     // chunk, dismemberment a bigger one, and open stumps keep draining it.
@@ -138,10 +167,17 @@ public:
     void update(const PlayerInput inputs[2], float dt);
     const Player& player(int i) const { return m_players[i]; }
     const CharacterDef& character(int i) const { return *m_defs[i]; }
-    const WeaponDef& weapon(int i) const { return *m_weapons[i]; }
+    // The blade fighter i is holding, or null once they have thrown it down.
+    // A pointer rather than a reference because "empty-handed" is a state the
+    // match can genuinely be in, and every reader has to say what it draws
+    // (or prints) for it.
+    const WeaponDef* weapon(int i) const { return m_weapons[i]; }
     // Effective per-fighter stats: the character's, with the weapon's swing
-    // scale, reach bonus, and knockback scale already applied. Everything
-    // outside Game (bot, rendering) should read these, not the raw roster.
+    // scale, reach bonus, and knockback scale already applied — re-resolved
+    // whenever the blade in hand changes, so a fighter who picks up an odachi
+    // swings like one. Everything outside Game (bot, rendering) should read
+    // these, not the raw roster. An empty-handed fighter reads back their bare
+    // character stats; they cannot attack at all, so nothing is scaled.
     const CharacterStats& stats(int i) const { return m_stats[i]; }
     // The battleground this match was built on (roster index into levels/level.hpp);
     // main draws the matching scenery.
@@ -154,9 +190,35 @@ public:
     bool over() const { return m_winner >= 0; }
     float overTime() const { return m_overTime; }
 
+    // The duel is on a clock. A sword fight that cannot end is not a
+    // stalemate, it is a hang: a fighter wedged in the stream, one who threw
+    // their blade away and will not go back for it, or simply two people
+    // circling. None of those is worth waiting out, and every one of them
+    // used to run until somebody closed the window.
+    //
+    // The clock decides nothing on its own — it only stops the match and
+    // hands it to whoever is in better shape. That keeps it a backstop rather
+    // than a tactic: running the clock down from ahead is possible, but the
+    // limit is long enough that it is a worse plan than fighting.
+    static constexpr float kMatchTimeLimit = 99.0f; // s
+    float timeLeft() const { return m_timeLeft; }
+    // Was the outcome the clock's rather than a kill? The overlay says so —
+    // "left standing" is a different thing to have done than "takes the duel".
+    bool timedOut() const { return m_timedOut; }
+
     const std::vector<SeveredPiece>& severedPieces() const { return m_pieces; }
     // World transform of a severed piece's debris body, for rendering.
     glm::mat4 severedPieceTransform(const SeveredPiece& piece) const;
+
+    const std::vector<DroppedWeapon>& droppedWeapons() const { return m_dropped; }
+    glm::mat4 droppedWeaponTransform(const DroppedWeapon& blade) const; // rendering
+    glm::vec3 droppedWeaponPos(const DroppedWeapon& blade) const;       // gameplay
+
+    // How close a fighter's feet have to be, in the ground plane, to take a
+    // blade up. Public because the bot has to walk to one, and a bot working
+    // from its own idea of "close enough" would either stop short of every
+    // sword forever or stand there pressing at nothing.
+    static constexpr float kPickupRange = 1.25f;
 
     const std::vector<BloodParticle>& bloodParticles() const { return m_blood; }
     const std::vector<BloodMark>& bloodMarks() const { return m_bloodMarks; }
@@ -191,6 +253,21 @@ private:
         return m_hasWater && x >= m_waterMinXZ.x && x <= m_waterMaxXZ.x &&
                z >= m_waterMinXZ.y && z <= m_waterMaxXZ.y;
     }
+    // Puts a blade (or Player::kUnarmed) in fighter i's hand and re-resolves
+    // their stats from it. The one place m_weapons/m_stats are written.
+    void equip(int i, int weapon);
+    // Throws fighter i's blade to the ground in front of them, where either
+    // fighter can take it up again. A no-op if they have nothing to throw.
+    void dropWeapon(int i);
+    // Takes up the nearest blade within reach of fighter i, if there is one
+    // and they have a hand to hold it with. Returns whether anything was
+    // picked up.
+    bool takeUpWeapon(int i);
+    // Is this debris body one of the severed limbs? Blades bleed no blood, so
+    // the impact stream has to be able to tell them apart.
+    bool isLimbDebris(int debrisId) const;
+    // The clock ran out: call the match for whoever is in better shape.
+    void decideOnTime();
     void severLimb(int victim, Limb limb, const glm::vec2& impulseDir);
     void collapse(Player& p); // death: cancel the swing, start the body's fall
     void spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count, float speed);
@@ -200,9 +277,13 @@ private:
 
     Player m_players[2];
     const CharacterDef* m_defs[2];   // roster entries (colors, names)
-    const WeaponDef* m_weapons[2];   // armory entries (damage scale read on hit)
+    // The blade each fighter is currently holding, null when empty-handed.
+    // Follows Player::weapon rather than the match's setup — a fighter can
+    // put one down and take up another mid-duel.
+    const WeaponDef* m_weapons[2];
     CharacterStats m_stats[2];       // character stats with the weapon applied
     std::vector<SeveredPiece> m_pieces;
+    std::vector<DroppedWeapon> m_dropped; // blades on the ground, free to take
     std::vector<SoundCue> m_soundCues;
     std::vector<BloodParticle> m_blood;
     std::vector<BloodMark> m_bloodMarks;
@@ -216,6 +297,8 @@ private:
     glm::vec2 m_waterMaxXZ{0.0f};
     int m_winner = -1;      // decided once; a post-match death can't flip it
     float m_overTime = 0.0f;
+    float m_timeLeft = kMatchTimeLimit; // counts down only while the duel is live
+    bool m_timedOut = false;            // the clock called it, not a killing blow
     // Two streams, deliberately. m_rng decides things the fight turns on (which
     // way a dying body topples); m_cosmeticRng decides only how blood looks.
     // Splitting them keeps the number of droplets a hit happened to spawn from

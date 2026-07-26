@@ -4,3 +4,8 @@ out/
 .vs/
 .cache/
 CMakeUserPresets.json
+
+# Replay recordings. --record puts a bare name under replays/; the glob catches
+# any written elsewhere by an explicit path.
+replays/
+*.bsdr

@@ -3,6 +3,7 @@
 #include "input.hpp" // PlayerInput, packInput/unpackInput
 
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 
 // Deterministic replay: the harness every other piece of netplay rests on.
@@ -30,6 +31,19 @@ struct MatchSetup {
 };
 
 inline constexpr std::uint32_t kReplayVersion = 1;
+
+// Where recordings live, relative to the working directory.
+inline constexpr const char* kReplayDir = "replays";
+
+// Resolves a recording's name to the file it means. A bare name goes under
+// kReplayDir; a name that already carries a directory — or is absolute — is
+// honoured exactly as given, because somebody who typed a path meant it.
+//
+// Recorder and Replayer both go through this, and that is the whole point:
+// whatever --record writes, --replay has to find, so the rule exists once. It
+// is also why the documented `--record run.bsdr` / `--replay run.bsdr` pair
+// still reads the same — both ends move together.
+std::filesystem::path replayPath(const char* name);
 
 // Writes a recording. Failing to open one is never fatal — a match should not
 // die because a debug log could not be created — so a failed open logs and

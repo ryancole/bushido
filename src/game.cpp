@@ -78,6 +78,22 @@ constexpr AttackTuning kAttackTuning[kAttackKindCount] = {
 constexpr float kShoulderHeight = 1.36f;  // above the feet
 constexpr float kShoulderSide = 0.26f;    // sword arm's z offset from center
 constexpr float kBladeRoot = 0.45f;       // blade segment start, distance from shoulder
+constexpr float kHandHeight = 0.84f;      // resting hand (samurai.cpp), where a blade leaves
+
+// Throwing the blade down, and taking one back up. Deliberately generous on
+// range and stingy on timing: fumbling for a sword at your feet under a swing
+// is the drama, hunting for the exact pixel it landed on is not. The range
+// itself is Game::kPickupRange — public, because the bot has to walk to one.
+//
+// The settle time is what stops the control being a no-op — press it twice in
+// a frame or two and you would otherwise still be armed, having only made a
+// noise. It also gives the blade a moment to actually leave the hand before
+// the fighter who threw it (or the one standing over them) can claim it.
+constexpr float kPickupHeight = 1.60f;  // m of vertical slack from the body center
+constexpr float kDropSettle = 0.45f;    // s a thrown blade is untouchable
+constexpr float kDropToss = 1.8f;       // m/s forward on the throw
+constexpr float kDropLift = 1.4f;       // m/s upward on the throw
+constexpr float kDropSpin = 6.0f;       // rad/s end over end
 
 // Forgiveness padding added around each limb's tight bounds for the hit test.
 // The head's z pad is deliberately small: the blade travels in a lane
@@ -234,20 +250,12 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
     : m_level(level) {
     m_defs[0] = &characterDef(p0Character);
     m_defs[1] = &characterDef(p1Character);
-    m_weapons[0] = &weaponDef(p0Weapon);
-    m_weapons[1] = &weaponDef(p1Weapon);
-    // Bake the weapon into the character's stats once; the sim (and the bot,
-    // via stats()) reads the resolved numbers and never re-applies the weapon.
-    for (int i = 0; i < 2; ++i) {
-        CharacterStats st = m_defs[i]->stats;
-        const WeaponStats& w = m_weapons[i]->stats;
-        st.windupTime *= w.swingScale;
-        st.activeTime *= w.swingScale;
-        st.recoveryTime *= w.swingScale;
-        st.reach += w.reachBonus;
-        st.knockback *= w.knockbackScale;
-        m_stats[i] = st;
-    }
+    // The weapon each fighter starts the match with. equip bakes it into their
+    // stats; the sim (and the bot, via stats()) reads the resolved numbers and
+    // never re-applies the weapon itself — which is what lets a blade change
+    // hands mid-match without anything downstream noticing.
+    equip(0, p0Weapon);
+    equip(1, p1Weapon);
     m_players[0].pos = {-3.0f, Player::kHalfHeight, 0.0f};
     m_players[1].pos = {3.0f, Player::kHalfHeight, 0.0f};
     m_players[0].facing = 1.0f;
@@ -283,6 +291,13 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
 Game::~Game() = default;
 
 void Game::update(const PlayerInput inputs[2], float dt) {
+    // Blades lying in the arena: count down the beat before each can be
+    // claimed. Nothing else about them is simulated here — they are debris
+    // bodies, and Jolt moves them with everything else in step().
+    for (DroppedWeapon& blade : m_dropped) {
+        blade.settle = std::max(0.0f, blade.settle - dt);
+    }
+
     for (int i = 0; i < 2; ++i) {
         Player& p = m_players[i];
         // The dead take no input; the body still topples and gets shoved.
@@ -353,10 +368,31 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                 }
             }
         }
-        // Swinging needs at least one arm; the model swaps the katana to the
-        // off hand when the sword arm is gone.
-        bool canSwing = !p.severed[static_cast<int>(Limb::ArmFront)] ||
-                        !p.severed[static_cast<int>(Limb::ArmBack)];
+        // Throw the blade down, or take up whatever is lying at the feet. One
+        // control for both, and which of the two it means is decided here
+        // rather than at the keyboard: nothing outside the sim knows what is
+        // in a fighter's hand, and after the first exchange that may not even
+        // be the blade they chose. A press that lands mid-swing is dropped
+        // rather than buffered — the blade is committed to the cut, and a
+        // throw that goes off a moment late is worse than one that never
+        // happened.
+        if (in.drop && !p.dead() && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None) {
+            if (p.armed()) {
+                dropWeapon(i);
+            } else {
+                takeUpWeapon(i);
+            }
+        }
+
+        // Swinging needs a blade and an arm to hold it with; the model swaps
+        // the katana to the off hand when the sword arm is gone. Throwing the
+        // sword away is therefore the most expensive thing a fighter can do to
+        // themselves — no attack, and no guard either, since it takes crossed
+        // steel to catch a cut.
+        bool hasArm = !p.severed[static_cast<int>(Limb::ArmFront)] ||
+                      !p.severed[static_cast<int>(Limb::ArmBack)];
+        bool canSwing = hasArm && p.armed();
         // Guard: held while standing and not mid-swing. It takes an arm to
         // hold the blade up, and it wins over an attack press — the sword is
         // committed to the guard.
@@ -463,7 +499,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             {Sfx::Thud, impact.pos.x, std::clamp(impact.speed / 9.0f, 0.3f, 1.0f)});
         // A piece hitting the stream bed splashes rather than smears — no
         // mark, no droplet burst (addBloodMark would drop the mark anyway).
-        if (impact.pos.y < 0.15f && !inWater(impact.pos.x, impact.pos.z)) {
+        // And only limbs bleed: a thrown-down blade clatters and lies there,
+        // which is the whole reason an impact says which body it came from.
+        if (impact.pos.y < 0.15f && !inWater(impact.pos.x, impact.pos.z) &&
+            isLimbDebris(impact.id)) {
             addBloodMark(impact.pos,
                          std::clamp(0.08f + impact.speed * 0.03f, 0.10f, 0.34f));
             spawnBlood({impact.pos.x, 0.08f, impact.pos.z}, {0.0f, 1.0f, 0.0f}, 3,
@@ -603,7 +642,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // any blade. Chopping at a corpse still severs and sprays but can't
         // re-decide the match.
         const bool wasDead = foe.dead();
-        const float dmg = m_weapons[i]->stats.damage * tun.damageScale;
+        // Armed by construction — nothing can start a swing empty-handed, and
+        // nothing can disarm mid-swing — but the blade is state now, so read
+        // it as state rather than trusting a pointer three screens away.
+        const float dmg =
+            (m_weapons[i] ? m_weapons[i]->stats.damage : 1.0f) * tun.damageScale;
         const float cost = hitTorso ? kTorsoHitBlood * dmg
                            : hitLimb == static_cast<int>(Limb::Head)
                                ? Player::kMaxBlood
@@ -657,6 +700,50 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
     if (m_winner >= 0) {
         m_overTime += dt;
+    } else {
+        // Run the clock last, so a kill landed on this very step is the thing
+        // that decided the match rather than the expiry that happened
+        // alongside it.
+        m_timeLeft = std::max(0.0f, m_timeLeft - dt);
+        if (m_timeLeft <= 0.0f) {
+            decideOnTime();
+        }
+    }
+}
+
+// Time. Nobody died, so the match goes to whoever came closest: blood first,
+// since that is what the whole duel is spent taking, then limbs, since a
+// fighter who kept all four while the other lost one was plainly winning.
+//
+// The last tie-break is the fighter index, which is arbitrary and is meant to
+// be — it can only be reached when the two are identical to the bit, which in
+// practice means nothing happened for ninety-nine seconds. Something has to be
+// returned, and a draw would be a whole outcome for the win overlay, the
+// rematch flow and the netplay level ownership to learn for that one case.
+void Game::decideOnTime() {
+    auto lost = [](const Player& p) {
+        int n = 0;
+        for (bool s : p.severed) {
+            n += s ? 1 : 0;
+        }
+        return n;
+    };
+    const Player& a = m_players[0];
+    const Player& b = m_players[1];
+    if (a.blood != b.blood) {
+        m_winner = a.blood > b.blood ? 0 : 1;
+    } else if (lost(a) != lost(b)) {
+        m_winner = lost(a) < lost(b) ? 0 : 1;
+    } else {
+        m_winner = 0;
+    }
+    m_timedOut = true;
+    // Nobody is killed by the bell: both fighters are left standing exactly as
+    // they were, and only the swing in flight is cut short so the overlay does
+    // not come up over a blade frozen mid-arc.
+    for (Player& p : m_players) {
+        p.attackState = AttackState::None;
+        p.attackTimer = 0.0f;
     }
 }
 
@@ -672,11 +759,124 @@ void Game::collapse(Player& p) {
     }
 }
 
+// Puts a blade (or nothing) in a fighter's hand and re-resolves their stats
+// from it. The only place m_weapons and m_stats are written, so the invariant
+// "stats are the character's with the held weapon applied" holds by
+// construction however often the blade changes.
+void Game::equip(int i, int weapon) {
+    m_players[i].weapon = weapon;
+    m_weapons[i] = weapon == Player::kUnarmed ? nullptr : &weaponDef(weapon);
+    CharacterStats st = m_defs[i]->stats;
+    if (m_weapons[i]) {
+        const WeaponStats& w = m_weapons[i]->stats;
+        st.windupTime *= w.swingScale;
+        st.activeTime *= w.swingScale;
+        st.recoveryTime *= w.swingScale;
+        st.reach += w.reachBonus;
+        st.knockback *= w.knockbackScale;
+    }
+    // Empty-handed leaves the bare character stats standing. Nothing scales
+    // them, because nothing uses them: an unarmed fighter cannot swing at all.
+    m_stats[i] = st;
+}
+
+// Throws the blade out of a fighter's hand and into the world as a debris
+// body, tumbling forward. From here it belongs to nobody — either fighter can
+// take it up, which is the point of being allowed to throw one away.
+void Game::dropWeapon(int i) {
+    Player& p = m_players[i];
+    if (!p.armed()) {
+        return;
+    }
+    const int weapon = p.weapon;
+    equip(i, Player::kUnarmed);
+
+    // Leaves from the hand that was holding it, ducking with the crouch the
+    // way the drawn blade does, so the throw starts where the sword was.
+    const float swordSide =
+        p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
+    const glm::vec3 hand = modelToWorld(
+        p, {0.0f, kHandHeight - p.crouchAmount * kCrouchDrop,
+            swordSide * kShoulderSide});
+    const float steel = bladeSteelLength(weaponDef(weapon).stats.reachBonus);
+    const glm::vec3 vel{p.facing * kDropToss, kDropLift, 0.0f};
+    const glm::vec3 angVel{0.0f, 0.0f, -p.facing * kDropSpin};
+    const int id = m_physics->addDebris(hand, p.facing > 0.0f ? 0.0f : 3.14159265358979f,
+                                        droppedBladeHalfExtent(steel), vel, angVel);
+    m_dropped.push_back({weapon, id, kDropSettle});
+}
+
+// Takes up the nearest settled blade within reach. Nearest rather than first
+// so two blades at the same feet resolve the way the player expects, and by
+// planar distance because depth is where the fight is fought — a blade a
+// fighter is standing over is in reach whether or not they are mid-jump above
+// it, but one on a bank a metre up is not.
+bool Game::takeUpWeapon(int i) {
+    Player& p = m_players[i];
+    // It takes a hand. A fighter who lost both arms dropped the blade for
+    // exactly that reason and is not going to pick it back up.
+    if (p.armed() || (p.severed[static_cast<int>(Limb::ArmFront)] &&
+                      p.severed[static_cast<int>(Limb::ArmBack)])) {
+        return false;
+    }
+    int best = -1;
+    float bestDist = kPickupRange;
+    for (std::size_t n = 0; n < m_dropped.size(); ++n) {
+        if (m_dropped[n].settle > 0.0f) {
+            continue;
+        }
+        const glm::vec3 at = droppedWeaponPos(m_dropped[n]);
+        if (std::abs(at.y - p.pos.y) > kPickupHeight) {
+            continue;
+        }
+        const float dist = glm::length(glm::vec2{at.x - p.pos.x, at.z - p.pos.z});
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = static_cast<int>(n);
+        }
+    }
+    if (best < 0) {
+        return false;
+    }
+    equip(i, m_dropped[best].weapon);
+    m_physics->removeDebris(m_dropped[best].debrisId);
+    m_dropped.erase(m_dropped.begin() + best);
+    // Steel coming off the ground, borrowing the block's clang at half its
+    // weight — the same sound a blade makes meeting anything else.
+    m_soundCues.push_back({Sfx::Block, p.pos.x, 0.5f});
+    return true;
+}
+
+bool Game::isLimbDebris(int debrisId) const {
+    for (const SeveredPiece& piece : m_pieces) {
+        if (piece.debrisId == debrisId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+glm::mat4 Game::droppedWeaponTransform(const DroppedWeapon& blade) const {
+    return m_physics->debrisTransform(blade.debrisId);
+}
+
+glm::vec3 Game::droppedWeaponPos(const DroppedWeapon& blade) const {
+    return glm::vec3(m_physics->debrisTransform(blade.debrisId)[3]);
+}
+
 // Marks the limb lost and launches it as a debris rigid body along the hit
 // direction, spinning end over end.
 void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
     Player& v = m_players[victim];
     v.severed[static_cast<int>(limb)] = true;
+
+    // With both arms gone there is nothing left to hold a sword with, so the
+    // blade goes down whether its owner wanted it to or not. Done before the
+    // limb is launched so the two pieces do not spawn on top of each other.
+    if (v.severed[static_cast<int>(Limb::ArmFront)] &&
+        v.severed[static_cast<int>(Limb::ArmBack)]) {
+        dropWeapon(victim);
+    }
 
     // Losing a leg starts the topple, toward the lost leg's side. If the
     // other leg goes later the body is already down (or falling) — keep the
@@ -758,6 +958,10 @@ std::uint32_t Game::checksum() const {
         for (bool s : p.severed) {
             hs.b(s);
         }
+        // What is in the hand decides every number the next swing uses, so it
+        // has to be here — two peers holding different blades would otherwise
+        // agree right up until one of them cut.
+        hs.i(p.weapon);
         hs.f(p.blood);
         hs.f(p.fallTilt);
         hs.f(p.fallVel);
@@ -767,6 +971,20 @@ std::uint32_t Game::checksum() const {
     hs.u(m_cosmeticRng);
     hs.i(m_winner);
     hs.f(m_overTime);
+    // The clock decides a match, so two peers disagreeing about it by one step
+    // would end the duel differently — it is sim state, not a HUD number.
+    hs.f(m_timeLeft);
+    hs.b(m_timedOut);
+    // Blades on the ground. Their positions ride in the debris states below;
+    // what is hashed here is which blade each one *is* and whether it can yet
+    // be claimed — a settle timer that disagreed would have one peer take up a
+    // sword the other could not.
+    hs.i(static_cast<int>(m_dropped.size()));
+    for (const DroppedWeapon& blade : m_dropped) {
+        hs.i(blade.weapon);
+        hs.i(blade.debrisId);
+        hs.f(blade.settle);
+    }
     // Debris is created only by severLimb, so two runs that agree up to here
     // have the same pieces in the same order and the lists line up index for
     // index. A piece drifting apart shows up here a long time before it can
