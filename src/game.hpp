@@ -179,6 +179,13 @@ public:
     // these, not the raw roster. An empty-handed fighter reads back their bare
     // character stats; they cannot attack at all, so nothing is scaled.
     const CharacterStats& stats(int i) const { return m_stats[i]; }
+    // The stance fighter i is holding their blade in — resolved from that
+    // blade, and so re-resolved with it whenever one changes hands. It decides
+    // the arc of every swing, which the model has to animate along, so this is
+    // read outside the sim exactly the way stats() is. An empty-handed fighter
+    // reads back Normal and it means nothing: they can neither swing nor
+    // guard, which are the only two things a stance describes.
+    Stance stance(int i) const { return m_stance[i]; }
     // The battleground this match was built on (roster index into levels/level.hpp);
     // main draws the matching scenery.
     int level() const { return m_level; }
@@ -282,6 +289,10 @@ private:
     // put one down and take up another mid-duel.
     const WeaponDef* m_weapons[2];
     CharacterStats m_stats[2];       // character stats with the weapon applied
+    // How each fighter carries what they are holding. Derived from the blade
+    // rather than stored per fighter, which is why the checksum needn't hash
+    // it: Player::weapon is hashed, and this is a pure function of it.
+    Stance m_stance[2] = {Stance::Normal, Stance::Normal};
     std::vector<SeveredPiece> m_pieces;
     std::vector<DroppedWeapon> m_dropped; // blades on the ground, free to take
     std::vector<SoundCue> m_soundCues;

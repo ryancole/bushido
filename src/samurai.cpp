@@ -17,16 +17,16 @@ const glm::vec4 kTsuba{0.55f, 0.45f, 0.15f, 1.0f};
 const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 
-// Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up).
-// Windup raises the blade, active carries it through the attack's arc,
-// recovery settles back toward rest (stopping short so the blade never
-// pierces the ground before it disappears). The Active-phase angles must
-// match game.cpp's kAttackTuning so the cut lands where the blade is drawn:
-// light chops overhead-to-front, heavy from further past overhead, and the
-// jab snaps a short arc to horizontal — a forward thrust.
-// Guard: the sword arm holds the drawn blade level at the foe, between the
-// jab's start and end angles — clearly "up", clearly not a swing.
-constexpr float kGuardAngle = 1.30f;
+// Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up
+// — the convention weapons/stance.hpp documents in full). Windup raises the
+// blade out of the stance's ready angle, active carries it through the arc,
+// recovery settles back to ready.
+//
+// Every one of those angles comes from the stance table, which is also what
+// game.cpp sweeps the hit test along: the cut has to land where the blade is
+// drawn, and one table is the only way to keep that true. So a blade in the
+// High stance falls from overhead, one in Low rises off the floor, and the
+// difference is a swing rather than a skin.
 
 // Blade geometry, shared by the sword in the hand and the one on the ground
 // so a thrown-down odachi is still visibly an odachi. The steel runs from
@@ -36,14 +36,14 @@ constexpr float kBladeTop = 0.755f;   // where the steel starts, above the hand
 constexpr float kNominalReach = 1.6f; // SamuraiPose's default — the katana baseline
 constexpr float kGripLength = 0.26f;  // grip + guard, behind the steel
 
-float swordArmAngle(int attackState, int attackKind, float t) {
-    constexpr float kStart[3] = {2.60f, 2.95f, 1.20f}; // light, heavy, jab
-    constexpr float kEnd[3] = {0.55f, 0.45f, 1.55f};
+float swordArmAngle(Stance stance, int attackState, int attackKind, float t) {
+    const StanceDef& s = stanceDef(stance);
+    const StanceArc& arc = s.arcs[attackKind];
     switch (attackState) {
-        case 1: return glm::mix(0.35f, kStart[attackKind], t * t * (3.0f - 2.0f * t));
-        case 2: return glm::mix(kStart[attackKind], kEnd[attackKind], t);
-        case 3: return glm::mix(kEnd[attackKind], 0.35f, t);
-        default: return 0.0f;
+        case 1: return glm::mix(s.readyAngle, arc.start, t * t * (3.0f - 2.0f * t));
+        case 2: return glm::mix(arc.start, arc.end, t);
+        case 3: return glm::mix(arc.end, s.readyAngle, t);
+        default: return s.readyAngle;
     }
 }
 
@@ -158,9 +158,9 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         bool swordArm = s == swordSide && (pose.attackState != 0 || guarding);
         float swing;
         if (swordArm) {
-            swing = guarding ? kGuardAngle
-                             : swordArmAngle(pose.attackState, pose.attackKind,
-                                             pose.attackT);
+            swing = guarding ? stanceDef(pose.stance).guardAngle
+                             : swordArmAngle(pose.stance, pose.attackState,
+                                             pose.attackKind, pose.attackT);
         } else if (pose.grounded) {
             swing = std::sin(pose.walkPhase + (s > 0.0f ? pi : 0.0f)) * 0.45f * pose.moveAmount;
         } else {

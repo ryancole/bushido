@@ -1,5 +1,7 @@
 #pragma once
 
+#include "weapons/stance.hpp" // the arcs the sword arm animates along
+
 #include <glm/glm.hpp>
 
 class Renderer;
@@ -26,6 +28,12 @@ struct SamuraiPose {
     // a visual cue for the equipped weapon, no gameplay effect.
     float reach = 1.6f;
     float bladeWidth = 1.0f;
+    // How the blade is carried: where the guard holds it, where a swing
+    // settles back to, and the arc of the swing itself. Comes from the weapon
+    // (via Game::stance), and is the one thing that makes an odachi's cleave
+    // and a wakizashi's rising cut look like different swings — the sim sweeps
+    // the very same angles, so this is not a rendering choice.
+    Stance stance = Stance::Normal;
     // Is there a blade in hand at all? A fighter who has thrown theirs down
     // (or lost both arms) draws an empty hand and an empty saya at the hip —
     // which is what has to make "I am unarmed" readable at a glance, since

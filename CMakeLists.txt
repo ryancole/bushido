@@ -89,6 +89,7 @@ add_executable(bushido
     src/characters/oni.cpp
     src/characters/kensei.cpp
     src/weapons/weapon.cpp
+    src/weapons/stance.cpp
     src/weapons/katana.cpp
     src/weapons/wakizashi.cpp
     src/weapons/odachi.cpp
