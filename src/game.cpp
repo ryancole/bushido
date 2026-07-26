@@ -39,14 +39,10 @@ constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard i
 // samurai's step is roughly 0.85 m, so the cycle is a shade under 1.7. Every
 // movement slowdown above rides this for free: a blocking fighter's shorter,
 // slower shuffle is the same footfalls at the speed they are actually walking.
-// How fast the stride opens up when a fighter starts moving and folds away
+// How fast the step opens up when a fighter starts moving and closes away
 // when they stop. Fast enough not to be a transition anyone watches, slow
-// enough that the legs visibly come back together instead of snapping.
+// enough that the feet visibly settle back to the guard instead of snapping.
 constexpr float kStrideBlendRate = 10.0f; // 1/s
-// Floor under the blended stride amplitude, only for the cadence arithmetic:
-// cycle distance goes to zero with the amplitude, and the cadence that falls
-// out of it would go to infinity. Never reached while actually walking.
-constexpr float kMinStrideAngle = 0.12f; // rad
 
 // Crouching: held input ducks the whole upper body kCrouchDrop meters at full
 // depth — pose, hurtboxes, and the blade pivot all ride crouchAmount, so a
@@ -481,72 +477,60 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         }
         p.moveAmount = glm::length(move) * speedScale;
 
-        // ── Walking ──────────────────────────────────────────────────────
-        // The body is moved by the foot, not the other way round. Everything
-        // below falls out of one requirement: while a foot is planted it must
-        // not move in world space. Get that right and the walk cannot glide,
-        // because the only thing carrying the fighter forward *is* the leg
-        // pushing off the ground.
+        // ── The shuffle ──────────────────────────────────────────────────
+        // The body is moved by the foot, not the other way round: while a foot
+        // is planted it must not move in world space, and the only thing
+        // carrying the fighter along *is* the planted leg driving. That much
+        // is unchanged. What changed is the gait it drives.
         //
-        // The leg is a pendulum of length L about a hip at height kHipPivotY,
-        // swinging ±A, so the foot's offset under the hip is L·sin(A·sin φ)
-        // and a step covers 2L·sin(A). Two steps to a cycle. Both the cadence
-        // and the speed curve are read off that; neither is authored.
+        // A fighter holding a sword does not walk — the feet never cross and
+        // the same leg leads all match. A cycle is two movements rather than
+        // two crossing steps: the lead foot reaches out, then the rear closes
+        // up behind it (reversed backing off, where the rear goes first). The
+        // foot placement lives in samurai.cpp; what the sim owns is how far a
+        // cycle carries the body and how the seconds are spread inside it.
         constexpr float kTwoPi = 2.0f * 3.14159265358979f;
         const float strideTarget = p.moveAmount > 0.0f ? 1.0f : 0.0f;
         p.strideBlend =
             p.strideBlend < strideTarget
                 ? std::min(strideTarget, p.strideBlend + kStrideBlendRate * dt)
                 : std::max(strideTarget, p.strideBlend - kStrideBlendRate * dt);
-        const float amp = kStrideAngle * p.strideBlend;
         // Which way along the facing axis the travel is going. A duel is spent
         // as much backing off as closing, and `facing` tracks the opponent
-        // rather than the direction of travel, so this is not a formality.
-        // Held through the dead band so a fighter moving purely in depth keeps
-        // the last sense they had instead of flickering between the two.
+        // rather than the direction of travel, so this is not a formality: it
+        // decides which foot moves first. Held through the dead band so a
+        // fighter moving purely in depth keeps the last sense they had instead
+        // of flickering between the two.
         const float fwd = move.x * p.facing;
         if (std::abs(fwd) > 0.01f) {
             p.strideSign = fwd > 0.0f ? 1.0f : -1.0f;
         }
 
-        // The crouch folds the leg toward the floor (samurai.cpp's legSquash),
-        // which shortens the lever and therefore the step. A ducked fighter
-        // takes short shuffling steps at close to a normal footfall rate,
-        // which is what the arithmetic says and what a duck looks like.
-        const float legLen =
-            kLegLength * (kHipHeight - kCrouchDrop * p.crouchAmount) / kHipHeight;
-        const float cycleDist =
-            4.0f * legLen * std::sin(std::max(amp, kMinStrideAngle));
-        const float cyclesPerSec = p.moveAmount * st.moveSpeed / cycleDist;
+        // One cycle carries the body kShuffleStride, whatever the fighter's
+        // speed or how low they are crouched — unlike the walk it replaced,
+        // the step length is a property of the stance rather than of the leg's
+        // swing, so nothing here depends on leg geometry any more. Speed sets
+        // the cadence alone: a slow fighter shuffles less often, never smaller.
+        const float cyclesPerSec = p.moveAmount * st.moveSpeed / kShuffleStride;
         const float dPhase = cyclesPerSec * kTwoPi * dt;
 
-        // Speed across the step: differentiate the foot offset and negate it,
-        // since the planted foot is what the body is travelling away from.
-        //   v = L·A·cos(A·sin φ)·|cos φ|·dφ/dt
-        // |cos| rather than cos because the legs alternate — whichever one is
-        // planted is the one with cos φ < 0, and they swap every half cycle.
+        // One surge per foot movement — zero while the weight changes feet,
+        // peak as the planted leg drives — hence period π across a two-movement
+        // cycle. 2·sin² averages to exactly 1, so the mean is still precisely
+        // the speed stat and a cycle still covers kShuffleStride; only the
+        // distribution of the seconds inside it is shaped. samurai.cpp
+        // integrates this same curve to place the planted foot, so the two have
+        // to stay the same function.
         //
-        // It integrates to exactly 4L·sin(A) over a cycle, which is the same
-        // cycle distance the cadence was derived from, so the *mean* is still
-        // precisely the fighter's speed stat: the stat says how fast they get
-        // there, the geometry says how the seconds are distributed inside each
-        // step. That distribution is the lurch, and it is no longer a tuned
-        // constant — it is what a leg of this length pushing at this cadence
-        // does. It peaks around 1.65× as the legs scissor past one another and
-        // falls to a true zero at each footfall, where the swing reverses.
-        //
-        // Sampled at the midpoint of the step's phase sweep, so the distance
-        // travelled this tick matches the arc the leg swept through it.
+        // Sampled at the midpoint of the tick's phase sweep, so the distance
+        // travelled matches the phase advanced through it.
         //
         // Grounded only: in the air there is no planted foot to be moving away
-        // from, and pulsing the air control against an imaginary one would
-        // just feel broken.
+        // from, and pulsing the air control against an imaginary one would just
+        // feel broken.
         const float midPhase = p.animPhase + 0.5f * dPhase;
-        const float gait =
-            p.grounded ? 0.5f * kTwoPi * amp * std::cos(amp * std::sin(midPhase)) *
-                             std::abs(std::cos(midPhase)) /
-                             (2.0f * std::sin(std::max(amp, kMinStrideAngle)))
-                       : 1.0f;
+        const float surge = std::sin(midPhase);
+        const float gait = p.grounded ? 2.0f * surge * surge : 1.0f;
         p.animPhase = std::fmod(p.animPhase + dPhase, kTwoPi);
 
         glm::vec2 planarVel = move * (st.moveSpeed * speedScale * gait) + p.kbVel;

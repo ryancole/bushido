@@ -12,33 +12,43 @@ struct SamuraiColors {
     glm::vec4 accent; // obi belt, sword grip wrap
 };
 
-// Stride geometry. These are the model's own dimensions, public because the
-// sim moves the body against them: a step covers whatever ground the leg
-// actually reaches, so Game derives its walk cadence *and* its per-step
-// velocity from these numbers rather than authoring a stride length of its
-// own. Two copies of that arithmetic would drift, and the symptom would be
-// exactly the thing they exist to prevent — feet skating over the floor.
-inline constexpr float kHipPivotY = 0.85f;  // hip joint height (drawSamurai)
+// Stance and stride geometry. The model's own dimensions, public because the
+// sim moves the body against them and both ends have to read one copy — two
+// would drift, and the symptom would be exactly what they exist to prevent:
+// feet skating over the floor.
+inline constexpr float kHipPivotY = 0.85f;  // hip joint height, standing tall
 inline constexpr float kFootY = 0.05f;      // sandal center height
-inline constexpr float kLegLength = kHipPivotY - kFootY; // hip → foot lever arm
-inline constexpr float kStrideAngle = 0.55f; // max hip swing either side, radians
-// One step covers 2·legLength·sin(amp) — the foot swinging from one extreme of
-// the hip's arc to the other — and a full cycle is two of those, one per leg.
-// Game::update is where that turns into a cadence and a velocity.
+inline constexpr float kKneePivotY = 0.45f; // knee joint height, standing tall
+inline constexpr float kThighLen = kHipPivotY - kKneePivotY;
+inline constexpr float kShinLen = kKneePivotY - kFootY;
+inline constexpr float kLegLength = kThighLen + kShinLen;
+
+// A fighter with a sword in their hands does not walk. They hold a stance and
+// shuffle it along: one foot always leads, the feet never cross, and a step is
+// the lead reaching out and the rear closing up after it. So the legs are
+// placed by where the *feet* need to be and solved back to joint angles,
+// rather than swung from the hip and hoped over — which also means the stance
+// is what it is because a leg is a fixed-length lever. A hip at full standing
+// height can only reach the floor straight down, so holding the feet any
+// distance apart at all requires settling onto bent knees. These three numbers
+// are locked together by that: widen the stance or lengthen the step and the
+// hip has to come down to keep both feet on the ground.
+inline constexpr float kStanceHipY = 0.70f;    // hip height in the guard
+inline constexpr float kStanceSep = 0.34f;     // lead foot ahead of rear
+inline constexpr float kShuffleStride = 0.55f; // ground covered per cycle
+inline constexpr float kFootLift = 0.07f;      // peak height of a moving foot
 
 struct SamuraiPose {
     float walkPhase = 0.0f;  // radians through the stride cycle
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed; drives bob and lean
-    // Hip swing amplitude in radians, 0..kStrideAngle — how long a step this
-    // fighter is taking. It comes from the sim (Player::strideBlend) rather
-    // than from moveAmount, because the sim moves the body exactly as far as
-    // this amplitude carries the foot; the model is not free to reinterpret
-    // it. Scaling the stride by moveAmount here, as this used to, meant a
-    // fighter walking at half speed took half-length steps while the body
-    // still travelled a full stride between footfalls — the glide.
-    float strideAmp = 0.0f;
-    // +1 walking the way they face, -1 backing up (Player::strideSign). Says
-    // which leg is the planted one, and so which knee folds.
+    // 0..1 ease into a full-length step (Player::strideBlend). Not a fraction
+    // of speed: a slow fighter takes full steps less often, not short ones. It
+    // only closes the *stepping* — the stance separation is held either way,
+    // since a guard is a guard whether or not you are moving in it.
+    float strideBlend = 0.0f;
+    // +1 moving the way they face, -1 backing up (Player::strideSign). Says
+    // which foot goes first: advancing it is the lead, retreating the rear.
+    // Never which foot *leads* — that is the same one all match.
     float strideSign = 1.0f;
     bool grounded = true;
     float time = 0.0f;       // seconds since start, for idle breathing

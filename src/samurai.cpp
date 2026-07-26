@@ -18,20 +18,10 @@ const glm::vec4 kTsuba{0.55f, 0.45f, 0.15f, 1.0f};
 const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 
-// Knee flexion, in radians, always folding the shin *backward* (negative about
-// +z, since a positive hip angle carries the foot forward). A leg is a
-// two-bone chain rather than one post because a rigid leg has only one way to
-// reach the ground — swing it — and the foot then has to pass through the
-// floor or the body has to bob over it. The knee is what lets the foot lift,
-// clear, and reach ahead, which is the whole difference between a step and a
-// pendulum.
-constexpr float kKneeIdle = 0.10f;  // standing only: never perfectly straight
-constexpr float kKneeSwing = 0.50f; // peak fold, ~11 cm of daylight under the foot
-// A jump is a tuck, and an asymmetric one: the trailing leg folds up hard
-// while the leading one reaches, which reads as a leap rather than a statue
-// passing through the air.
-constexpr float kKneeAirLead = 0.40f;
-constexpr float kKneeAirTrail = 0.95f;
+// The knee is no longer posed at all — it is solved from where the foot has to
+// be (see the leg block in drawSamurai). A leg is a two-bone chain rather than
+// one post because a rigid leg has exactly one way to reach the ground, which
+// is not enough freedom to hold a stance *and* put both feet on the floor.
 
 // Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up
 // — the convention weapons/stance.hpp documents in full). Windup raises the
@@ -108,116 +98,100 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
 
     const float pi = glm::pi<float>();
 
-    // Crouch: the legs fold — squashed toward the floor so the feet stay
-    // planted — and everything hip-up rides down with them. The drop and the
-    // 0.85 hip height must match game.cpp's kCrouchDrop/kHipHeight so the
-    // ducked hurtboxes sit where the body is drawn.
+    // The guard settles onto bent knees, and a duck lowers it further. The hip
+    // height and kCrouchDrop must match game.cpp so the ducked hurtboxes sit
+    // where the body is drawn.
     const float crouchDrop = pose.crouch * 0.45f;
-    const float legSquash = (0.85f - crouchDrop) / 0.85f;
+    const float hipY = kStanceHipY - crouchDrop;
+    // How far the whole body sits below a fighter standing tall, which the
+    // upper body rides down by.
+    const float stanceDrop = kHipPivotY - hipY;
 
-    // Hip drop across the step. A leg is a fixed-length lever, so a hip held at
-    // a constant height can only reach the floor with a leg straight down —
-    // swing it out to either extreme and the foot hangs L·(1−cos θ) in the air.
-    // At the stride's extremes that is 12 cm, which means the feet were off the
-    // ground for essentially the whole stance and only grazed it in passing.
-    // That is what still read as gliding after the horizontal fix: the body was
-    // travelling correctly, but on feet that were never actually touching.
-    //
-    // Dropping the hip by exactly that amount puts the planted foot at ground
-    // level for every phase of the step. It is a *vertical* translation, so it
-    // cannot disturb the horizontal planting the sim's gait depends on.
-    //
-    // |sin| because both legs are the same angle off vertical at any instant —
-    // which also means this alone would land *both* feet, and the swing leg is
-    // lifted purely by its knee folding. That is the knee's real job.
-    const float strideDrop =
-        kLegLength * legSquash *
-        (1.0f - std::cos(pose.strideAmp * std::fabs(std::sin(pose.walkPhase))));
-    const glm::mat4 hip =
-        glm::translate(glm::mat4(1.0f), {0.0f, -strideDrop, 0.0f});
+    // Where in the cycle, and which half of it. A cycle is two movements:
+    // *widen*, one foot reaching out, then *close*, the other coming up after
+    // it. Both feet's targets are the same either way round — all that changes
+    // with the direction of travel is which of the two is the one moving,
+    // which is what makes the same leg lead all match while advancing and
+    // retreating still start on the correct foot.
+    const bool closeHalf = pose.walkPhase >= pi;
+    const float t = closeHalf ? pose.walkPhase - pi : pose.walkPhase;
+    // Fraction of this half's ground already covered. This is the integral of
+    // Game's own speed curve (2·sin²) and has to stay that, or the planted
+    // foot creeps: it is the one number keeping the sim's travel and the
+    // model's foot in agreement.
+    const float advance = (t - 0.5f * std::sin(2.0f * t)) / pi;
+    // The moving foot is under no such constraint — it is in the air — so it
+    // just eases across and arcs over.
+    const float ts = t / pi;
+    const float ease = ts * ts * (3.0f - 2.0f * ts);
+    const float step = 0.5f * kShuffleStride * pose.strideBlend;
 
-    // Legs: opposite-phase stride while grounded, a tuck in the air. Each is a
-    // two-bone chain — thigh from the hip, shin from the knee — hung off the
-    // rest-pose pivots, so the knee rotation happens in pre-thigh space and the
-    // thigh then carries the whole lower leg with it.
-    //
-    // The knee folds hardest at mid-swing (own-phase 0, where cos peaks) and is
-    // straight through the entire stance half, which is what a walk actually
-    // does: heel strike on a straight leg at the forward extreme, straight
-    // again as the body passes over the planted foot, then fold to lift the
-    // foot clear and carry it forward. As a side effect the foot swings back
-    // and up under the body through the fold, so it no longer scythes through
-    // the floor the way a rigid leg's did.
     for (float s : {-1.0f, 1.0f}) {
         if (isSevered(pose, s > 0.0f ? 2 : 3)) {
-            // Stump peeking out below the hip skirt (which drops with a crouch).
-            part(hip, {0.0f, 0.74f - crouchDrop, s * 0.12f},
+            // Stump peeking out below the hip skirt.
+            part(glm::mat4(1.0f), {0.0f, hipY - 0.11f, s * 0.12f},
                  {0.18f, 0.10f, 0.20f}, kStump);
             continue;
         }
-        float swing, knee;
-        if (pose.grounded) {
-            const float legPhase = pose.walkPhase + (s > 0.0f ? 0.0f : pi);
-            // The amplitude is the sim's, not ours. Game moves the body by
-            // exactly the distance this swing carries the foot, so scaling it
-            // here by anything at all would put the feet back on ice.
-            swing = std::sin(legPhase) * pose.strideAmp;
-            // Phase measured against the direction of travel, so backing away
-            // from an opponent is the same cycle read the other way. Hence
-            // strideSign: `facing` tracks the foe, not the travel, and without
-            // this a retreating fighter folds the knee it is standing on and
-            // drags the other foot along the floor.
-            const float psi =
-                pose.strideSign > 0.0f ? legPhase : pi - legPhase;
-            // Fold only while the leg is swinging *and* behind the body. That
-            // second condition is not stylistic: a backward-folding knee tips
-            // the shin toward vertical, which lifts the foot only when the
-            // thigh trails and drives it *into* the floor when the thigh leads.
-            // Folding symmetrically about mid-swing, as this first did, buried
-            // the foot 5 cm deep on every approach to a heel strike.
-            //
-            // −sin(2ψ) is zero at both ends of the swing and peaks a quarter
-            // cycle in, so the fold starts and finishes at nothing and the leg
-            // arrives straight — which is what lets the hip drop above put the
-            // foot exactly on the floor the instant it becomes the planted one.
-            const float fold = std::cos(psi) > 0.0f
-                                   ? kKneeSwing * std::max(0.0f, -std::sin(2.0f * psi))
-                                   : 0.0f;
-            // Fades to a plain soft-knee stand as the stride closes up, so a
-            // motionless fighter isn't holding a lifted foot — and, walking,
-            // the stance leg is exactly straight, which the hip drop assumes.
-            const float open = pose.strideAmp / kStrideAngle;
-            knee = kKneeIdle * (1.0f - open) + open * fold;
-        } else {
-            swing = s > 0.0f ? 0.55f : -0.35f;
-            knee = s > 0.0f ? kKneeAirLead : kKneeAirTrail;
-        }
-        // Crouching splits the stance into a slight lunge. The duck itself is
-        // still the legSquash compression rather than a deep knee fold, even
-        // though there is now a knee to fold: game.cpp's crouchedLimbBounds
-        // squashes the leg hurtboxes toward the floor to match, and a real
-        // fold would shorten the leg a second time and lift the feet off it.
-        swing += pose.crouch * (s > 0.0f ? 0.30f : -0.30f);
+        // The +z leg leads. It is the sword side (kShoulderSide), it is always
+        // the front foot, and it stays the front foot — local +x is the way
+        // the fighter faces, so this holds through every turn without anything
+        // having to flip.
+        const bool isLead = s > 0.0f;
+        // Advancing, the lead reaches out first and the rear closes; backing
+        // off, the rear goes first and the lead follows it. Either way neither
+        // foot ever passes the other.
+        const bool movesOnWiden = (pose.strideSign > 0.0f) == isLead;
+        const bool moving = pose.grounded && (closeHalf ? !movesOnWiden : movesOnWiden);
+        const float neutral = (isLead ? 0.5f : -0.5f) * kStanceSep;
+        const float out = isLead ? step : -step;
+        const float from = closeHalf ? neutral + out : neutral;
+        const float to = closeHalf ? neutral : neutral + out;
 
-        const glm::mat4 thigh =
-            hip * pivotRotZ({0.0f, 0.85f * legSquash, s * 0.12f}, swing);
-        const glm::mat4 shin =
-            thigh * pivotRotZ({0.0f, 0.45f * legSquash, s * 0.12f}, -knee);
-        part(thigh, {0.0f, 0.635f * legSquash, s * 0.12f},
-             {0.21f, 0.41f * legSquash, 0.225f}, colors.hakama);
+        float footX = from + (to - from) * (moving ? ease : advance);
+        // The lift closes with the step, not just the reach: a fighter who
+        // stops mid-cycle freezes the phase wherever it was, and without this
+        // they would stand there holding one foot in the air.
+        float footY =
+            kFootY + (moving ? kFootLift * pose.strideBlend * std::sin(t) : 0.0f);
+        if (!pose.grounded) {
+            // Airborne: nothing to stand on, so the stance opens into a tuck —
+            // trailing leg folded up hard, leading one reaching.
+            footX = isLead ? 0.30f : -0.20f;
+            footY = kFootY + (isLead ? 0.26f : 0.44f);
+        }
+
+        // Solve the two-bone chain for that foot instead of swinging the hip
+        // and hoping. The bones are equal length, so the leg is an isosceles
+        // triangle: the knee closes by 2·acos(reach / leg) and the thigh sits
+        // half that angle off the straight hip-to-foot line. Placing the foot
+        // and solving back is what lets the stance be as wide as it likes and
+        // still have both feet exactly on the floor.
+        const float ry = hipY - footY;
+        const float reach =
+            std::min(std::sqrt(footX * footX + ry * ry), kLegLength - 0.002f);
+        const float knee =
+            2.0f * std::acos(std::clamp(reach / kLegLength, 0.0f, 1.0f));
+        const float hipAng = std::atan2(footX, ry) + 0.5f * knee;
+
+        // Boxes hang from the rest pose — leg straight down from the hip — and
+        // the two rotations carry them onto the solved angles.
+        const glm::vec3 kneeRest{0.0f, hipY - kThighLen, s * 0.12f};
+        const glm::mat4 thigh = pivotRotZ({0.0f, hipY, s * 0.12f}, hipAng);
+        const glm::mat4 shin = thigh * pivotRotZ(kneeRest, -knee);
+        part(thigh, {0.0f, hipY - 0.5f * kThighLen, s * 0.12f},
+             {0.21f, kThighLen + 0.02f, 0.225f}, colors.hakama);
         // Kneecap, centered on the pivot so it covers the joint at any fold.
-        part(thigh, {0.0f, 0.45f * legSquash, s * 0.12f},
-             {0.20f, 0.19f * legSquash, 0.23f}, colors.hakama);
-        part(shin, {0.0f, 0.245f * legSquash, s * 0.12f},
-             {0.19f, 0.43f * legSquash, 0.21f}, colors.hakama);
-        part(shin, {0.04f, 0.05f * legSquash, s * 0.12f}, {0.26f, 0.10f, 0.16f}, kLacquer);
+        part(thigh, kneeRest, {0.20f, 0.19f, 0.23f}, colors.hakama);
+        part(shin, {0.0f, hipY - kThighLen - 0.5f * kShinLen, s * 0.12f},
+             {0.19f, kShinLen + 0.02f, 0.21f}, colors.hakama);
+        part(shin, {0.04f, hipY - kLegLength, s * 0.12f}, {0.26f, 0.10f, 0.16f},
+             kLacquer);
     }
 
-    // Upper body: breathes at rest, rides the hip through the stride, leans
-    // into motion. The stride's vertical motion is strideDrop's alone now — it
-    // used to be a 3.5 cm bounce riding |sin(walkPhase)|, which put the body at
-    // its *highest* exactly where the geometry needs it lowest, and so pushed
-    // the feet further off the floor than they already were.
+    // Upper body: breathes at rest, rides the hip, leans into motion. There is
+    // no stride bounce at all any more — a shuffle holds its height, which is
+    // most of why it reads as a fighter moving rather than a person walking.
     float bob = 0.015f * std::sin(pose.time * 2.2f);
     float lean = -0.12f * pose.moveAmount;
     // Rear back through the windup, drive in through the strike: the heavy
@@ -231,7 +205,7 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     }
     lean -= 0.15f * pose.crouch; // hunch forward over the folded legs
     glm::mat4 upper =
-        glm::translate(glm::mat4(1.0f), {0.0f, bob - crouchDrop - strideDrop, 0.0f}) *
+        glm::translate(glm::mat4(1.0f), {0.0f, bob - stanceDrop, 0.0f}) *
         pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
 
     part(upper, {0.0f, 0.86f, 0.0f}, {0.44f, 0.28f, 0.36f}, colors.hakama); // hip skirt

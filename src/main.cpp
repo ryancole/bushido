@@ -1200,8 +1200,8 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
         }
         const WeaponDef* held = game.weapon(i);
         drawSamurai(renderer, feet, yaw,
-                    {p.animPhase, p.moveAmount, p.strideBlend * kStrideAngle,
-                     p.strideSign, p.grounded, time,
+                    {p.animPhase, p.moveAmount, p.strideBlend, p.strideSign,
+                     p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
                      p.attackT, p.blocking, p.crouchAmount, game.stats(i).reach,
                      held ? held->stats.bladeWidth : 1.0f, game.stance(i),
