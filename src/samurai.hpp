@@ -26,6 +26,11 @@ struct SamuraiPose {
     // a visual cue for the equipped weapon, no gameplay effect.
     float reach = 1.6f;
     float bladeWidth = 1.0f;
+    // Is there a blade in hand at all? A fighter who has thrown theirs down
+    // (or lost both arms) draws an empty hand and an empty saya at the hip —
+    // which is what has to make "I am unarmed" readable at a glance, since
+    // nothing else about the pose changes.
+    bool armed = true;
     // Signed topple roll about the local +x axis at the feet: a fighter who
     // has lost a leg tips toward ±z and ends up lying on the ground.
     float bodyRoll = 0.0f;
@@ -49,6 +54,24 @@ LimbBounds samuraiLimbBounds(int limb);
 // a rigid-body transform for a box of those half extents.
 void drawSeveredLimb(Renderer& renderer, const glm::mat4& transform, int limb,
                      const SamuraiColors& colors);
+
+// A blade as a loose object rather than something in a hand — thrown down, or
+// waiting on the ground to be taken up.
+//
+// Its length comes from the weapon's reach *bonus* alone, never from a
+// fighter's reach: a blade on the ground is the same object whoever picks it
+// up, and one that grew or shrank as it changed hands would be a lie about
+// what the next swing covers. The baseline is what drawSamurai puts in the
+// hand of a 1.6 m-reach fighter carrying a katana.
+float bladeSteelLength(float reachBonus);
+// Half extents of the physics box for a blade of that steel length — grip
+// included, laid along local +x with the tip at +x.
+glm::vec3 droppedBladeHalfExtent(float steel);
+// Draws that blade centered on its own origin, so `transform` can be a rigid
+// body transform for a box of those half extents (the same contract
+// drawSeveredLimb keeps). `width` is the weapon's visual thickness cue.
+void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float steel,
+                      float width, const glm::vec4& grip);
 
 // Draws a samurai assembled procedurally from shaded boxes: hakama legs,
 // kimono torso, obi, sode shoulder plates, arms, head, straw kasa, and a

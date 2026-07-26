@@ -11,6 +11,11 @@ namespace {
 constexpr float kBandLo = 0.50f;
 constexpr float kBandHi = 0.90f;
 constexpr float kDepthAligned = 0.50f; // |dz| where a swing can still connect
+// Where the bot stops walking and reaches for the blade underfoot. Inside
+// Game::kPickupRange with room to spare, so the press always lands: pressing
+// early is harmless (the sim just says no) but it reads as fumbling, and
+// stopping short of the range would be a bot standing over a sword forever.
+constexpr float kGrabRange = 0.75f;
 } // namespace
 
 Bot::Bot(int self, std::uint32_t seed) : m_self(self), m_rng(seed | 1u) {}
@@ -51,6 +56,48 @@ PlayerInput Bot::think(const Game& game, float dt) {
         }
     }
     m_foeWasWinding = foeWinding;
+
+    // Empty-handed, nothing else on this page matters: with no blade there is
+    // no attack and no guard, so the only move that changes anything is
+    // getting one back in hand — the one the other fighter threw away, or
+    // whatever a level has lying around. Without this a disarmed bot walks
+    // into sweeps it cannot answer until somebody runs out of blood, which
+    // between two disarmed fighters is never.
+    //
+    // Both guards matter, and the arm one is not theoretical. The usual way a
+    // bot ends up empty-handed is losing *both arms*, which is exactly the
+    // state that can never take a blade back up (Game::takeUpWeapon refuses) —
+    // so without the check it walks to the sword it just dropped and stands
+    // over it pressing take-up for the rest of the match, which is worse than
+    // the behaviour this branch exists to fix. Armless, or with nothing on the
+    // ground to go for, it falls through to the ordinary mode machine and at
+    // least stays in the fight while its stumps bleed it out.
+    const bool hasArm = !self.severed[static_cast<int>(Limb::ArmFront)] ||
+                        !self.severed[static_cast<int>(Limb::ArmBack)];
+    if (!self.armed() && hasArm && !game.droppedWeapons().empty()) {
+        bool found = false;
+        float bestDist = 0.0f;
+        glm::vec3 bestAt{0.0f};
+        for (const DroppedWeapon& blade : game.droppedWeapons()) {
+            const glm::vec3 at = game.droppedWeaponPos(blade);
+            const float d = std::sqrt((at.x - self.pos.x) * (at.x - self.pos.x) +
+                                      (at.z - self.pos.z) * (at.z - self.pos.z));
+            if (!found || d < bestDist) {
+                found = true;
+                bestDist = d;
+                bestAt = at;
+            }
+        }
+        // Straight at it. Quantized like every other steering decision the bot
+        // makes — it only gets to press what a player could press — which
+        // leaves a small deadzone either side of the blade, well inside the
+        // range the grab goes off at.
+        PlayerInput grab;
+        grab.move.x = quantizeAxis((bestAt.x - self.pos.x) * 2.0f);
+        grab.move.y = quantizeAxis((bestAt.z - self.pos.z) * 2.0f);
+        grab.drop = bestDist < kGrabRange;
+        return grab;
+    }
 
     if (m_modeTimer <= 0.0f) {
         float roll = frand();

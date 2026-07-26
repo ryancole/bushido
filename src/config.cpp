@@ -155,6 +155,7 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"Crouch", "crouch", "Hold to duck; swings ride a lower lane"},
     {"Attack", "attack", "Tap to cut, hold and release to crush"},
     {"Jab", "jab", "A short thrust - pierces, never severs"},
+    {"Drop / Take Up", "drop", "Throw your blade down - or take up the one at your feet"},
 };
 
 } // namespace
@@ -170,12 +171,14 @@ Keybinds defaultKeybinds() {
     k[Action::Crouch] = key(GLFW_KEY_LEFT_CONTROL);
     k[Action::Attack] = mouse(GLFW_MOUSE_BUTTON_LEFT);
     k[Action::Jab] = mouse(GLFW_MOUSE_BUTTON_RIGHT);
+    k[Action::Drop] = key(GLFW_KEY_E);
     return k;
 }
 
 Keybinds defaultKeybinds2() {
-    // The right-hand end of the board: arrows to move, the comma/period/slash
-    // cluster and the right modifiers for everything else. Disjoint from
+    // The right-hand end of the board: arrows to move, the semicolon /
+    // comma / period / slash cluster and the right modifiers for everything
+    // else. Disjoint from
     // player 1's set by construction, and no mouse — one mouse cannot serve
     // two fighters. Deliberately not the keypad, which half of laptops don't
     // have; every key here is on every keyboard.
@@ -189,6 +192,7 @@ Keybinds defaultKeybinds2() {
     k[Action::Crouch] = key(GLFW_KEY_RIGHT_CONTROL);
     k[Action::Attack] = key(GLFW_KEY_PERIOD);
     k[Action::Jab] = key(GLFW_KEY_COMMA);
+    k[Action::Drop] = key(GLFW_KEY_SEMICOLON);
     return k;
 }
 
@@ -322,7 +326,7 @@ bool saveConfig(const Settings& settings) {
         return false;
     }
     // Emitted by hand rather than through toml++'s serializer: that path drops
-    // comments and sorts keys alphabetically, and for nine lines a header
+    // comments and sorts keys alphabetically, and for a dozen lines a header
     // explaining the file plus the roster's own order is worth more than
     // sharing code with the parser. The output is still plain TOML.
     out << "# bushido settings.\n"

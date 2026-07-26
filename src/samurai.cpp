@@ -28,6 +28,14 @@ const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 // jab's start and end angles — clearly "up", clearly not a swing.
 constexpr float kGuardAngle = 1.30f;
 
+// Blade geometry, shared by the sword in the hand and the one on the ground
+// so a thrown-down odachi is still visibly an odachi. The steel runs from
+// just past the guard out to the reach measured from the shoulder pivot.
+constexpr float kShoulderY = 1.36f;   // arm pivot height (matches the drawn arm)
+constexpr float kBladeTop = 0.755f;   // where the steel starts, above the hand
+constexpr float kNominalReach = 1.6f; // SamuraiPose's default — the katana baseline
+constexpr float kGripLength = 0.26f;  // grip + guard, behind the steel
+
 float swordArmAngle(int attackState, int attackKind, float t) {
     constexpr float kStart[3] = {2.60f, 2.95f, 1.20f}; // light, heavy, jab
     constexpr float kEnd[3] = {0.55f, 0.45f, 1.55f};
@@ -161,14 +169,14 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         glm::mat4 arm = upper * pivotRotZ({0.0f, 1.36f, s * 0.26f}, swing);
         part(arm, {0.0f, 1.10f, s * 0.26f}, {0.11f, 0.44f, 0.11f}, colors.kimono);
         part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin); // hand
-        if (swordArm) {
+        if (swordArm && pose.armed) {
             // Drawn katana extending past the hand, parallel to the arm. The
             // blade runs from just past the guard down to the reach distance
             // measured from the shoulder pivot (y 1.36), so its tip matches
             // the gameplay sweep segment.
             part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba);
-            const float bladeTop = 0.755f;
-            const float bladeTip = 1.36f - pose.reach;
+            const float bladeTop = kBladeTop;
+            const float bladeTip = kShoulderY - pose.reach;
             const float bw = 0.05f * pose.bladeWidth;
             part(arm, {0.0f, (bladeTop + bladeTip) * 0.5f, s * 0.26f},
                  {bw, (bladeTop - bladeTip) * 0.5f, bw}, kSteel);
@@ -185,12 +193,42 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark);
     }
 
-    // Sheathed katana worn at the hip, angled slightly downward behind.
+    // Sheathed katana worn at the hip, angled slightly downward behind. The
+    // saya stays on the belt whatever happens — it is what a thrown-down
+    // blade leaves behind, and an empty one is the clearest thing on the model
+    // saying this fighter has nothing to swing.
     glm::mat4 katana = upper * glm::translate(glm::mat4(1.0f), {0.02f, 1.00f, 0.22f}) *
                        glm::rotate(glm::mat4(1.0f), 0.30f, glm::vec3(0.0f, 0.0f, 1.0f));
-    part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer);       // scabbard
-    part(katana, {0.01f, 0.0f, 0.0f}, {0.03f, 0.10f, 0.10f}, kTsuba);          // guard
-    part(katana, {0.15f, 0.0f, 0.0f}, {0.24f, 0.045f, 0.045f}, colors.accent); // grip
+    part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer); // scabbard
+    if (pose.armed) {
+        part(katana, {0.01f, 0.0f, 0.0f}, {0.03f, 0.10f, 0.10f}, kTsuba);          // guard
+        part(katana, {0.15f, 0.0f, 0.0f}, {0.24f, 0.045f, 0.045f}, colors.accent); // grip
+    }
+}
+
+float bladeSteelLength(float reachBonus) {
+    // Same span the in-hand blade draws, at the baseline reach: guard to tip.
+    return (kBladeTop - (kShoulderY - (kNominalReach + reachBonus))) * 0.5f;
+}
+
+glm::vec3 droppedBladeHalfExtent(float steel) {
+    // Deliberately a touch thicker than the drawn steel: Jolt's boxes carry a
+    // convex radius, and a blade modelled as thin as it looks would be mostly
+    // rounded corner. It is a sword lying on the floor, not a hitbox.
+    return {(steel + kGripLength) * 0.5f, 0.045f, 0.045f};
+}
+
+void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float steel,
+                      float width, const glm::vec4& grip) {
+    const float total = steel + kGripLength;
+    const float butt = -total * 0.5f; // end of the grip, in the object's own space
+    const float bw = 0.05f * width;
+    auto part = [&](glm::vec3 center, glm::vec3 size, const glm::vec4& color) {
+        renderer.drawBox(transform * boxAt(center, size), color);
+    };
+    part({butt + 0.11f, 0.0f, 0.0f}, {0.22f, 0.045f, 0.045f}, grip);
+    part({butt + 0.24f, 0.0f, 0.0f}, {0.03f, 0.10f, 0.10f}, kTsuba);
+    part({butt + kGripLength + steel * 0.5f, 0.0f, 0.0f}, {steel, bw, bw}, kSteel);
 }
 
 // Same boxes the attached limb is built from, re-centered on the limb's

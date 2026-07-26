@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <system_error>
 
 namespace {
 
@@ -17,15 +19,49 @@ void readU32(std::ifstream& in, std::uint32_t& v) {
     in.read(reinterpret_cast<char*>(&v), sizeof v);
 }
 
+// The resolved path, for the log lines — every message here names the file it
+// actually tried, not the name that was typed, since the two now differ.
+// path::string() can throw on a name the native encoding cannot represent, and
+// a log line is not worth taking a run down for: fall back to what was typed.
+std::string shown(const std::filesystem::path& p, const char* typed) {
+    try {
+        return p.string();
+    } catch (const std::exception&) {
+        return typed;
+    }
+}
+
 } // namespace
+
+std::filesystem::path replayPath(const char* name) {
+    std::filesystem::path p(name);
+    // Anything with a directory in it was meant literally. Only a bare name
+    // gets the default home — which is what keeps recordings from landing in
+    // whatever directory the game happened to be run from, where they read as
+    // stray new files in the source tree.
+    if (p.is_absolute() || p.has_parent_path()) {
+        return p;
+    }
+    return std::filesystem::path(kReplayDir) / p;
+}
 
 Recorder::~Recorder() { close(); }
 
 bool Recorder::open(const char* path, const MatchSetup& setup) {
     close();
-    m_out.open(path, std::ios::binary | std::ios::trunc);
+    const std::filesystem::path file = replayPath(path);
+    const std::string name = shown(file, path);
+    // Make the directory rather than fail for want of it: a recording is a
+    // debug artifact, and "replays/ does not exist" is not a thing anyone
+    // should have to be told twice. Errors are ignored — if it could not be
+    // created the open below says so, in terms of the file that matters.
+    if (file.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(file.parent_path(), ec);
+    }
+    m_out.open(file, std::ios::binary | std::ios::trunc);
     if (!m_out) {
-        std::fprintf(stderr, "replay: could not open '%s' for writing\n", path);
+        std::fprintf(stderr, "replay: could not open '%s' for writing\n", name.c_str());
         m_out.close();
         return false;
     }
@@ -37,12 +73,12 @@ bool Recorder::open(const char* path, const MatchSetup& setup) {
     }
     writeU32(m_out, static_cast<std::uint32_t>(setup.level));
     if (!m_out) {
-        std::fprintf(stderr, "replay: failed writing the header of '%s'\n", path);
+        std::fprintf(stderr, "replay: failed writing the header of '%s'\n", name.c_str());
         m_out.close();
         return false;
     }
     m_frames = 0;
-    std::fprintf(stderr, "replay: recording to '%s'\n", path);
+    std::fprintf(stderr, "replay: recording to '%s'\n", name.c_str());
     return true;
 }
 
@@ -79,9 +115,11 @@ Replayer::~Replayer() { close(); }
 
 bool Replayer::open(const char* path) {
     close();
-    m_in.open(path, std::ios::binary);
+    const std::filesystem::path file = replayPath(path);
+    const std::string name = shown(file, path);
+    m_in.open(file, std::ios::binary);
     if (!m_in) {
-        std::fprintf(stderr, "replay: could not open '%s' for reading\n", path);
+        std::fprintf(stderr, "replay: could not open '%s' for reading\n", name.c_str());
         m_in.close();
         return false;
     }
@@ -91,13 +129,13 @@ bool Replayer::open(const char* path) {
     m_in.read(magic, sizeof magic);
     readU32(m_in, version);
     if (!m_in || std::memcmp(magic, kMagic, sizeof magic) != 0) {
-        std::fprintf(stderr, "replay: '%s' is not a replay file\n", path);
+        std::fprintf(stderr, "replay: '%s' is not a replay file\n", name.c_str());
         m_in.close();
         return false;
     }
     if (version != kReplayVersion) {
-        std::fprintf(stderr, "replay: '%s' is version %u, this build reads %u\n", path,
-                     version, kReplayVersion);
+        std::fprintf(stderr, "replay: '%s' is version %u, this build reads %u\n",
+                     name.c_str(), version, kReplayVersion);
         m_in.close();
         return false;
     }
@@ -114,7 +152,7 @@ bool Replayer::open(const char* path) {
     readU32(m_in, level);
     m_setup.level = static_cast<std::int32_t>(level);
     if (!m_in) {
-        std::fprintf(stderr, "replay: '%s' ends inside its header\n", path);
+        std::fprintf(stderr, "replay: '%s' ends inside its header\n", name.c_str());
         m_in.close();
         return false;
     }
@@ -157,6 +195,7 @@ void dumpDesync(const Game& game, std::int64_t frame, std::uint32_t expected,
                      "  crouch   %d amount %+.9g\n"
                      "  kbVel    %+.9g %+.9g\n"
                      "  severed  %d%d%d%d%d   blood %+.9g\n"
+                     "  weapon   %d\n"
                      "  topple   tilt %+.9g vel %+.9g side %+.9g\n",
                      i, p.pos.x, p.pos.y, p.pos.z, p.vy, p.grounded ? 1 : 0, p.facing,
                      p.animPhase, p.moveAmount, static_cast<int>(p.attackState),
@@ -166,8 +205,10 @@ void dumpDesync(const Game& game, std::int64_t frame, std::uint32_t expected,
                      p.riposteTime, p.crouching ? 1 : 0, p.crouchAmount, p.kbVel.x,
                      p.kbVel.y, p.severed[0] ? 1 : 0, p.severed[1] ? 1 : 0,
                      p.severed[2] ? 1 : 0, p.severed[3] ? 1 : 0, p.severed[4] ? 1 : 0,
-                     p.blood, p.fallTilt, p.fallVel, p.fallSide);
+                     p.blood, p.weapon, p.fallTilt, p.fallVel, p.fallSide);
     }
+    std::fprintf(stderr, "blades on the ground %d\n",
+                 static_cast<int>(game.droppedWeapons().size()));
     std::fprintf(stderr,
                  "pieces %d   winner %d\n"
                  "Compare against the same step in a run that agrees: the first\n"

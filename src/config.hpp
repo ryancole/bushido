@@ -34,6 +34,7 @@ enum class Action {
     Crouch,
     Attack,
     Jab,
+    Drop,
     Count,
 };
 constexpr int kActionCount = static_cast<int>(Action::Count);

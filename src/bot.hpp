@@ -9,6 +9,10 @@
 // line up in depth, swing on a randomized cooldown, and occasionally
 // strafe, back off, block, or jump so it doesn't play like a homing missile.
 // Lives outside Game so the sim stays a pure function of its two inputs.
+//
+// The one thing that overrides all of that is being empty-handed: with no
+// blade there is nothing to swing and nothing to guard with, so a disarmed
+// bot goes and takes one off the ground before it does anything else.
 class Bot {
 public:
     explicit Bot(int self = 1, std::uint32_t seed = 0xb07ca75u);

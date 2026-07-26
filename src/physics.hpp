@@ -59,21 +59,32 @@ public:
     struct DebrisImpact {
         glm::vec3 pos; // world-space contact point
         float speed;   // closing speed along the contact normal, m/s
+        // Which debris body it was. The caller knows what each of its handles
+        // *is* and this layer does not, which is what lets a severed arm smear
+        // blood where it lands while a thrown-down sword only clatters.
+        int id;
     };
     const std::vector<DebrisImpact>& debrisImpacts() const;
 
-    // Spawns a dynamic box body for a severed limb. Debris collides with the
-    // arena, other debris, and the fighters (who kick pieces around by walking
-    // into them). Returns a handle for debrisTransform. `yaw` rotates about +Y
-    // (matches the fighter's facing).
+    // Spawns a dynamic box body (a severed limb, a discarded blade). Debris
+    // collides with the arena, other debris, and the fighters (who kick pieces
+    // around by walking into them). Returns a handle for debrisTransform.
+    // `yaw` rotates about +Y (matches the fighter's facing).
     int addDebris(const glm::vec3& center, float yaw, const glm::vec3& halfExtent,
                   const glm::vec3& velocity, const glm::vec3& angularVelocity);
+
+    // Destroys a debris body — a blade being taken back up off the ground.
+    // The handle is *retired*, not reused: every other handle already handed
+    // out has to keep meaning the same body, so the slot stays as a hole and
+    // debrisStates simply skips it.
+    void removeDebris(int id);
 
     // Current world transform of a debris body, for rendering.
     glm::mat4 debrisTransform(int id) const;
 
-    // Raw state of every debris body, in creation order, for a determinism
-    // checksum. Debris is not merely cosmetic: a piece landing one step late
+    // Raw state of every live debris body, in creation order (retired handles
+    // are skipped), for a determinism checksum. Debris is not merely
+    // cosmetic: a piece landing one step late
     // changes the debrisImpacts() stream, which Game turns into blood marks —
     // advancing its rng — so the rigid-body world sits inside the determinism
     // boundary whether or not a limb ever decides a fight.
