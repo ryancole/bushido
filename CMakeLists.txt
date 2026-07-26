@@ -223,14 +223,14 @@ target_compile_definitions(bushido PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE)
 
 # The music generator: renders assets/music/*.wav from the composition code in
-# tools/musicgen.cpp. Deliberately *not* wired into the build — the WAVs are
+# etc/musicgen.cpp. Deliberately *not* wired into the build — the WAVs are
 # committed, so this is run by hand when a track changes:
 #
 #     build\musicgen.exe
 #
 # It's built with everything else (it costs one small translation unit) so it
 # can't quietly rot, but nothing depends on its output at build time.
-add_executable(musicgen tools/musicgen.cpp)
+add_executable(musicgen etc/musicgen.cpp)
 target_include_directories(musicgen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(musicgen PRIVATE
     MUSIC_OUT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets/music")
