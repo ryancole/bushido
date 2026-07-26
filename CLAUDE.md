@@ -10,6 +10,14 @@ The toolchain is pinned to MSVC via CMakePresets.json (`msvc-debug` → `build/`
 cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake --preset msvc-debug && cmake --build --preset msvc-debug'
 ```
 
+**A build for someone else** is the `package` target, not the build directory — that is hundreds of megabytes of intermediates, and the exe in it leans on absolute paths that exist only here:
+
+```
+cmake --preset msvc-release -DSTEAM_SDK_DIR="<sdk>" && cmake --build --preset msvc-release --target package
+```
+
+That assembles `build-release/dist` (~9 MB: exe, `shaders/`, `assets/`, and with the SDK also `steam_api64.dll` and `steam_appid.txt`), which is the folder to zip. It has been checked by copying it elsewhere and running it: both roots resolve to the packaged copies. The recipient needs the **Microsoft Visual C++ 2015-2022 redistributable** (release links the dynamic CRT) and a Vulkan-capable driver; for Steam play they need the Steam client running, and the overlay's invite button only works if the game is launched *through* Steam — reading a SteamID out works regardless. Debug builds are not distributable at all: `/MDd` needs the debug CRT, which is not redistributable.
+
 Run: `build\bushido.exe`. Three developer flags drive the determinism harness (`src/netplay/replay.hpp`): `--record <file>` logs every match played this run, `--replay <file>` skips the front end and re-runs a recording, checking the sim's checksum every step, and `--auto` skips the front end to play a fixed pairing on Hanami and quit when it ends. `--auto` seeds the rng from a constant, so it's a fixture rather than a play session — two `--record ... --auto` runs produce **byte-identical** recordings, which is a whole-pipeline check that replaying one run isn't. The standing test:
 
 ```
@@ -77,5 +85,5 @@ VS Code: `.vscode/` has a default build task (Ctrl+Shift+B), a `configure` task,
 - GLM is compiled with `GLM_FORCE_DEPTH_ZERO_TO_ONE` + `GLM_FORCE_RADIANS`; `FramingCamera::proj` flips Y for Vulkan clip space.
 - Everything renders as a shaded unit cube generated in the vertex shader from `gl_VertexIndex`; models may rotate (normal matrix travels in push constants). `ObjectPush` is exactly 128 bytes — the guaranteed push-constant minimum — and must match `shaders/cube.vert`; do not grow it.
 - Depth: single D32 depth image shared by frames in flight, transitioned from UNDEFINED each frame.
-- Shaders are loaded via the `SHADER_DIR` compile definition (absolute path into the build tree) and assets via `ASSET_DIR` (absolute path into the *source* tree) — dev-only scheme; shipping needs a real asset path and a copy-alongside-the-exe step.
+- Shaders and assets are found through `src/paths.hpp` (`shaderPath`/`assetPath`), which checks **beside the exe first** and falls back to the `SHADER_DIR`/`ASSET_DIR` compile definitions. Those are absolute paths into the build and source trees, which is why a build could not previously be handed to anyone: the copy looked for its shaders where they had been on the machine that compiled them, and died before the window opened. Now a packaged build carries `shaders/` and `assets/` beside the exe and is self-contained, while a dev build finds the source tree and needs nothing copied after a compile — so editing a WAV still takes effect without a rebuild. Both roots are logged once at startup, since "no music and no idea why" on someone else's machine is otherwise unanswerable.
 - `src/` is on the include path, so headers are included relative to it (`"game.hpp"`, `"levels/level.hpp"`) — no `../` paths from subdirectories.

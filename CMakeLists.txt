@@ -97,6 +97,7 @@ add_executable(bushido
     src/netplay/replay.cpp
     src/netplay/session.cpp
     src/netplay/simlink.cpp
+    src/paths.cpp
     src/netplay/steamlobby.cpp
     src/netplay/steamtransport.cpp
     src/netplay/transport.cpp
@@ -159,6 +160,34 @@ if(STEAM_SDK_DIR)
 else()
     message(STATUS "Steam networking: disabled (set STEAM_SDK_DIR to enable)")
 endif()
+
+# `cmake --build --preset msvc-release --target package` assembles a folder
+# that runs on a machine that has never seen this source tree. The build
+# directory itself is not that: it is hundreds of megabytes of intermediates,
+# and the exe inside it only finds its shaders because the absolute path they
+# had at compile time still happens to exist here (see src/paths.hpp).
+set(DIST_DIR "${CMAKE_CURRENT_BINARY_DIR}/dist")
+set(PACKAGE_STEPS
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${DIST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:bushido>" "${DIST_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders" "${DIST_DIR}/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${DIST_DIR}/assets")
+if(STEAM_SDK_DIR)
+    list(APPEND PACKAGE_STEPS
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.dll"
+                "${DIST_DIR}/"
+        # Needed beside the exe for SteamAPI_Init until the game has a real
+        # app id and is launched by Steam itself.
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt" "${DIST_DIR}/")
+endif()
+add_custom_target(package ${PACKAGE_STEPS}
+    DEPENDS bushido
+    COMMENT "Assembling ${DIST_DIR}")
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

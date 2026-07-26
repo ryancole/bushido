@@ -1,5 +1,7 @@
 #include "renderer.hpp"
 
+#include "paths.hpp"
+
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
@@ -306,8 +308,8 @@ void Renderer::recreateSwapchain() {
 }
 
 void Renderer::createPipeline() {
-    auto vertCode = readFile(std::string(SHADER_DIR) + "/cube.vert.spv");
-    auto fragCode = readFile(std::string(SHADER_DIR) + "/cube.frag.spv");
+    auto vertCode = readFile(shaderPath("cube.vert.spv"));
+    auto fragCode = readFile(shaderPath("cube.frag.spv"));
     VkShaderModule vertModule = createShaderModule(m_device.device, vertCode);
     VkShaderModule fragModule = createShaderModule(m_device.device, fragCode);
 
