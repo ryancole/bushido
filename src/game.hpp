@@ -107,12 +107,12 @@ struct Player {
     // only so the legs come back together when they stop rather than freezing
     // mid-split, and so a standing fighter isn't holding a bent knee.
     float strideBlend = 0.0f;
-    // +1 walking the way they face, -1 backing up. Which leg is the planted
-    // one depends on it: backing away from an opponent, the foot on the ground
-    // travels forward relative to the body rather than back, so the knee has
-    // to fold on the other leg or the model lifts the foot it is standing on
-    // and drags the one it is swinging.
-    float strideSign = 1.0f;
+    // Direction of travel in model-local space (x forward, y = z), unit
+    // length. Decides which foot moves first and which way the step is taken.
+    // A vector rather than a sign because a duel is not fought along one axis:
+    // the stride used to work only in the facing plane, so stepping in depth
+    // slid the fighter sideways on legs doing a forward shuffle.
+    glm::vec2 strideDir{1.0f, 0.0f};
 
     AttackState attackState = AttackState::None;
     AttackKind attackKind = AttackKind::Light; // which attack is in flight
