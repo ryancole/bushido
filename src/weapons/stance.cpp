@@ -57,15 +57,18 @@ const StanceDef kStances[kStanceCount] = {
     // again the counter window, which is the stance's whole argument for
     // fighting from inside the other blades' reach.
     //
-    // The ready angle is what it is because of the floor: the tip sits at
-    // shoulder height minus reach*cos(angle), so a blade merely hanging down
-    // would spear through the ground on a long-armed fighter. -0.60 rad keeps
-    // the point clear of it at every reach in the roster while still reading
-    // as unmistakably low.
+    // The ready angle is what it is because of the floor. The blade is held
+    // at rest, not only mid-swing, so this pose is on screen most of the
+    // match: the tip sits at shoulder height (1.36) minus reach*cos(angle),
+    // and a blade merely hanging down would spear through the ground on a
+    // long-armed fighter. The longest reach that can carry this stance today
+    // is a Kensei's 1.95 with the wakizashi's -0.25, and -0.78 rad leaves that
+    // tip 0.15 m clear of the floor while still reading as unmistakably low.
+    // Worth recomputing if a longer blade ever holds Low.
     {
         "Low",
         "Blade trailing low. Rising cuts, and the best guard.",
-        -0.60f, // ready: down and behind, tip near the ground
+        -0.78f, // ready: down and behind, tip just off the ground
         0.75f,  // guard: angled down in front
         {
             {-0.55f, 1.95f}, // light: a rising cut, finishing high

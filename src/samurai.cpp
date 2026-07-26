@@ -155,7 +155,14 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
             continue;
         }
         const bool guarding = pose.blocking && pose.attackState == 0;
-        bool swordArm = s == swordSide && (pose.attackState != 0 || guarding);
+        // The sword arm carries the blade whenever there is one to carry —
+        // there is no sheathing it mid-duel. At rest it holds the stance's
+        // ready angle, which is what makes the stance something the player can
+        // read off the fighter standing there rather than a shape that
+        // appears for the third of a second a swing takes. It also costs the
+        // arm its stride swing, which is right: nobody walks a sword around
+        // like an empty hand. Empty-handed, it goes back to being an arm.
+        const bool swordArm = s == swordSide && pose.armed;
         float swing;
         if (swordArm) {
             swing = guarding ? stanceDef(pose.stance).guardAngle
@@ -169,7 +176,7 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         glm::mat4 arm = upper * pivotRotZ({0.0f, 1.36f, s * 0.26f}, swing);
         part(arm, {0.0f, 1.10f, s * 0.26f}, {0.11f, 0.44f, 0.11f}, colors.kimono);
         part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin); // hand
-        if (swordArm && pose.armed) {
+        if (swordArm) {
             // Drawn katana extending past the hand, parallel to the arm. The
             // blade runs from just past the guard down to the reach distance
             // measured from the shoulder pivot (y 1.36), so its tip matches
@@ -193,17 +200,18 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark);
     }
 
-    // Sheathed katana worn at the hip, angled slightly downward behind. The
-    // saya stays on the belt whatever happens — it is what a thrown-down
-    // blade leaves behind, and an empty one is the clearest thing on the model
-    // saying this fighter has nothing to swing.
+    // The saya worn at the hip, angled slightly downward behind, and always
+    // empty: the blade that belongs in it is in the fighter's hand from the
+    // first frame of the match to the last. It stays on the belt whatever
+    // happens, including after the sword has been thrown away — a sheath is
+    // not something you drop with the blade.
+    //
+    // So it is no longer what says "this fighter has nothing to swing"; the
+    // empty *hand* is, which is a far louder thing on screen than a 5 cm slat
+    // at the hip ever was.
     glm::mat4 katana = upper * glm::translate(glm::mat4(1.0f), {0.02f, 1.00f, 0.22f}) *
                        glm::rotate(glm::mat4(1.0f), 0.30f, glm::vec3(0.0f, 0.0f, 1.0f));
     part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer); // scabbard
-    if (pose.armed) {
-        part(katana, {0.01f, 0.0f, 0.0f}, {0.03f, 0.10f, 0.10f}, kTsuba);          // guard
-        part(katana, {0.15f, 0.0f, 0.0f}, {0.24f, 0.045f, 0.045f}, colors.accent); // grip
-    }
 }
 
 float bladeSteelLength(float reachBonus) {
