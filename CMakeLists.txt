@@ -185,6 +185,26 @@ if(STEAM_SDK_DIR)
         COMMAND ${CMAKE_COMMAND} -E copy
                 "${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt" "${DIST_DIR}/")
 endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # Carry the C++ runtime beside the exe so the recipient installs nothing.
+    # Microsoft allows app-local deployment of the release runtime; the *debug*
+    # one may not be redistributed at all, which is the other half of why a
+    # debug build is not something to hand out.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    foreach(runtimeLib IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        list(APPEND PACKAGE_STEPS
+            COMMAND ${CMAKE_COMMAND} -E copy "${runtimeLib}" "${DIST_DIR}/")
+    endforeach()
+else()
+    # A build directory configured Debug will happily build this target and
+    # produce something that links the debug CRT: not redistributable, and it
+    # will not start anywhere else. That is invisible in the output otherwise —
+    # it cost an afternoon once — so it says so.
+    list(APPEND PACKAGE_STEPS COMMAND ${CMAKE_COMMAND} -E echo
+        "WARNING: packaging a '${CMAKE_BUILD_TYPE}' build. It links the debug CRT, which cannot be redistributed and will not start on a machine without Visual Studio. Reconfigure with --preset msvc-release into a clean directory.")
+endif()
+
 add_custom_target(package ${PACKAGE_STEPS}
     DEPENDS bushido
     COMMENT "Assembling ${DIST_DIR}")
