@@ -33,7 +33,18 @@ public:
     static bool available();
 
     // Bring up the Steam API and warm the relay. False if Steam is not running.
+    // Safe to call again after a failure — nothing is initialised by one — and
+    // that is how a player who started the client after the game gets the relay
+    // without restarting.
     bool start();
+    // Why Steam is, or is not, usable — a sentence fit to put on screen.
+    // `start` fills it in either way.
+    //
+    // This exists because the failure had no reader. A packaged build's stderr
+    // goes to a console window nobody looks at, so a friend whose Steam was not
+    // running got the direct-IP screen with nothing anywhere saying why, and no
+    // way to tell that from a build made without the SDK at all.
+    const char* status() const;
     // Accept whoever messages us first — the host side. `start` must have run.
     bool listen();
     // Address a specific person. The host's SteamID is what gets shared.

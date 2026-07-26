@@ -16,6 +16,7 @@ constexpr int kChannel = 0;
 
 struct SteamTransport::Impl {
     bool up = false;
+    char status[192] = "Steam has not been asked yet.";
     bool havePeer = false;
     SteamNetworkingIdentity peer{};
     bool accepting = false; // host: take the first person who calls
@@ -70,10 +71,31 @@ bool SteamTransport::start() {
     if (m_impl->up) {
         return true;
     }
-    // Silent on failure: Steam is tried on every launch now, so "not running"
-    // is an ordinary answer rather than an error. The caller decides whether
-    // it was worth complaining about.
-    if (!SteamAPI_Init()) {
+    // InitEx rather than Init: the plain one collapses every failure into
+    // `false`, and "no Steam options" is exactly the complaint that needs the
+    // difference between a client that is not running, one that is too old, and
+    // an app id the working directory does not have. Silent otherwise — Steam
+    // is tried on every launch now, so "not running" is an ordinary answer
+    // rather than an error, and the caller decides whether to say so.
+    SteamErrMsg err = {};
+    const ESteamAPIInitResult result = SteamAPI_InitEx(&err);
+    if (result != k_ESteamAPIInitResult_OK) {
+        // Steam's own message is worth carrying only where it says something
+        // the result code did not; the two named cases are already sentences.
+        switch (result) {
+        case k_ESteamAPIInitResult_NoSteamClient:
+            std::snprintf(m_impl->status, sizeof m_impl->status,
+                          "Steam is not running.");
+            break;
+        case k_ESteamAPIInitResult_VersionMismatch:
+            std::snprintf(m_impl->status, sizeof m_impl->status,
+                          "The Steam client is out of date.");
+            break;
+        default:
+            std::snprintf(m_impl->status, sizeof m_impl->status,
+                          "Steam refused to start: %s", err);
+            break;
+        }
         return false;
     }
     m_impl->hooks = std::make_unique<Impl::Hooks>(m_impl.get());
@@ -81,10 +103,14 @@ bool SteamTransport::start() {
     // does not pay for it.
     SteamNetworkingUtils()->InitRelayNetworkAccess();
     m_impl->up = true;
+    std::snprintf(m_impl->status, sizeof m_impl->status, "Steam is ready (%llu).",
+                  static_cast<unsigned long long>(selfId()));
     std::fprintf(stderr, "steam: ready, this machine is %llu\n",
                  static_cast<unsigned long long>(selfId()));
     return true;
 }
+
+const char* SteamTransport::status() const { return m_impl->status; }
 
 bool SteamTransport::listen() {
     if (!m_impl->up) {
@@ -167,6 +193,10 @@ SteamTransport::~SteamTransport() = default;
 bool SteamTransport::available() { return false; }
 
 bool SteamTransport::start() { return false; }
+
+const char* SteamTransport::status() const {
+    return "This build was made without the Steamworks SDK.";
+}
 
 bool SteamTransport::listen() { return false; }
 bool SteamTransport::connectTo(std::uint64_t) { return false; }
