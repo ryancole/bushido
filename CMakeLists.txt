@@ -93,6 +93,14 @@ add_executable(bushido
     src/weapons/wakizashi.cpp
     src/weapons/odachi.cpp
     src/game.cpp
+    src/input.cpp
+    src/netplay/replay.cpp
+    src/netplay/session.cpp
+    src/netplay/simlink.cpp
+    src/paths.cpp
+    src/netplay/steamlobby.cpp
+    src/netplay/steamtransport.cpp
+    src/netplay/transport.cpp
     src/levels/level.cpp
     src/levels/dojo.cpp
     src/levels/hanami.cpp
@@ -112,7 +120,94 @@ target_link_libraries(bushido PRIVATE
     Jolt
     miniaudio
     imgui
-    tomlplusplus::tomlplusplus)
+    tomlplusplus::tomlplusplus
+    ws2_32) # netplay's UDP transport (src/netplay/transport.cpp)
+
+# Steam networking. Every other dependency here arrives by FetchContent; this
+# one cannot, because the Steamworks SDK is licence-gated — you accept an
+# agreement and download it while signed in. So it is opt-in: point
+# STEAM_SDK_DIR at the extracted `sdk` directory (the one holding public/ and
+# redistributable_bin/) and the Steam transport compiles in. Without it the
+# game still builds and still plays over direct IP; SteamTransport stubs out
+# and reports itself unavailable.
+set(STEAM_SDK_DIR "" CACHE PATH "Steamworks SDK 'sdk' directory (optional)")
+if(STEAM_SDK_DIR)
+    if(NOT EXISTS "${STEAM_SDK_DIR}/public/steam/steam_api.h")
+        message(FATAL_ERROR
+            "STEAM_SDK_DIR is set to '${STEAM_SDK_DIR}' but "
+            "public/steam/steam_api.h is not there. It should be the 'sdk' "
+            "directory from inside the Steamworks SDK zip.")
+    endif()
+    # SYSTEM: the SDK headers trip /W4 (deprecated strncpy in matchmakingtypes.h)
+    # and they are not ours to fix.
+    target_include_directories(bushido SYSTEM PRIVATE "${STEAM_SDK_DIR}/public")
+    target_link_libraries(bushido PRIVATE
+        "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.lib")
+    target_compile_definitions(bushido PRIVATE BUSHIDO_STEAM)
+    # SteamAPI_Init reads the app id from a file in the working directory. 480
+    # is Valve's public test app ("Spacewar"), which is what you develop
+    # against until the game has an id of its own.
+    set(STEAM_APP_ID "480" CACHE STRING "Steam app id used at runtime")
+    file(GENERATE OUTPUT "$<TARGET_FILE_DIR:bushido>/steam_appid.txt"
+         CONTENT "${STEAM_APP_ID}")
+    # steam_api64.dll has to sit beside the exe or it will not start.
+    add_custom_command(TARGET bushido POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.dll"
+                "$<TARGET_FILE_DIR:bushido>"
+        COMMENT "Copying steam_api64.dll beside bushido.exe")
+    message(STATUS "Steam networking: ENABLED (${STEAM_SDK_DIR}), app id ${STEAM_APP_ID}")
+else()
+    message(STATUS "Steam networking: disabled (set STEAM_SDK_DIR to enable)")
+endif()
+
+# `cmake --build --preset msvc-release --target package` assembles a folder
+# that runs on a machine that has never seen this source tree. The build
+# directory itself is not that: it is hundreds of megabytes of intermediates,
+# and the exe inside it only finds its shaders because the absolute path they
+# had at compile time still happens to exist here (see src/paths.hpp).
+set(DIST_DIR "${CMAKE_CURRENT_BINARY_DIR}/dist")
+set(PACKAGE_STEPS
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${DIST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:bushido>" "${DIST_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/shaders" "${DIST_DIR}/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets" "${DIST_DIR}/assets")
+if(STEAM_SDK_DIR)
+    list(APPEND PACKAGE_STEPS
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${STEAM_SDK_DIR}/redistributable_bin/win64/steam_api64.dll"
+                "${DIST_DIR}/"
+        # Needed beside the exe for SteamAPI_Init until the game has a real
+        # app id and is launched by Steam itself.
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt" "${DIST_DIR}/")
+endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # Carry the C++ runtime beside the exe so the recipient installs nothing.
+    # Microsoft allows app-local deployment of the release runtime; the *debug*
+    # one may not be redistributed at all, which is the other half of why a
+    # debug build is not something to hand out.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    foreach(runtimeLib IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        list(APPEND PACKAGE_STEPS
+            COMMAND ${CMAKE_COMMAND} -E copy "${runtimeLib}" "${DIST_DIR}/")
+    endforeach()
+else()
+    # A build directory configured Debug will happily build this target and
+    # produce something that links the debug CRT: not redistributable, and it
+    # will not start anywhere else. That is invisible in the output otherwise —
+    # it cost an afternoon once — so it says so.
+    list(APPEND PACKAGE_STEPS COMMAND ${CMAKE_COMMAND} -E echo
+        "WARNING: packaging a '${CMAKE_BUILD_TYPE}' build. It links the debug CRT, which cannot be redistributed and will not start on a machine without Visual Studio. Reconfigure with --preset msvc-release into a clean directory.")
+endif()
+
+add_custom_target(package ${PACKAGE_STEPS}
+    DEPENDS bushido
+    COMMENT "Assembling ${DIST_DIR}")
 
 if(MSVC)
     target_compile_options(bushido PRIVATE /W4)

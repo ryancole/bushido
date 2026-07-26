@@ -34,6 +34,10 @@ struct PlayerInput {
     bool crouch = false; // held: duck low (slows the walk, no jumping)
     bool attack = false; // edge-triggered: true only on the tick(s) after a fresh press
     AttackKind attackKind = AttackKind::Light; // which attack, when attack is set
+
+    // Exact equality, so the replay harness can check that an input survives
+    // the wire format unchanged (see quantizeAxis in input.hpp).
+    bool operator==(const PlayerInput&) const = default;
 };
 
 // Sword swing phases. Values double as the pose index handed to the model.
@@ -161,6 +165,18 @@ public:
     const std::vector<SoundCue>& soundCues() const { return m_soundCues; }
     void clearSoundCues() { m_soundCues.clear(); }
 
+    // FNV-1a over everything the sim decided: both Players field by field,
+    // both rng streams, the outcome, and every debris body's state. Two runs
+    // fed the same inputs must agree on this every step — it is what a replay
+    // checks and what a netplay peer would trade to catch a desync early.
+    // Floats are hashed by their bits, not their value: bit-exactness is the
+    // whole point, and 0.0f == -0.0f would hide a real divergence.
+    // Deliberately not covered: the blood particles and marks themselves.
+    // They are a pure function of m_cosmeticRng, which *is* hashed — one word
+    // standing in for thousands, and a canary on the debris contact stream
+    // that feeds them.
+    std::uint32_t checksum() const;
+
     // Baseline arena bounds. Depth is shared by every level; width is only
     // the default — each level authors its own (LevelDef::arenaHalfWidth),
     // baked into this match as arenaHalfWidth().
@@ -179,7 +195,8 @@ private:
     void collapse(Player& p); // death: cancel the swing, start the body's fall
     void spawnBlood(const glm::vec3& pos, const glm::vec3& dir, int count, float speed);
     void addBloodMark(const glm::vec3& pos, float radius);
-    float frand(); // 0..1
+    float frand();  // 0..1, from the sim stream — anything the fight turns on
+    float cfrand(); // 0..1, from the cosmetic stream — blood spray and splats
 
     Player m_players[2];
     const CharacterDef* m_defs[2];   // roster entries (colors, names)
@@ -199,6 +216,13 @@ private:
     glm::vec2 m_waterMaxXZ{0.0f};
     int m_winner = -1;      // decided once; a post-match death can't flip it
     float m_overTime = 0.0f;
+    // Two streams, deliberately. m_rng decides things the fight turns on (which
+    // way a dying body topples); m_cosmeticRng decides only how blood looks.
+    // Splitting them keeps the number of droplets a hit happened to spawn from
+    // shifting every later gameplay roll — and is what will let a rollback
+    // layer leave the cosmetic state out of save/restore. Retrofitting the
+    // split later would move every roll in the game; doing it now costs a line.
     std::uint32_t m_rng = 0x51ce00d5u;
+    std::uint32_t m_cosmeticRng = 0x9e3779b9u;
     std::unique_ptr<Physics> m_physics; // collision & movement solver (Jolt)
 };

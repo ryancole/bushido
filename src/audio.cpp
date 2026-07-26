@@ -1,5 +1,6 @@
 #include "audio.hpp"
 
+#include "paths.hpp"
 #include "synth.hpp"
 
 #include <miniaudio.h>
@@ -198,7 +199,7 @@ void Audio::loadMusic(Music track) {
         return;
     }
     voice.tried = true;
-    std::string path = std::string(ASSET_DIR) + "/music/" + kMusicFiles[t];
+    std::string path = assetPath((std::string("music/") + kMusicFiles[t]).c_str());
     if (ma_sound_init_from_file(&m_impl->engine, path.c_str(),
                                 MA_SOUND_FLAG_NO_SPATIALIZATION |
                                     MA_SOUND_FLAG_DECODE,

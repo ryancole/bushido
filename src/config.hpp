@@ -45,7 +45,12 @@ struct Keybinds {
     const Bind& operator[](Action a) const { return binds[static_cast<int>(a)]; }
 };
 
+// Two sets, one per local fighter. The defaults deliberately share no control:
+// in a local versus both are live at once, so an overlap would move both
+// fighters on one key. Player 1 keeps the mouse; player 2 gets the right-hand
+// side of the keyboard.
 Keybinds defaultKeybinds();
+Keybinds defaultKeybinds2();
 
 // Mixer levels, 0..1. Both default to 1 — the levels the effects and tracks
 // were synthesized against — so a fresh install sounds exactly as it always
@@ -58,7 +63,8 @@ struct AudioSettings {
 // Everything the player can change, and the whole of what the config file
 // holds: one struct per options-screen section.
 struct Settings {
-    Keybinds keybinds = defaultKeybinds();
+    Keybinds keybinds = defaultKeybinds();   // player 1
+    Keybinds keybinds2 = defaultKeybinds2(); // player 2, local versus only
     AudioSettings audio;
 };
 

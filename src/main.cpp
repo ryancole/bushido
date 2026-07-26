@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <iterator>
@@ -24,15 +25,35 @@
 #include "characters/character.hpp"
 #include "config.hpp"
 #include "game.hpp"
+#include "input.hpp"
 #include "levels/level.hpp"
+#include "netplay/replay.hpp"
+#include "netplay/session.hpp"
+#include "netplay/simlink.hpp"
+#include "netplay/steamlobby.hpp"
+#include "netplay/steamtransport.hpp"
+#include "netplay/transport.hpp"
 #include "renderer.hpp"
 #include "samurai.hpp"
 #include "weapons/weapon.hpp"
 
 namespace {
 
-enum class AppState { Loading, Menu, Options, CharacterSelect, Playing };
-enum class MenuAction { None, Play, Options, Quit };
+enum class AppState {
+    Loading,
+    Menu,
+    Options,
+    NetSetup, // host-or-join, before anyone picks a fighter
+    CharacterSelect,
+    NetWait, // picked, waiting on the handshake to agree the match
+    Playing
+};
+enum class MenuAction { None, Play, Versus, Online, Options, Quit };
+
+// How the match being set up will be driven. Chosen when the flow starts — a
+// menu button or a command-line flag — and read once the select screen
+// finishes, which is the only place the four modes differ.
+enum class SetupMode { Solo, LocalVersus, NetHost, NetClient };
 
 // One piece of startup work. The app opens straight into `Loading` and runs
 // exactly one step per frame, so the window stays responsive and the bar
@@ -59,6 +80,14 @@ struct SelectScreen {
     int shownLevel = 0;
     int pickedCharacter = -1;
     int pickedWeapon = -1;
+    // Who is picking and what for. `player` is 0-based and only reaches the
+    // titles (local versus runs this screen once per human); `mode` decides
+    // what the last click leads to, which is the one thing the hint line has
+    // to be honest about; `pickLevel` is false for whoever picks into a ground
+    // someone else already settled, making their blade the final click.
+    int player = 0;
+    SetupMode mode = SetupMode::Solo;
+    bool pickLevel = true;
 };
 
 // A completed pick, returned by drawCharacterSelect once the level (the last
@@ -156,6 +185,23 @@ void drawLoadingScreen(float fill, const char* label) {
     ImGui::End();
 }
 
+// Roster indices that arrived from outside this process — a replay file, a
+// netplay peer — get checked before they reach a table lookup.
+bool setupIsSane(const MatchSetup& s) {
+    if (s.level < 0 || s.level >= kLevelCount) {
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (s.chars[i] < 0 || s.chars[i] >= kCharacterCount) {
+            return false;
+        }
+        if (s.weapons[i] < 0 || s.weapons[i] >= kWeaponCount) {
+            return false;
+        }
+    }
+    return true;
+}
+
 MenuAction drawMainMenu() {
     MenuAction action = MenuAction::None;
 
@@ -183,6 +229,14 @@ MenuAction drawMainMenu() {
         action = MenuAction::Play;
     }
     ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Local Versus", {buttonWidth, 0.0f})) {
+        action = MenuAction::Versus;
+    }
+    ImGui::SetCursorPosX(buttonX);
+    if (ImGui::Button("Online", {buttonWidth, 0.0f})) {
+        action = MenuAction::Online;
+    }
+    ImGui::SetCursorPosX(buttonX);
     if (ImGui::Button("Options", {buttonWidth, 0.0f})) {
         action = MenuAction::Options;
     }
@@ -196,17 +250,146 @@ MenuAction drawMainMenu() {
     return action;
 }
 
+// Online setup: host on a port, or join an address. Kept deliberately plain —
+// this is a direct connection between two people who already arranged it, so
+// there is no lobby list to browse and nothing to match-make.
+struct NetScreen {
+    char port[16] = "7777";
+    char address[64] = "127.0.0.1:7777";
+    char steamId[24] = ""; // a friend's SteamID, when playing over Steam
+    char error[96] = "";   // last thing that went wrong, shown under the fields
+};
+
+struct NetSetupResult {
+    bool back = false;
+    bool host = false;
+    bool join = false;
+};
+
+// `steam` swaps the screen from addresses to people: over the relay there is
+// no port to forward and no IP to read out, only the SteamID a friend types in.
+NetSetupResult drawNetSetup(NetScreen& s, bool steam, unsigned long long selfId) {
+    NetSetupResult result;
+
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                            {0.5f, 0.5f});
+    ImGui::Begin("net-setup", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+
+    ImGui::PushFont(nullptr, 50.0f);
+    ImGui::TextUnformatted(steam ? "ONLINE - STEAM" : "ONLINE");
+    ImGui::PopFont();
+    ImGui::Dummy({0.0f, 6.0f});
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0f, 8.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {10.0f, 7.0f});
+    // "Friend ID" is wider at 22pt than the address labels, and would sit under
+    // the input box at the narrower column.
+    const float labelW = steam ? 140.0f : 120.0f;
+    const float fieldW = 250.0f;
+    const float contentW = labelW + fieldW;
+
+    auto row = [&](const char* label, const char* id, char* buf, std::size_t cap,
+                   const char* button) {
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::TextUnformatted(label);
+        ImGui::PopFont();
+        ImGui::SameLine(labelW);
+        ImGui::PushID(id);
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::SetNextItemWidth(fieldW);
+        ImGui::InputText("##field", buf, cap);
+        // Next line, aligned under the field — not SameLine, which would put
+        // the button on top of the box the player is typing in. Both this and
+        // SameLine's offset are measured from the window position rather than
+        // the content start, so the same labelW lines them up.
+        ImGui::SetCursorPosX(labelW);
+        const bool clicked = ImGui::Button(button, {fieldW, 0.0f});
+        ImGui::PopFont();
+        ImGui::PopID();
+        return clicked;
+    };
+
+    if (steam) {
+        // Nothing to type to host: your own ID *is* the address, and the
+        // friend joining is the one who types.
+        char mine[32];
+        std::snprintf(mine, sizeof mine, "%llu", selfId);
+        ImGui::PushFont(nullptr, 22.0f);
+        ImGui::TextUnformatted("Your ID");
+        ImGui::SameLine(labelW);
+        ImGui::TextUnformatted(selfId ? mine : "(Steam not running)");
+        ImGui::SetCursorPosX(labelW);
+        result.host = ImGui::Button("Host a Match", {fieldW, 0.0f});
+        ImGui::PopFont();
+        ImGui::Dummy({0.0f, 10.0f});
+        result.join =
+            row("Friend ID", "steamid", s.steamId, sizeof s.steamId, "Join a Match");
+    } else {
+        result.host = row("Port", "port", s.port, sizeof s.port, "Host a Match");
+        ImGui::Dummy({0.0f, 10.0f});
+        result.join =
+            row("Address", "address", s.address, sizeof s.address, "Join a Match");
+    }
+
+    ImGui::PopStyleVar(2);
+    ImGui::Dummy({0.0f, 10.0f});
+
+    // The hint line doubles as the error line: opening a socket is the thing
+    // that fails here, and it should fail where the field can still be fixed.
+    // Fixed-height, for the same reason drawOptions' footer is — the window is
+    // centered and auto-sized, so a three-line hint collapsing to a one-line
+    // error would jump the whole panel (and the Back button) up as you click.
+    const bool failed = s.error[0] != '\0';
+    ImGui::BeginChild("hint", {contentW, 64.0f}, ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{0.85f, 0.30f, 0.28f, 0.95f}
+                                                : ImVec4{0.91f, 0.87f, 0.80f, 0.65f});
+    ImGui::PushFont(nullptr, 17.0f);
+    ImGui::TextWrapped(
+        "%s", failed ? s.error
+              : steam ? "Over Steam's relay - no ports, no addresses. Read your "
+                        "ID out to a friend, or type in theirs. You both choose "
+                        "your own fighter."
+                      : "A direct connection - the same network, or a forwarded "
+                        "port. The host chooses the battleground; you both choose "
+                        "your own fighter.");
+    ImGui::PopFont();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+    ImGui::Dummy({0.0f, 8.0f});
+
+    ImGui::PushFont(nullptr, 26.0f);
+    if (ImGui::Button("Back", {contentW, 0.0f})) {
+        result.back = true;
+    }
+    ImGui::PopFont();
+
+    ImGui::End();
+    return result;
+}
+
 // Options sections, in tab order. One per `Settings` member — a new group of
 // settings is a struct there plus a tab here.
-enum class OptionsSection { Keybinds, Audio, Count };
+enum class OptionsSection { Controls1, Controls2, Audio, Count };
 constexpr int kOptionsSectionCount = static_cast<int>(OptionsSection::Count);
-constexpr const char* kSectionNames[kOptionsSectionCount] = {"Keybinds", "Audio"};
+constexpr const char* kSectionNames[kOptionsSectionCount] = {"Controls 1", "Controls 2",
+                                                             "Audio"};
+
+// The keybind set a section edits, or null for a section that isn't controls.
+Keybinds* sectionKeybinds(Settings& settings, OptionsSection s) {
+    if (s == OptionsSection::Controls1) return &settings.keybinds;
+    if (s == OptionsSection::Controls2) return &settings.keybinds2;
+    return nullptr;
+}
 
 // Options-screen state. `capturing` is the keybind row waiting for a control;
 // the two latches keep the clicks that open and close a capture from being read
 // as the binding itself (see drawOptions).
 struct OptionsScreen {
-    OptionsSection section = OptionsSection::Keybinds;
+    OptionsSection section = OptionsSection::Controls1;
     int capturing = -1;   // Action index, or -1 while just browsing
     bool armed = false;   // a capture accepts input only once everything is up
     bool swallow = false; // ignore button clicks until the controls are up
@@ -238,17 +421,23 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             // until every control has come up.
             s.armed = !anyDown;
         } else if (anyDown) {
+            Keybinds* edited = sectionKeybinds(settings, s.section);
             const Action a = static_cast<Action>(s.capturing);
-            const Bind previous = settings.keybinds[a];
+            const Bind previous = (*edited)[a];
             // A control that's already spoken for trades places with this row
             // instead of being refused: every action stays bound, so there's
-            // no unbound state to render, poll, or save.
-            for (Bind& b : settings.keybinds.binds) {
-                if (b == pressed) {
-                    b = previous;
+            // no unbound state to render, poll, or save. The sweep covers
+            // *both* sets, not just the one being edited — in a local versus
+            // they are live together, so a control shared across sets would
+            // move both fighters, and no amount of clicking could fix it.
+            for (Keybinds* set : {&settings.keybinds, &settings.keybinds2}) {
+                for (Bind& b : set->binds) {
+                    if (b == pressed) {
+                        b = previous;
+                    }
                 }
             }
-            settings.keybinds[a] = pressed;
+            (*edited)[a] = pressed;
             s.capturing = -1;
             s.swallow = true;
             result.save = true;
@@ -306,7 +495,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     // resize per section would jump the whole panel on every tab click.
     ImGui::BeginChild("section", {contentW, 392.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
-    if (s.section == OptionsSection::Keybinds) {
+    if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
         for (int i = 0; i < kActionCount; ++i) {
             const Action a = static_cast<Action>(i);
             ImGui::PushFont(nullptr, 22.0f);
@@ -321,8 +510,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             }
             ImGui::PushFont(nullptr, 22.0f);
             const bool clicked = ImGui::Button(
-                capturing ? "press a control" : bindName(settings.keybinds[a]),
-                {fieldW, 0.0f});
+                capturing ? "press a control" : bindName((*keys)[a]), {fieldW, 0.0f});
             ImGui::PopFont();
             if (capturing) {
                 ImGui::PopStyleColor();
@@ -402,7 +590,7 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
             }
         }();
         ImGui::TextWrapped("%s Defaults resets this section. Saved to %s",
-                           s.section == OptionsSection::Keybinds
+                           sectionKeybinds(settings, s.section)
                                ? "Click a control to rebind it."
                                : "Drag a level to set it - you hear it as it moves.",
                            pathLabel.c_str());
@@ -416,9 +604,27 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     // Section-scoped, so resetting the controls can't quietly move the volumes
     // (or the reverse) while the player is looking at the other tab.
     if (ImGui::Button("Defaults", {halfW, 0.0f}) && !s.swallow) {
-        if (s.section == OptionsSection::Keybinds) {
-            settings.keybinds = defaultKeybinds();
+        if (sectionKeybinds(settings, s.section)) {
+            if (s.section == OptionsSection::Controls1) {
+                settings.keybinds = defaultKeybinds();
+            } else {
+                settings.keybinds2 = defaultKeybinds2();
+            }
             s.capturing = -1;
+            // A section-scoped reset can re-claim a control the *other* set had
+            // been moved onto, and no click on this screen would untangle that.
+            // The two default sets are disjoint, so putting the other one back
+            // as well always lands somewhere valid.
+            bool clash = false;
+            for (const Bind& a : settings.keybinds.binds) {
+                for (const Bind& b : settings.keybinds2.binds) {
+                    clash = clash || a == b;
+                }
+            }
+            if (clash) {
+                settings.keybinds = defaultKeybinds();
+                settings.keybinds2 = defaultKeybinds2();
+            }
         } else {
             settings.audio = AudioSettings{};
             result.applyAudio = true;
@@ -506,7 +712,7 @@ bool drawSelectTile(const char* name, const glm::vec4& face, float tile,
 SelectResult drawCharacterSelect(SelectScreen& s) {
     SelectResult picked;
     const bool weaponStage = s.pickedCharacter >= 0 && s.pickedWeapon < 0;
-    const bool levelStage = s.pickedWeapon >= 0;
+    const bool levelStage = s.pickedWeapon >= 0 && s.pickLevel;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -515,10 +721,17 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
 
+    const char* stage = levelStage    ? "CHOOSE YOUR BATTLEGROUND"
+                        : weaponStage ? "CHOOSE YOUR BLADE"
+                                      : "CHOOSE YOUR FIGHTER";
     ImGui::PushFont(nullptr, 50.0f);
-    ImGui::TextUnformatted(levelStage    ? "CHOOSE YOUR BATTLEGROUND"
-                           : weaponStage ? "CHOOSE YOUR BLADE"
-                                         : "CHOOSE YOUR FIGHTER");
+    if (s.mode == SetupMode::LocalVersus) {
+        // Only local versus needs the number: it is the one mode where two
+        // people take turns at the same screen.
+        ImGui::Text("PLAYER %d - %s", s.player + 1, stage);
+    } else {
+        ImGui::TextUnformatted(stage);
+    }
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 6.0f});
 
@@ -552,6 +765,11 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
             ImGui::PushID(i);
             if (drawSelectTile(w.name, w.tileColor, tile, s.shownWeapon == i)) {
                 s.pickedWeapon = i;
+                if (!s.pickLevel) {
+                    // The ground is already settled (the other player chose
+                    // it), so the blade is this one's last click.
+                    picked = {s.pickedCharacter, i, -1};
+                }
             }
             ImGui::PopID();
             if (ImGui::IsItemHovered()) {
@@ -633,10 +851,26 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
     ImGui::Dummy({0.0f, 2.0f});
     ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.45f});
     ImGui::PushFont(nullptr, 17.0f);
-    ImGui::TextUnformatted(
-        levelStage    ? "Click a battleground to begin - your opponent is drawn at random"
-        : weaponStage ? "Click a blade to choose the battleground"
-                      : "Click a fighter to choose their blade");
+    // What the next click actually does, which differs per mode — a netplay
+    // host's opponent is not drawn at random, they are a person still picking.
+    const bool net =
+        s.mode == SetupMode::NetHost || s.mode == SetupMode::NetClient;
+    const char* hint;
+    if (levelStage) {
+        hint = s.mode == SetupMode::LocalVersus
+                   ? "Click a battleground to hand over to player 2"
+               : net ? "Click a battleground, then wait for your opponent"
+                     : "Click a battleground to begin - your opponent is drawn at random";
+    } else if (weaponStage) {
+        // A netplay peer that does not own the battleground finishes on the
+        // blade — either because it is joining, or because it won the last one.
+        hint = s.pickLevel ? "Click a blade to choose the battleground"
+               : net       ? "Click a blade, then wait for your opponent"
+                           : "Click a blade to enter the arena";
+    } else {
+        hint = "Click a fighter to choose their blade";
+    }
+    ImGui::TextUnformatted(hint);
     ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::EndChild();
@@ -681,11 +915,19 @@ void drawBloodBars(const Game& game) {
 
 // Post-match overlay, styled after the main menu. Shown once the kill has had
 // a moment to play out; Rematch reruns the same pairing with a fresh Game.
-enum class OverAction { None, Rematch, Select };
+enum class OverAction { None, Rematch, Select, Disconnect };
 
-OverAction drawWinOverlay(const Game& game) {
+// `localSlot` is the fighter this machine's player drives — 0 everywhere
+// except a netplay client, which drives fighter 2. Across a wire a rematch is
+// a request rather than a restart, so `asked` swaps the button for the wait.
+OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net,
+                          bool asked) {
     OverAction action = OverAction::None;
-    const char* title = game.winner() == 0 ? "VICTORY" : "SLAIN";
+    // Against the bot (or across a wire) the verdict is the reader's own; with
+    // two humans at one keyboard, "VICTORY" would be true for exactly one of
+    // the people looking at the screen.
+    const char* title = versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
+                               : (game.winner() == localSlot ? "VICTORY" : "SLAIN");
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -709,13 +951,41 @@ OverAction drawWinOverlay(const Game& game) {
     const float buttonX = ImGui::GetStyle().WindowPadding.x +
                           (std::max(titleWidth, buttonWidth) - buttonWidth) * 0.5f;
     ImGui::PushFont(nullptr, 30.0f);
-    ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
-        action = OverAction::Rematch;
-    }
-    ImGui::SetCursorPosX(buttonX);
-    if (ImGui::Button("Character Select", {buttonWidth, 0.0f})) {
-        action = OverAction::Select;
+    if (net) {
+        ImGui::SetCursorPosX(buttonX);
+        if (asked) {
+            // Asked and waiting: the other player has to want it too, so there
+            // is nothing to click but out.
+            ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+            ImGui::PushFont(nullptr, 22.0f);
+            ImGui::TextUnformatted("waiting for your opponent...");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+        } else {
+            if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+                action = OverAction::Rematch;
+            }
+            ImGui::SetCursorPosX(buttonX);
+            // Changing fighters keeps the connection: the alternative is
+            // disconnecting and redoing the whole host-and-join dance to swap
+            // a sword.
+            if (ImGui::Button("Change Fighters", {buttonWidth, 0.0f})) {
+                action = OverAction::Select;
+            }
+        }
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Disconnect", {buttonWidth, 0.0f})) {
+            action = OverAction::Disconnect;
+        }
+    } else {
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Rematch", {buttonWidth, 0.0f})) {
+            action = OverAction::Rematch;
+        }
+        ImGui::SetCursorPosX(buttonX);
+        if (ImGui::Button("Character Select", {buttonWidth, 0.0f})) {
+            action = OverAction::Select;
+        }
     }
     ImGui::PopFont();
 
@@ -723,24 +993,79 @@ OverAction drawWinOverlay(const Game& game) {
     return action;
 }
 
+// Netplay status line, over the arena. Drawn whenever the session isn't
+// quietly running, so a stall waiting on the opponent's input reads as what it
+// is rather than as the game having hung.
+void drawNetBanner(const Session& session) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = 24.0f;
+    const char* text = session.status();
+    const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
+    const ImVec2 at{(vp->Size.x - w) * 0.5f, vp->Size.y * 0.5f - 130.0f};
+    dl->AddRectFilled({at.x - 18.0f, at.y - 9.0f}, {at.x + w + 18.0f, at.y + size + 9.0f},
+                      IM_COL32(0, 0, 0, 150), 4.0f);
+    dl->AddText(font, size, at, IM_COL32(232, 222, 204, 230), text);
+}
+
+// Connection readout, top centre between the blood bars. The numbers existed
+// before this but only in a line printed at exit, which is no use at all to
+// the person wondering mid-match why their swings feel late — a link short of
+// buffer shows up as the whole fight running thick, and nothing on screen
+// said so. Colour carries the verdict; the numbers say why.
+void drawNetStatus(const Session& session) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = 17.0f;
+    const float rate = session.stallRate();
+
+    char text[96];
+    std::snprintf(text, sizeof text, "%.0f ms   delay %df%s", session.rttMs(),
+                  session.inputDelay(), rate > 0.25f ? "   STALLING" : "");
+
+    ImU32 color = IM_COL32(232, 222, 204, 130);      // fine
+    if (rate > 0.25f) {
+        color = IM_COL32(214, 44, 44, 235);          // the match is being held up
+    } else if (rate > 0.05f) {
+        color = IM_COL32(224, 176, 72, 200);         // ragged but playable
+    }
+    const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, text).x;
+    dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 24.0f}, color, text);
+}
+
+// While a Steam host waits, offer Steam's own friend picker. This is the
+// whole difference between reading a seventeen-digit number down the phone
+// and clicking a name.
+bool drawInviteButton(bool overlayRefused) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos({vp->Size.x * 0.5f, vp->Size.y * 0.5f + 30.0f},
+                            ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::Begin("invite", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PushFont(nullptr, 26.0f);
+    const bool clicked = ImGui::Button("Invite a Friend", {260.0f, 0.0f});
+    ImGui::PopFont();
+    if (overlayRefused) {
+        // Nothing visible happens when the overlay is off, so say so rather
+        // than let the button look broken.
+        ImGui::PushStyleColor(ImGuiCol_Text, {0.85f, 0.30f, 0.28f, 0.95f});
+        ImGui::PushFont(nullptr, 16.0f);
+        ImGui::TextWrapped("Steam's overlay is off - send them your ID instead.");
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+    }
+    ImGui::End();
+    return clicked;
+}
+
 void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
     model = glm::scale(model, size);
     renderer.drawBox(model, color);
-}
-
-// The held-state half of the player's controls; the attack edges are latched in
-// the main loop instead (they have to survive zero-step frames).
-PlayerInput readInput(GLFWwindow* window, const Keybinds& keys) {
-    PlayerInput in;
-    if (bindHeld(window, keys[Action::MoveLeft])) in.move.x -= 1.0f;
-    if (bindHeld(window, keys[Action::MoveRight])) in.move.x += 1.0f;
-    if (bindHeld(window, keys[Action::MoveAway])) in.move.y -= 1.0f;   // into the screen (-z)
-    if (bindHeld(window, keys[Action::MoveToward])) in.move.y += 1.0f; // toward the camera (+z)
-    in.jump = bindHeld(window, keys[Action::Jump]);
-    in.block = bindHeld(window, keys[Action::Block]);
-    in.crouch = bindHeld(window, keys[Action::Crouch]);
-    return in;
 }
 
 void drawScene(Renderer& renderer, const Game& game, float time) {
@@ -808,7 +1133,122 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // Developer flags, all three for the determinism harness (netplay/replay.hpp).
+    //   --record <file>  write every match played this run to <file>
+    //   --replay <file>  skip the menus, re-run the recorded match, check it
+    //   --auto           skip the menus, play a fixed pairing, quit when it ends
+    // And two for netplay (src/netplay/session.hpp), which is direct-IP only —
+    // LAN or a forwarded port, no NAT traversal:
+    //   --host <port>          pick a match as usual, then wait for an opponent
+    //   --join <host:port>     skip the menus, take the match the host sends
+    // Steam's relay is the default when it is available; these force the issue:
+    //   --steam                fail rather than quietly fall back to direct IP
+    //   --no-steam             direct IP even where Steam would work
+    //   --netsim <l[,j[,loss]]>  imitate a worse link (ms, ms, percent)
+    //   --delay <frames>       pin the input delay; default is to measure it
+    // --auto is what makes recording scriptable: nobody has to click through a
+    // select screen, and the bot supplies a whole match of hits, dismemberment
+    // and debris against a player who never moves.
+    //   bushido --record run.bsdr --auto   then   bushido --replay run.bsdr
+    const char* recordPath = nullptr;
+    const char* replayPath = nullptr;
+    const char* joinTarget = nullptr;
+    bool autoMatch = false;
+    bool netHost = false;
+    std::uint16_t hostPort = 0;
+    bool netSim = false;
+    bool steamForced = false;    // --steam: fail rather than fall back
+    bool steamRefused = false;   // --no-steam: direct IP even if Steam is there
+    std::uint64_t connectLobby = 0; // +connect_lobby: launched from an invite
+    SimulatedLink::Conditions simConditions;
+    int inputDelay = 0; // 0 = measure the link and choose; --delay pins it
+    for (int i = 1; i < argc; ++i) {
+        bool wantsArg = std::strcmp(argv[i], "--record") == 0 ||
+                        std::strcmp(argv[i], "--replay") == 0 ||
+                        std::strcmp(argv[i], "--host") == 0 ||
+                        std::strcmp(argv[i], "--netsim") == 0 ||
+                        std::strcmp(argv[i], "--delay") == 0 ||
+                        std::strcmp(argv[i], "--join") == 0;
+        if (wantsArg && i + 1 >= argc) {
+            std::fprintf(stderr, "%s needs an argument\n", argv[i]);
+            return 1;
+        }
+        if (std::strcmp(argv[i], "--record") == 0) {
+            recordPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--replay") == 0) {
+            replayPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--auto") == 0) {
+            autoMatch = true;
+        } else if (std::strcmp(argv[i], "--host") == 0) {
+            long port = std::strtol(argv[++i], nullptr, 10);
+            if (port <= 0 || port > 65535) {
+                std::fprintf(stderr, "--host needs a port between 1 and 65535\n");
+                return 1;
+            }
+            netHost = true;
+            hostPort = static_cast<std::uint16_t>(port);
+        } else if (std::strcmp(argv[i], "--join") == 0) {
+            joinTarget = argv[++i];
+        } else if (std::strcmp(argv[i], "--steam") == 0) {
+            steamForced = true;
+        } else if (std::strcmp(argv[i], "--no-steam") == 0) {
+            steamRefused = true;
+        } else if (std::strcmp(argv[i], "+connect_lobby") == 0 && i + 1 < argc) {
+            // Steam's own doing: this is how it launches a game that was not
+            // running when a friend's invite was accepted. The plus is theirs.
+            connectLobby = std::strtoull(argv[++i], nullptr, 10);
+        } else if (std::strcmp(argv[i], "--netsim") == 0) {
+            if (!parseConditions(argv[++i], simConditions)) {
+                std::fprintf(stderr, "--netsim wants latencyMs[,jitterMs[,loss%%]], "
+                                     "e.g. 40,8,1.5\n");
+                return 1;
+            }
+            netSim = true;
+        } else if (std::strcmp(argv[i], "--delay") == 0) {
+            long frames = std::strtol(argv[++i], nullptr, 10);
+            if (frames < 1 || frames > kMaxInputDelay) {
+                std::fprintf(stderr, "--delay wants 1..%d frames\n", kMaxInputDelay);
+                return 1;
+            }
+            inputDelay = static_cast<int>(frames);
+        } else {
+            std::fprintf(stderr, "unknown argument '%s'\n", argv[i]);
+            return 1;
+        }
+    }
+    if (recordPath && replayPath) {
+        std::fprintf(stderr, "--record and --replay are mutually exclusive\n");
+        return 1;
+    }
+    if (replayPath && autoMatch) {
+        std::fprintf(stderr, "--replay already runs one match and quits; drop --auto\n");
+        return 1;
+    }
+    if (netHost && joinTarget) {
+        std::fprintf(stderr, "--host and --join are mutually exclusive\n");
+        return 1;
+    }
+    if ((netHost || joinTarget) && replayPath) {
+        std::fprintf(stderr, "netplay cannot be combined with --replay\n");
+        return 1;
+    }
+    // --auto alongside netplay means "let the bot drive my fighter", which is
+    // sound rather than a hack: the bot is an input source like any other, its
+    // choices are scheduled and sent exactly as a human's would be, and the
+    // peer replays them without knowing the difference. It is also the only
+    // way to soak-test the protocol without two people.
+    // Resolved up front so a typo fails before a window opens.
+    std::string joinHost;
+    std::uint16_t joinPort = 0;
+    // Under --steam the target is a person, not an endpoint, so there is
+    // nothing here to resolve. Without it, --join means direct IP whether or
+    // not Steam is available, so the address has to parse.
+    if (joinTarget && !steamForced && !parseEndpoint(joinTarget, joinHost, joinPort)) {
+        std::fprintf(stderr, "--join wants host:port, e.g. 192.168.1.20:7777\n");
+        return 1;
+    }
+
     if (!glfwInit()) {
         std::fprintf(stderr, "glfwInit failed\n");
         return 1;
@@ -902,7 +1342,12 @@ int main() {
         loadTotal += s.weight;
     }
     float loadShown = 0.0f; // the drawn bar, easing toward loadDone/loadTotal
-    std::mt19937 rng{std::random_device{}()}; // opponent draw on the select screen
+    // Opponent draw on the select screen, and the seed handed to each new Bot.
+    // --auto is a fixture rather than a play session, so it seeds from a
+    // constant: two auto runs then play the identical match and their
+    // recordings compare byte for byte, which checks the whole pipeline from
+    // construction outward rather than just the replay of one run.
+    std::mt19937 rng{autoMatch ? 0x5eed0f21u : std::random_device{}()};
     // The current match's loadout — (character, weapon) roster indices per
     // player — kept outside Game so Rematch can rebuild the same pairing.
     int matchChars[2] = {0, 1};
@@ -910,24 +1355,123 @@ int main() {
     // The battleground index rides beside the loadout so Rematch keeps the
     // arena; Game bakes it in at construction (scenery + obstacle colliders).
     int matchLevel = 0;
-
+    // Who drives each fighter. Rides with the loadout for the same reason —
+    // Rematch keeps it — and is the one place a local-versus or netplay match
+    // would differ from this one.
+    InputSource matchSources[2] = {InputSource::Local0, InputSource::Bot};
+    // Netplay. The transport is a plain UDP socket; the session is the
+    // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless
+    // --host or --join was passed.
+    // Declared here rather than beside the accumulator because the netplay
+    // session needs it too — it is what turns a round trip in milliseconds
+    // into an input delay in frames.
     constexpr float kFixedDt = 1.0f / 120.0f;
+
+    UdpTransport transport;
+    SteamTransport steamTransport;
+    SteamLobby steamLobby;
+    // Steam's relay is the default now that it has carried a real match: it
+    // needs no port forwarded and addresses a person rather than a machine.
+    // Three things fall back to direct IP — --no-steam, a build without the
+    // SDK, or a Steam client that is not running — and none of them is an
+    // error. Giving --host or --join *without* --steam also means direct IP,
+    // since a port and an address are not things Steam has.
+    const bool wantDirect =
+        steamRefused || ((netHost || joinTarget) && !steamForced);
+    bool steamMode = false;
+    if (!wantDirect) {
+        if (!SteamTransport::available()) {
+            if (steamForced) {
+                std::fprintf(stderr, "--steam, but this build has no Steam support: "
+                                     "configure with -DSTEAM_SDK_DIR=<sdk path>\n");
+                glfwDestroyWindow(window);
+                glfwTerminate();
+                return 1;
+            }
+        } else if (steamTransport.start()) {
+            steamMode = true;
+        } else if (steamForced) {
+            std::fprintf(stderr, "--steam, but Steam did not answer: is the client "
+                                 "running, and is steam_appid.txt in the working "
+                                 "directory?\n");
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        } else {
+            std::fprintf(stderr, "steam: not running - Online will use direct IP\n");
+        }
+    }
+    Transport& baseLink =
+        steamMode ? static_cast<Transport&>(steamTransport) : transport;
+    // --netsim slips a deliberately worse link in front of whichever it is. The
+    // session only ever sees a Transport, which is the point of the interface.
+    std::unique_ptr<SimulatedLink> simLink;
+    if (netSim) {
+        simLink = std::make_unique<SimulatedLink>(baseLink, simConditions, 0xa17e51u);
+    }
+    Transport* netLink = simLink ? static_cast<Transport*>(simLink.get()) : &baseLink;
+    Session session;
+    // Local versus sets a match up in two passes — one human picks, hands the
+    // keyboard over, the other picks — so the flow has to remember which of
+    // them is at the screen and whether a second pass is still owed.
+    SetupMode setupMode = SetupMode::Solo;
+    int selectingPlayer = 0;
+    NetScreen netScreen;
+    // True while a select screen is re-picking into an *existing* session
+    // rather than setting one up, which is the difference between submitting a
+    // loadout over the wire and opening a fresh handshake.
+    bool netReselect = false;
+    // Whether this peer's battleground pick is the one that counts next match.
+    bool netOwnsLevel = false;
+    bool lobbyJoinPending = false; // asked to enter a lobby, waiting on Steam
+    bool overlayRefused = false;   // the invite dialog would not open
+    // Opens one pass of the select screen. `chooseLevel` is false for whoever
+    // picks second into a ground someone else already settled: local versus's
+    // player 2, and a netplay client, whose host owns the battleground. Their
+    // blade click is therefore the one that ends the pass.
+    auto beginSelect = [&](SetupMode mode, int player, bool chooseLevel) {
+        setupMode = mode;
+        selectingPlayer = player;
+        select = SelectScreen{};
+        select.mode = mode;
+        select.player = player;
+        select.pickLevel = chooseLevel;
+    };
+    // Hands this machine's own half of the match to the session. The other
+    // half arrives over the handshake — the host learns the client's fighter
+    // from its Hello, the client learns the whole match from the Welcome — so
+    // neither player has a fighter chosen for them.
+    auto beginNetSession = [&](Session::Role role) {
+        MatchSetup mine;
+        for (int i = 0; i < 2; ++i) {
+            mine.chars[i] = matchChars[i];
+            mine.weapons[i] = matchWeapons[i];
+        }
+        mine.level = matchLevel;
+        session.start(netLink, role, mine, inputDelay, kFixedDt);
+    };
+
     float accumulator = 0.0f;
     float elapsed = 0.0f;
     auto lastTime = std::chrono::steady_clock::now();
-    // Attack inputs are edge-detected per render frame but consumed by fixed
-    // steps; latch them so a press landing on a zero-step frame is not lost.
-    // The attack control fires on *release* — a tap is the normal swing, a
-    // hold past kHeavyHoldTime charges the heavy — so both share one control.
-    // The jab control fires on press.
-    constexpr float kHeavyHoldTime = 0.28f; // s of hold that makes it a heavy
-    bool attackHeld = false;
-    bool jabHeld = false;
-    bool attackSuppressed = false; // ignore the release of a pre-match click
-    float attackHoldTime = 0.0f;
-    bool attackPending = false;
-    AttackKind pendingKind = AttackKind::Light;
+    // One latch per local control set (see input.hpp): the held controls are
+    // read per render frame, the attack edges wait here for a fixed step.
+    LocalInput localInputs[2];
+    // Which control set a local slot reads: [keybinds] and [keybinds_p2] from
+    // the config, kept disjoint by the options screen since in a versus both
+    // are live at once.
+    auto localKeys = [&](int slot) -> const Keybinds& {
+        return slot == 0 ? settings.keybinds : settings.keybinds2;
+    };
     bool escHeld = false;
+
+    // The determinism harness (--record / --replay). Both are inert unless the
+    // matching flag was passed. Replaying drives the sim from the log instead
+    // of from matchSources, and checks the sim's checksum every step.
+    Recorder recorder;
+    Replayer replayer;
+    bool desynced = false;
+    bool warnedLossy = false;
 
     // Fresh match from matchChars. Seeding the button latches from the live
     // state keeps the click that started the match from reading as an attack:
@@ -940,13 +1484,27 @@ int main() {
         audio.loadMusic(levelMusic(matchLevel));
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1], matchLevel);
-        bot = Bot{1, rng()}; // fresh brain (and rng stream) each match
         state = AppState::Playing;
-        attackHeld = bindHeld(window, settings.keybinds[Action::Attack]);
-        jabHeld = bindHeld(window, settings.keybinds[Action::Jab]);
-        attackSuppressed = attackHeld;
-        attackHoldTime = 0.0f;
-        attackPending = false;
+        for (int i = 0; i < 2; ++i) {
+            if (matchSources[i] == InputSource::Bot) {
+                bot = Bot{i, rng()}; // fresh brain (and rng stream) each match
+            }
+            int slot = localSlot(matchSources[i]);
+            if (slot >= 0) {
+                localInputs[slot].beginMatch(window, localKeys(slot));
+            }
+        }
+        // A recording covers one match; starting another (or a rematch)
+        // replaces it, so what's on disk is always the match just played.
+        if (recordPath) {
+            MatchSetup setup;
+            for (int i = 0; i < 2; ++i) {
+                setup.chars[i] = matchChars[i];
+                setup.weapons[i] = matchWeapons[i];
+            }
+            setup.level = matchLevel;
+            recorder.open(recordPath, setup);
+        }
     };
 
     while (!glfwWindowShouldClose(window)) {
@@ -967,6 +1525,10 @@ int main() {
             } else if (state == AppState::CharacterSelect && select.pickedCharacter >= 0) {
                 select.pickedCharacter = -1;
             } else if (state != AppState::Menu) {
+                // Backing out of a netplay match drops the connection: the
+                // peer's timeout is what tells them, since there is nothing
+                // useful to say once this side has stopped stepping.
+                session.stop();
                 state = AppState::Menu;
             } else {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -1001,56 +1563,338 @@ int main() {
                 loadDone += loadSteps[loadStep].weight;
                 ++loadStep;
             } else if (loadShown > 0.995f) {
-                state = AppState::Menu;
+                // --replay skips the front end: the log names the match, so
+                // there is nothing left to pick.
+                const bool netFlag = netHost || joinTarget;
+                // Same two shortcuts either way; over Steam --join names a
+                // person, which is what the two-machine test will use.
+                const bool socketOpen =
+                    !netFlag ? true
+                    : steamMode
+                        ? (netHost ? steamTransport.listen()
+                                   : steamTransport.connectTo(
+                                         std::strtoull(joinTarget, nullptr, 10)))
+                        : (joinTarget ? transport.join(joinHost.c_str(), joinPort)
+                                      : transport.host(hostPort));
+                if (netFlag && !socketOpen) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
+                } else if (netFlag && autoMatch) {
+                    // Hands-off netplay soak run: nobody picks, so the pairing
+                    // is the fixture's and the bot drives this side.
+                    matchLevel = kLevelCount > 1 ? 1 : 0;
+                    beginNetSession(netHost ? Session::Role::Host
+                                            : Session::Role::Client);
+                    state = AppState::NetWait;
+                } else if (netFlag) {
+                    // The flags are a shortcut past the Online screen, not past
+                    // the picking — both players still choose their own fighter.
+                    beginSelect(netHost ? SetupMode::NetHost : SetupMode::NetClient,
+                                netHost ? 0 : 1, netHost);
+                    state = AppState::CharacterSelect;
+                } else if (!replayPath && autoMatch) {
+                    // Nobody picks, so the pairing is fixed. Hanami rather
+                    // than Dojo: carved ground, solid stones and water mean
+                    // strictly more physics for two runs to disagree about.
+                    matchLevel = kLevelCount > 1 ? 1 : 0;
+                    startMatch();
+                } else if (!replayPath) {
+                    state = AppState::Menu;
+                } else if (!replayer.open(replayPath)) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
+                } else {
+                    const MatchSetup& setup = replayer.setup();
+                    if (!setupIsSane(setup)) {
+                        std::fprintf(stderr,
+                                     "replay: setup names a fighter, blade or "
+                                     "battleground this build does not have\n");
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    } else {
+                        for (int i = 0; i < 2; ++i) {
+                            matchChars[i] = setup.chars[i];
+                            matchWeapons[i] = setup.weapons[i];
+                        }
+                        matchLevel = setup.level;
+                        startMatch();
+                    }
+                }
             }
             continue; // nothing below this exists yet
         }
 
-        if (state == AppState::Playing) {
-            PlayerInput inputs[2] = {
-                readInput(window, settings.keybinds),
-                {}, // player 2 is the bot, filled per fixed step below
-            };
+        // Netplay runs on the render frame, not the fixed step: packets have to
+        // keep flowing during a stall — ours are exactly what the peer is
+        // waiting for — and a stall means no fixed step runs at all.
+        // Steam's callbacks only fire from RunCallbacks, and one of them is how
+        // a host learns someone is calling — so it ticks from the moment the
+        // Online screen is up, not just once a session exists.
+        if (steamMode) {
+            steamTransport.pump(); // also drives the lobby's callbacks
 
-            // Attack: light on a tap's release, heavy on a long hold's release.
-            bool attack = bindHeld(window, settings.keybinds[Action::Attack]);
-            if (attack && !attackHeld) {
-                attackHoldTime = 0.0f; // fresh press: start the charge clock
+            // A friend's invite arrives one of two ways: Steam launched us
+            // with +connect_lobby because the game was closed, or it told us
+            // mid-session because it was not. Both land here.
+            std::uint64_t invited = 0;
+            if (connectLobby) {
+                invited = connectLobby;
+                connectLobby = 0;
+            } else {
+                steamLobby.takeJoinRequest(invited);
             }
-            if (attack) {
-                attackHoldTime += frameTime;
-            } else if (attackHeld) { // release edge
-                if (attackSuppressed) {
-                    attackSuppressed = false; // the click that started the match
-                } else if (!attackPending) {
-                    pendingKind = attackHoldTime >= kHeavyHoldTime ? AttackKind::Heavy
-                                                                  : AttackKind::Light;
-                    attackPending = true;
+            if (invited) {
+                session.stop(); // whatever we were doing, this supersedes it
+                steamLobby.leave();
+                steamLobby.join(invited);
+                lobbyJoinPending = true;
+                netScreen.error[0] = '\0';
+                state = AppState::NetSetup;
+            }
+
+            // The lobby answered. Its owner is the host, so the joiner is the
+            // one who connects; the host only ever had to listen.
+            if (lobbyJoinPending) {
+                if (steamLobby.state() == SteamLobby::State::Joined) {
+                    lobbyJoinPending = false;
+                    if (steamTransport.connectTo(steamLobby.peerId())) {
+                        beginSelect(SetupMode::NetClient, 1, false);
+                        state = AppState::CharacterSelect;
+                    }
+                } else if (steamLobby.state() == SteamLobby::State::Failed) {
+                    lobbyJoinPending = false;
+                    std::snprintf(netScreen.error, sizeof netScreen.error, "%s",
+                                  steamLobby.status());
                 }
             }
-            attackHeld = attack;
+        }
 
-            // Jab on press.
-            bool jab = bindHeld(window, settings.keybinds[Action::Jab]);
-            if (jab && !jabHeld && !attackPending) {
-                pendingKind = AttackKind::Jab;
-                attackPending = true;
+        if (session.active()) {
+            if (simLink) {
+                simLink->advance(frameTime); // nothing is released until it ticks
             }
-            jabHeld = jab;
+            session.pump(frameTime);
+        }
 
-            inputs[0].attack = attackPending;
-            inputs[0].attackKind = pendingKind;
+        // The handshake landed: the host's match description is in hand, so
+        // this machine can finally build the same Game the host did.
+        // Re-picking into a live session: both halves are in when each peer has
+        // said it is ready — or when the peer has already rolled forward, which
+        // is the same race the rematch flag has and is closed the same way.
+        if (state == AppState::NetWait && netReselect &&
+            (session.loadoutsExchanged() ||
+             session.agreedIntent() == Session::Intent::Rematch)) {
+            netReselect = false;
+            session.beginRematch(); // merges their half in, rolls the match on
+            const MatchSetup& merged = session.setup();
+            if (!setupIsSane(merged)) {
+                std::fprintf(stderr, "net: the opponent picked a fighter, blade or "
+                                     "battleground this build does not have\n");
+                session.stop();
+                state = AppState::Menu;
+            } else {
+                for (int i = 0; i < 2; ++i) {
+                    matchChars[i] = merged.chars[i];
+                    matchWeapons[i] = merged.weapons[i];
+                }
+                matchLevel = merged.level;
+                startMatch();
+            }
+        }
+
+        if (state == AppState::NetWait && !netReselect &&
+            session.state() == Session::State::Running) {
+            const MatchSetup& setup = session.setup();
+            if (!setupIsSane(setup)) {
+                // Both roles check: a client is trusting the host's whole
+                // match, and a host is trusting the fighter the client sent.
+                std::fprintf(stderr, "net: the opponent named a fighter, blade or "
+                                     "battleground this build does not have\n");
+                session.stop();
+                state = AppState::Menu;
+            } else {
+                for (int i = 0; i < 2; ++i) {
+                    matchChars[i] = setup.chars[i];
+                    matchWeapons[i] = setup.weapons[i];
+                }
+                matchLevel = setup.level;
+                // Whichever fighter this machine owns is driven from here — by
+                // the local player-1 controls, since a client has only its own
+                // keyboard — and the other one comes off the wire.
+                const int mine = session.localSlot();
+                matchSources[mine] =
+                    autoMatch ? InputSource::Bot : InputSource::Local0;
+                matchSources[1 - mine] = InputSource::Remote;
+                startMatch();
+            }
+        }
+
+        // Both peers reached agreement on a rematch — independently, from the
+        // same two flags — so each rolls its own session onto the next match
+        // and rebuilds the same fresh Game. They need not do it on the same
+        // frame: lockstep resynchronises at frame 0 of the new match the same
+        // way it did at the start of the first one.
+        if (state == AppState::Playing && session.active()) {
+            const Session::Intent agreed = session.agreedIntent();
+            if (agreed == Session::Intent::Rematch) {
+                session.beginRematch();
+                startMatch();
+            } else if (agreed == Session::Intent::Reselect) {
+                netReselect = true;
+                // The loser names the next battleground. Both peers work that
+                // out from the same winner(), so they agree without a word
+                // about it, and it stops the host owning the ground forever.
+                const int mine = session.localSlot();
+                netOwnsLevel =
+                    game->winner() >= 0 ? game->winner() != mine : mine == 0;
+                if (autoMatch) {
+                    // Nobody at this keyboard to pick again: keep the fighter
+                    // and let the human on the other end change theirs.
+                    session.submitLoadout(matchChars[mine], matchWeapons[mine],
+                                          matchLevel, netOwnsLevel);
+                    state = AppState::NetWait;
+                } else {
+                    // Back to the select screen with the connection intact —
+                    // the new picks travel over the live session, so nobody
+                    // re-hosts or re-joins to swap a sword.
+                    beginSelect(mine == 0 ? SetupMode::NetHost : SetupMode::NetClient,
+                                mine, netOwnsLevel);
+                    state = AppState::CharacterSelect;
+                }
+            }
+        }
+
+        if (state == AppState::Playing) {
+            // Local controls are read once per render frame — the attack edges
+            // live on the latch until a step takes them.
+            for (int i = 0; i < 2; ++i) {
+                int slot = localSlot(matchSources[i]);
+                if (slot >= 0) {
+                    localInputs[slot].poll(window, localKeys(slot), frameTime);
+                }
+            }
+
+            // One slot's input for one step. The bot is asked per step rather
+            // than per frame because it reads sim state the last step moved.
+            auto stepInput = [&](int i) -> PlayerInput {
+                switch (matchSources[i]) {
+                case InputSource::Local0:
+                case InputSource::Local1:
+                    return localInputs[localSlot(matchSources[i])].current();
+                case InputSource::Bot:
+                    // Once the match is decided the bot stands down; the human
+                    // keeps control (walking off — or desecrating the corpse).
+                    return game->over() ? PlayerInput{} : bot.think(*game, kFixedDt);
+                case InputSource::Remote:
+                    break; // no peer yet: the fighter stands still
+                }
+                return PlayerInput{};
+            };
 
             accumulator += std::min(frameTime, 0.25f); // avoid spiral of death on stalls
 
             while (accumulator >= kFixedDt) {
-                // Once the match is decided the bot stands down; the human
-                // keeps control (walking off — or desecrating the corpse).
-                inputs[1] = game->over() ? PlayerInput{} : bot.think(*game, kFixedDt);
+                PlayerInput inputs[2];
+                std::uint32_t expected = 0;
+                bool checked = false;
+                if (replayer.active()) {
+                    // Replaying: the log is the only input source, and every
+                    // step is checked against the state the recording had.
+                    if (!replayer.next(inputs, expected)) {
+                        if (!desynced) {
+                            std::fprintf(stderr,
+                                         "replay: %lld steps replayed, no desync\n",
+                                         static_cast<long long>(replayer.frame()));
+                        }
+                        replayer.close();
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                        break;
+                    }
+                    checked = true;
+                } else if (session.active()) {
+                    // Lockstep: this machine's sample goes in, both fighters'
+                    // inputs for this frame come out — or nothing does, and
+                    // neither machine moves until the opponent's arrives.
+                    if (!session.nextStep(stepInput(session.localSlot()), inputs)) {
+                        break;
+                    }
+                } else {
+                    inputs[0] = stepInput(0);
+                    inputs[1] = stepInput(1);
+                }
+
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
-                attackPending = false;
-                inputs[0].attack = false;
+                for (int i = 0; i < 2; ++i) {
+                    int slot = localSlot(matchSources[i]);
+                    if (slot >= 0) {
+                        localInputs[slot].consumeAttack();
+                    }
+                }
+
+                // Only walked when the harness or a peer needs it; an offline
+                // match never pays for the hash.
+                if (checked || recorder.active() || session.active()) {
+                    // A source emitting something the wire format can't carry
+                    // would have the sim play one input and the log keep
+                    // another — a desync with no cause anywhere near where it
+                    // surfaces. Said once, at the step that does it.
+                    for (int i = 0; i < 2 && !warnedLossy; ++i) {
+                        if (!(unpackInput(packInput(inputs[i])) == inputs[i])) {
+                            warnedLossy = true;
+                            std::fprintf(stderr,
+                                         "replay: player %d's input does not survive "
+                                         "packInput — quantize it at the source "
+                                         "(quantizeAxis, input.hpp)\n",
+                                         i);
+                        }
+                    }
+                    std::uint32_t sum = game->checksum();
+                    if (checked && sum != expected && !desynced) {
+                        // First mismatch only. Everything after it is
+                        // downstream of the same divergence and would bury it.
+                        desynced = true;
+                        dumpDesync(*game, replayer.frame(), expected, sum);
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    }
+                    recorder.step(packInput(inputs[0]), packInput(inputs[1]), sum);
+                    if (session.active()) {
+                        session.stepped(sum); // the peer compares it against theirs
+                    }
+                }
+
+                // Offline --auto stops on an exact step. Checking after the
+                // loop instead would end the run wherever the last render
+                // frame happened to land, so a recording's length — and its
+                // hash — would wobble by a step between runs, which is a
+                // regression check that cries wolf.
+                if (autoMatch && !session.active() && game->over() &&
+                    game->overTime() > 2.0f) {
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                    break;
+                }
+            }
+
+            // A stall must not bank time. Without this the accumulator grows
+            // for the whole wait and then sprints through the backlog the
+            // instant the opponent's input lands: a few frames of catch-up is
+            // recovery, a second of it is a teleport.
+            if (session.active()) {
+                accumulator = std::min(accumulator, kFixedDt * 8.0f);
+            }
+
+            // In a netplay session --auto asks for another round rather than
+            // leaving: quitting would strand a peer who wanted a rematch, and
+            // an endless run of matches is the more useful shape for the thing
+            // --auto exists to do. (The offline case ends inside the step loop
+            // above, where it can stop on an exact frame.)
+            if (autoMatch && session.active() && game->over() &&
+                game->overTime() > 2.0f) {
+                // A bot peer goes along with whatever the human asked for, so
+                // one driven window is enough to exercise either agreement.
+                const Session::Intent theirs = session.peerRequested();
+                if (theirs != Session::Intent::None) {
+                    session.request(theirs);
+                } else if (session.requested() == Session::Intent::None) {
+                    session.request(Session::Intent::Rematch);
+                }
             }
         } else {
             accumulator = 0.0f; // the sim freezes while the menu is up
@@ -1083,7 +1927,9 @@ int main() {
         MenuAction action = MenuAction::None;
         OverAction overAction = OverAction::None;
         OptionsResult optionsResult;
+        NetSetupResult netResult;
         SelectResult picked;
+        bool inviteClicked = false;
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
             drawScene(renderer, *game, elapsed);
@@ -1091,21 +1937,45 @@ int main() {
                 action = drawMainMenu();
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
+            } else if (state == AppState::NetSetup) {
+                netResult = drawNetSetup(netScreen, steamMode, steamTransport.selfId());
             } else if (state == AppState::CharacterSelect) {
                 picked = drawCharacterSelect(select);
+            } else if (state == AppState::NetWait) {
+                drawNetBanner(session); // the only thing on screen before a match
+                if (steamMode && steamLobby.state() == SteamLobby::State::Hosting) {
+                    inviteClicked = drawInviteButton(overlayRefused);
+                }
             } else {
                 drawBloodBars(*game);
+                if (session.active()) {
+                    drawNetStatus(session);
+                    if (session.waiting()) {
+                        drawNetBanner(session);
+                    }
+                }
                 // Give the killing blow a beat to land before the overlay.
-                if (game->over() && game->overTime() > 1.2f) {
-                    overAction = drawWinOverlay(*game);
+                // Not while replaying: Rematch would rebuild the Game out from
+                // under the log and report a desync that is purely the click's.
+                if (!replayer.active() && game->over() && game->overTime() > 1.2f) {
+                    overAction = drawWinOverlay(
+                        *game, matchSources[1] == InputSource::Local1,
+                        session.active() ? session.localSlot() : 0, session.active(),
+                        session.requested() != Session::Intent::None);
                 }
             }
             renderer.endFrame();
         }
 
         if (action == MenuAction::Play) {
+            beginSelect(SetupMode::Solo, 0, true);
             state = AppState::CharacterSelect;
-            select = SelectScreen{};
+        } else if (action == MenuAction::Versus) {
+            beginSelect(SetupMode::LocalVersus, 0, true);
+            state = AppState::CharacterSelect;
+        } else if (action == MenuAction::Online) {
+            netScreen.error[0] = '\0';
+            state = AppState::NetSetup;
         } else if (action == MenuAction::Options) {
             state = AppState::Options;
             options = OptionsScreen{};
@@ -1130,25 +2000,145 @@ int main() {
             state = AppState::Menu;
         }
 
+        if (inviteClicked && !steamLobby.openInviteOverlay()) {
+            overlayRefused = true; // the button would otherwise look broken
+        }
+
+        // Online setup. Opening the socket is the thing that can fail, and it
+        // fails here where the player can still fix the field, rather than
+        // after they have gone and picked a fighter.
+        if (netResult.back) {
+            state = AppState::Menu;
+        } else if (netResult.host || netResult.join) {
+            netScreen.error[0] = '\0';
+            bool ready = false;
+            if (steamMode) {
+                // Over the relay there is nothing to bind and nothing to
+                // resolve: hosting is just agreeing to answer, and joining is
+                // naming a person.
+                if (netResult.host) {
+                    ready = steamTransport.listen();
+                    if (ready) {
+                        // Asynchronous; the wait screen offers the invite once
+                        // Steam answers. Hosting works without it either way —
+                        // the ID is still on the previous screen.
+                        steamLobby.host();
+                    }
+                } else {
+                    char* end = nullptr;
+                    unsigned long long id =
+                        std::strtoull(netScreen.steamId, &end, 10);
+                    if (!end || *end != '\0' || id == 0ull) {
+                        std::snprintf(netScreen.error, sizeof netScreen.error,
+                                      "\"%s\" is not a SteamID - it is 17 digits.",
+                                      netScreen.steamId);
+                    } else {
+                        ready = steamTransport.connectTo(id);
+                    }
+                }
+                if (!ready && netScreen.error[0] == '\0') {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Steam is not ready.");
+                }
+            } else if (netResult.host) {
+                long port = std::strtol(netScreen.port, nullptr, 10);
+                if (port <= 0 || port > 65535) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "\"%s\" is not a port number.", netScreen.port);
+                } else if (!transport.host(static_cast<std::uint16_t>(port))) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Could not listen on port %ld - already in use?",
+                                  port);
+                } else {
+                    ready = true;
+                }
+            } else {
+                std::string h;
+                std::uint16_t p = 0;
+                if (!parseEndpoint(netScreen.address, h, p)) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "\"%s\" should look like 192.168.1.20:7777.",
+                                  netScreen.address);
+                } else if (!transport.join(h.c_str(), p)) {
+                    std::snprintf(netScreen.error, sizeof netScreen.error,
+                                  "Could not resolve \"%s\".", h.c_str());
+                } else {
+                    ready = true;
+                }
+            }
+            if (ready) {
+                // The host picks a fighter and the ground; the client picks a
+                // fighter into the ground the host is about to name.
+                const bool hosting = netResult.host;
+                beginSelect(hosting ? SetupMode::NetHost : SetupMode::NetClient,
+                            hosting ? 0 : 1, hosting);
+                state = AppState::CharacterSelect;
+            }
+        }
+
         if (picked.character >= 0) {
-            matchChars[0] = picked.character;
-            matchWeapons[0] = picked.weapon;
-            matchLevel = picked.level;
-            matchChars[1] =
-                std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
-            matchWeapons[1] =
-                std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
-            startMatch();
+            matchChars[selectingPlayer] = picked.character;
+            matchWeapons[selectingPlayer] = picked.weapon;
+            if (picked.level >= 0) {
+                matchLevel = picked.level; // -1 when the ground was already set
+            }
+            if (setupMode == SetupMode::LocalVersus && selectingPlayer == 0) {
+                beginSelect(SetupMode::LocalVersus, 1, false); // hand the keyboard over
+            } else if (setupMode == SetupMode::Solo) {
+                // One human, one bot: the opponent is drawn rather than picked.
+                matchChars[1] =
+                    std::uniform_int_distribution<int>{0, kCharacterCount - 1}(rng);
+                matchWeapons[1] =
+                    std::uniform_int_distribution<int>{0, kWeaponCount - 1}(rng);
+                matchSources[0] = InputSource::Local0;
+                matchSources[1] = InputSource::Bot;
+                startMatch();
+            } else if (setupMode == SetupMode::LocalVersus) {
+                matchSources[0] = InputSource::Local0;
+                matchSources[1] = InputSource::Local1;
+                startMatch();
+            } else if (netReselect) {
+                // Re-picking mid-session: the connection is already up, so the
+                // pick goes straight down it rather than through a handshake.
+                session.submitLoadout(matchChars[selectingPlayer],
+                                      matchWeapons[selectingPlayer], matchLevel,
+                                      netOwnsLevel);
+                state = AppState::NetWait;
+            } else {
+                // Netplay: this half of the match goes to the session, and the
+                // arena waits on the handshake for the other half.
+                beginNetSession(setupMode == SetupMode::NetHost ? Session::Role::Host
+                                                                : Session::Role::Client);
+                state = AppState::NetWait;
+            }
         }
 
         if (overAction == OverAction::Rematch) {
-            startMatch();
+            // Offline it happens now; across a wire it is a request, and the
+            // restart lands for both peers when the other agrees.
+            if (session.active()) {
+                session.request(Session::Intent::Rematch);
+            } else {
+                startMatch();
+            }
         } else if (overAction == OverAction::Select) {
-            state = AppState::CharacterSelect;
-            select = SelectScreen{};
+            if (session.active()) {
+                session.request(Session::Intent::Reselect); // also has to be agreed
+            } else {
+                beginSelect(setupMode, 0, true);
+                state = AppState::CharacterSelect;
+            }
+        } else if (overAction == OverAction::Disconnect) {
+            session.stop();
+            state = AppState::Menu;
         }
     }
 
+    session.stop(); // reports the frame and stall counts on the way out
+    if (simLink && simLink->dropped() > 0) {
+        std::fprintf(stderr, "net: the simulated link dropped %lld datagrams\n",
+                     static_cast<long long>(simLink->dropped()));
+    }
     renderer.shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();

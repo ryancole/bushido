@@ -72,6 +72,19 @@ public:
     // Current world transform of a debris body, for rendering.
     glm::mat4 debrisTransform(int id) const;
 
+    // Raw state of every debris body, in creation order, for a determinism
+    // checksum. Debris is not merely cosmetic: a piece landing one step late
+    // changes the debrisImpacts() stream, which Game turns into blood marks —
+    // advancing its rng — so the rigid-body world sits inside the determinism
+    // boundary whether or not a limb ever decides a fight.
+    struct DebrisState {
+        glm::vec3 pos;
+        glm::vec4 rot; // orientation quaternion (x, y, z, w)
+        glm::vec3 vel;
+        glm::vec3 angVel;
+    };
+    void debrisStates(std::vector<DebrisState>& out) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
