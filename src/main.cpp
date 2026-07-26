@@ -26,6 +26,7 @@
 #include "config.hpp"
 #include "game.hpp"
 #include "input.hpp"
+#include "intro.hpp"
 #include "levels/level.hpp"
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
@@ -41,6 +42,7 @@ namespace {
 
 enum class AppState {
     Loading,
+    Title, // the attract-mode sequence, once, on the way to the menu
     Menu,
     Options,
     NetSetup, // host-or-join, before anyone picks a fighter
@@ -1393,6 +1395,12 @@ int main(int argc, char** argv) {
     std::unique_ptr<Game> game;
     Bot bot; // drives player 2; re-seeded per match
     FramingCamera camera;
+    // The two arcade sequences (src/intro.hpp). The title one plays once, over
+    // the diorama, between the loading screen and the menu; the versus one
+    // plays at the head of every match a person is about to play — never under
+    // --auto or --replay, which want the fixture to start on step 0.
+    TitleIntro titleIntro;
+    VersusIntro versusIntro;
     std::uint32_t sfxSeed = 0xb0051d0u; // pitch-jitter rng
     AppState state = AppState::Loading;
     SelectScreen select;
@@ -1628,6 +1636,14 @@ int main(int argc, char** argv) {
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1], matchLevel);
         state = AppState::Playing;
+        // The versus screen runs inside Playing and holds the sim for its first
+        // couple of seconds, which for a netplay peer is an ordinary stall.
+        // Not for the harness, though: --auto is a fixture and --replay is a
+        // log, and both want the match to be exactly the steps they describe.
+        versusIntro = VersusIntro{};
+        if (!autoMatch && !replayPath) {
+            versusIntro.begin();
+        }
         autoOpening = autoMatch ? kAutoOpeningSteps : 0; // walk clear of the stream
         for (int i = 0; i < 2; ++i) {
             if (matchSources[i] == InputSource::Bot) {
@@ -1662,6 +1678,10 @@ int main(int argc, char** argv) {
                 // Nothing to back out to, and the menu can't be entered
                 // half-built — Esc during the load just leaves.
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
+            } else if (state == AppState::Title) {
+                // Esc is a skip like any other control, not a quit: the menu is
+                // where the sequence was going anyway.
+                titleIntro.skip();
             } else if (state == AppState::Options && options.capturing >= 0) {
                 options.capturing = -1; // cancel the rebind, stay on the screen
             } else if (state == AppState::CharacterSelect && select.pickedWeapon >= 0) {
@@ -1742,7 +1762,11 @@ int main(int argc, char** argv) {
                     matchLevel = kLevelCount > 1 ? 1 : 0;
                     startMatch();
                 } else if (!replayPath) {
-                    state = AppState::Menu;
+                    // The attract sequence, over the diorama that was just
+                    // built. Any control skips it; either way the menu is what
+                    // it hands off to.
+                    titleIntro.begin();
+                    state = AppState::Title;
                 } else if (!replayer.open(replayPath)) {
                     glfwSetWindowShouldClose(window, GLFW_TRUE); // it logged why
                 } else {
@@ -1913,7 +1937,53 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The versus screen belongs to a match: it ticks while one is on and is
+        // dropped the moment the app leaves it, so a sequence abandoned halfway
+        // by an Esc cannot go on to stamp FIGHT! over the main menu.
         if (state == AppState::Playing) {
+            versusIntro.update(frameTime);
+        } else {
+            versusIntro = VersusIntro{};
+        }
+
+        if (state == AppState::Title) {
+            // The attract sequence drives the diorama with scripted inputs, so
+            // the duel behind the logo is the real sim — the swing has the
+            // windup it has in a match and the block rings with the same clang.
+            // Its clock lives in the fixed step (intro.hpp), which is what
+            // makes it play out identically on every machine and every launch.
+            Bind pressed;
+            titleIntro.offerSkip(pollAnyBind(window, pressed));
+            accumulator += std::min(frameTime, 0.25f);
+            while (accumulator >= kFixedDt) {
+                PlayerInput inputs[2];
+                titleIntro.step(kFixedDt, inputs);
+                game->update(inputs, kFixedDt);
+                accumulator -= kFixedDt;
+            }
+            if (titleIntro.takeSlamCue()) {
+                audio.play(Sfx::Dismember, 0.0f, 0.55f, 1.5f); // the logo landing
+            }
+        } else if (state == AppState::Playing && versusIntro.holdingSim()) {
+            // The sim is held while the versus screen tours the two fighters.
+            // Not a pause: nothing is banked, and for a netplay peer this is
+            // exactly the stall lockstep sits through whenever an input has not
+            // arrived, so two peers holding their own copies need not agree on
+            // anything and cannot desync over it.
+            accumulator = 0.0f;
+            Bind pressed;
+            if (versusIntro.offerSkip(pollAnyBind(window, pressed))) {
+                // Re-seed the latches off the live controls, so the very press
+                // that skipped the intro cannot also land as the opening swing
+                // when it comes back up.
+                for (int i = 0; i < 2; ++i) {
+                    int slot = localSlot(matchSources[i]);
+                    if (slot >= 0) {
+                        localInputs[slot].beginMatch(window, localKeys(slot));
+                    }
+                }
+            }
+        } else if (state == AppState::Playing) {
             // Local controls are read once per render frame — the attack edges
             // live on the latch until a step takes them.
             for (int i = 0; i < 2; ++i) {
@@ -2091,10 +2161,27 @@ int main(int argc, char** argv) {
         NetSetupResult netResult;
         SelectResult picked;
         bool inviteClicked = false;
+        // A sequence in progress takes the viewpoint; the projection stays the
+        // gameplay one throughout, so nothing here can hand the match back
+        // through a zoom. Both ease into where FramingCamera has settled, which
+        // is why they are given it rather than a matrix.
+        const CameraShot gameplayShot{camera.position(), camera.target()};
+        glm::mat4 view = camera.view();
+        if (state == AppState::Title) {
+            view = shotView(titleIntro.shot(*game, gameplayShot));
+        } else if (state == AppState::Playing && versusIntro.active()) {
+            view = shotView(versusIntro.shot(*game, gameplayShot));
+        }
+        if (versusIntro.takeStampCue()) {
+            audio.play(Sfx::Hit, 0.0f, 0.7f, 1.3f); // FIGHT! landing
+        }
+
         if (renderer.beginFrame()) {
-            renderer.setViewProj(camera.proj(renderer.aspect()) * camera.view());
+            renderer.setViewProj(camera.proj(renderer.aspect()) * view);
             drawScene(renderer, *game, elapsed);
-            if (state == AppState::Menu) {
+            if (state == AppState::Title) {
+                titleIntro.draw();
+            } else if (state == AppState::Menu) {
                 action = drawMainMenu();
             } else if (state == AppState::Options) {
                 optionsResult = drawOptions(window, settings, options);
@@ -2109,6 +2196,12 @@ int main(int argc, char** argv) {
                 if (netSteam && steamLobby.state() == SteamLobby::State::Hosting) {
                     inviteClicked = drawInviteButton(overlayRefused);
                 }
+            } else if (versusIntro.holdingSim()) {
+                // The HUD waits for the fight. A blood bar over a fighter who
+                // has not been asked to move yet, and a clock reading 99 while
+                // nothing counts down, are both saying the match has started
+                // when it has not.
+                versusIntro.draw(*game);
             } else {
                 drawBloodBars(*game);
                 drawMatchClock(*game);
@@ -2127,8 +2220,20 @@ int main(int argc, char** argv) {
                         session.active() ? session.localSlot() : 0, session.active(),
                         session.requested() != Session::Intent::None);
                 }
+                // FIGHT! outlives the freeze it announced, so the banner is
+                // drawn over the running match rather than instead of it.
+                versusIntro.draw(*game);
             }
             renderer.endFrame();
+        }
+
+        // The attract sequence has faded its own overlay out and put the camera
+        // back where the menu's is, so this is a state change with nothing to
+        // see. The diorama is left exactly as the duel finished it — both
+        // fighters standing in their guard, whatever blood is on the floor —
+        // which is a better backdrop than the spawn pose it replaced.
+        if (state == AppState::Title && !titleIntro.active()) {
+            state = AppState::Menu;
         }
 
         if (action == MenuAction::Play) {

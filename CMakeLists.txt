@@ -95,6 +95,7 @@ add_executable(bushido
     src/weapons/odachi.cpp
     src/game.cpp
     src/input.cpp
+    src/intro.cpp
     src/netplay/replay.cpp
     src/netplay/session.cpp
     src/netplay/simlink.cpp

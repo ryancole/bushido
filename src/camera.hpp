@@ -12,6 +12,12 @@ public:
     glm::mat4 view() const;
     glm::mat4 proj(float aspect) const;
 
+    // Where it has settled. The intro sequences (src/intro.hpp) ease their own
+    // shots into this pair rather than into the matrix, since two viewpoints
+    // interpolate and two view matrices do not.
+    const glm::vec3& position() const { return m_position; }
+    const glm::vec3& target() const { return m_target; }
+
 private:
     static constexpr float kPi = 3.14159265358979f;
     static constexpr float kFovY = 50.0f * kPi / 180.0f;
