@@ -13,8 +13,10 @@ cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\B
 **A build for someone else** is the `package` target, not the build directory — that is hundreds of megabytes of intermediates, and the exe in it leans on absolute paths that exist only here:
 
 ```
-cmake --preset msvc-release -DSTEAM_SDK_DIR="<sdk>" && cmake --build --preset msvc-release --target package
+cmd /s /c '"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cmake --preset msvc-release -DSTEAM_SDK_DIR="<sdk>" && cmake --build --preset msvc-release --target package'
 ```
+
+(Through vcvars64 like every other build here — a bare `cmake --preset` finds no `cl` and fails with "The CXX compiler identification is unknown".)
 
 That assembles `build-release/dist` (~9 MB: exe, `shaders/`, `assets/`, and with the SDK also `steam_api64.dll` and `steam_appid.txt`), which is the folder to zip. It has been checked by copying it elsewhere and running it: both roots resolve to the packaged copies. The recipient needs the **Microsoft Visual C++ 2015-2022 redistributable** (release links the dynamic CRT) and a Vulkan-capable driver; for Steam play they need the Steam client running, and the overlay's invite button only works if the game is launched *through* Steam — reading a SteamID out works regardless. Debug builds are not distributable at all: `/MDd` needs the debug CRT, which is not redistributable.
 
