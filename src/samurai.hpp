@@ -1,5 +1,7 @@
 #pragma once
 
+#include "weapons/stance.hpp" // the arcs the sword arm animates along
+
 #include <glm/glm.hpp>
 
 class Renderer;
@@ -26,10 +28,19 @@ struct SamuraiPose {
     // a visual cue for the equipped weapon, no gameplay effect.
     float reach = 1.6f;
     float bladeWidth = 1.0f;
-    // Is there a blade in hand at all? A fighter who has thrown theirs down
-    // (or lost both arms) draws an empty hand and an empty saya at the hip —
-    // which is what has to make "I am unarmed" readable at a glance, since
-    // nothing else about the pose changes.
+    // How the blade is carried: where the guard holds it, where a swing
+    // settles back to, and the arc of the swing itself. Comes from the weapon
+    // (via Game::stance), and is the one thing that makes an odachi's cleave
+    // and a wakizashi's rising cut look like different swings — the sim sweeps
+    // the very same angles, so this is not a rendering choice.
+    Stance stance = Stance::Normal;
+    // Is there a blade in hand at all? An armed fighter carries theirs drawn
+    // for the whole match — held at the stance's ready angle when they are
+    // doing nothing else with it — so this is what puts a sword on screen or
+    // takes it off. A fighter who has thrown theirs down (or lost both arms)
+    // gets an empty hand and an arm that swings with the stride again, which
+    // is what makes "I am unarmed" readable at a glance. The saya at the hip
+    // is empty either way and says nothing about it.
     bool armed = true;
     // Signed topple roll about the local +x axis at the feet: a fighter who
     // has lost a leg tips toward ±z and ends up lying on the ground.
@@ -74,8 +85,8 @@ void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float stee
                       float width, const glm::vec4& grip);
 
 // Draws a samurai assembled procedurally from shaded boxes: hakama legs,
-// kimono torso, obi, sode shoulder plates, arms, head, straw kasa, and a
-// sheathed katana. `feet` is the ground point under the character; `yaw`
+// kimono torso, obi, sode shoulder plates, arms, head, straw kasa, an empty
+// saya at the hip, and — while armed — the drawn blade itself. `feet` is the ground point under the character; `yaw`
 // rotates about +Y (0 faces +x).
 void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
                  const SamuraiPose& pose, const SamuraiColors& colors);

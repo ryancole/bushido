@@ -4,6 +4,11 @@
 // on its own. Every scale is 1 and the reach bonus is 0, so equipping it
 // leaves the wielder's CharacterStats exactly as authored; the other two
 // blades are trades measured against this one.
+//
+// Carried in the Normal stance (chudan), point at the opponent, which is the
+// same neutrality in the other currency: its arcs are the ones every weapon
+// swung before stances existed, so the katana is still the blade you can read
+// the character roster through.
 
 namespace weapons::katana {
 
@@ -19,6 +24,7 @@ const WeaponDef kDef = {
             .knockbackScale = 1.0f,
             .bladeWidth = 1.0f,
         },
+    .stance = Stance::Normal,
     .tileColor = {0.30f, 0.32f, 0.40f, 0.75f}, // steel
     .rSpeed = 3,
     .rDamage = 3,

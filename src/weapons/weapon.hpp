@@ -1,5 +1,7 @@
 #pragma once
 
+#include "weapons/stance.hpp" // how this blade is carried, and so how it swings
+
 #include <glm/glm.hpp>
 
 // A selectable sword. Same contract as the character roster
@@ -26,6 +28,11 @@ struct WeaponDef {
     const char* name;
     const char* epithet; // select-screen flavor line
     WeaponStats stats;
+    // The stance this blade is carried in — where it rests, where the guard
+    // holds it, and the arc of every swing (weapons/stance.hpp). One per
+    // weapon for now, which is what makes picking a sword a choice of style
+    // and not only of numbers.
+    Stance stance;
     glm::vec4 tileColor; // select-screen tile face (weapons don't recolor the model)
     // Authored 0..5 select-screen ratings, display only (like CharacterDef's).
     int rSpeed;

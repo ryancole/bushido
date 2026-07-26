@@ -17,16 +17,16 @@ const glm::vec4 kTsuba{0.55f, 0.45f, 0.15f, 1.0f};
 const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
 
-// Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up).
-// Windup raises the blade, active carries it through the attack's arc,
-// recovery settles back toward rest (stopping short so the blade never
-// pierces the ground before it disappears). The Active-phase angles must
-// match game.cpp's kAttackTuning so the cut lands where the blade is drawn:
-// light chops overhead-to-front, heavy from further past overhead, and the
-// jab snaps a short arc to horizontal — a forward thrust.
-// Guard: the sword arm holds the drawn blade level at the foe, between the
-// jab's start and end angles — clearly "up", clearly not a swing.
-constexpr float kGuardAngle = 1.30f;
+// Sword-arm angle about the shoulder (0 = hanging down, positive = forward/up
+// — the convention weapons/stance.hpp documents in full). Windup raises the
+// blade out of the stance's ready angle, active carries it through the arc,
+// recovery settles back to ready.
+//
+// Every one of those angles comes from the stance table, which is also what
+// game.cpp sweeps the hit test along: the cut has to land where the blade is
+// drawn, and one table is the only way to keep that true. So a blade in the
+// High stance falls from overhead, one in Low rises off the floor, and the
+// difference is a swing rather than a skin.
 
 // Blade geometry, shared by the sword in the hand and the one on the ground
 // so a thrown-down odachi is still visibly an odachi. The steel runs from
@@ -36,14 +36,14 @@ constexpr float kBladeTop = 0.755f;   // where the steel starts, above the hand
 constexpr float kNominalReach = 1.6f; // SamuraiPose's default — the katana baseline
 constexpr float kGripLength = 0.26f;  // grip + guard, behind the steel
 
-float swordArmAngle(int attackState, int attackKind, float t) {
-    constexpr float kStart[3] = {2.60f, 2.95f, 1.20f}; // light, heavy, jab
-    constexpr float kEnd[3] = {0.55f, 0.45f, 1.55f};
+float swordArmAngle(Stance stance, int attackState, int attackKind, float t) {
+    const StanceDef& s = stanceDef(stance);
+    const StanceArc& arc = s.arcs[attackKind];
     switch (attackState) {
-        case 1: return glm::mix(0.35f, kStart[attackKind], t * t * (3.0f - 2.0f * t));
-        case 2: return glm::mix(kStart[attackKind], kEnd[attackKind], t);
-        case 3: return glm::mix(kEnd[attackKind], 0.35f, t);
-        default: return 0.0f;
+        case 1: return glm::mix(s.readyAngle, arc.start, t * t * (3.0f - 2.0f * t));
+        case 2: return glm::mix(arc.start, arc.end, t);
+        case 3: return glm::mix(arc.end, s.readyAngle, t);
+        default: return s.readyAngle;
     }
 }
 
@@ -155,12 +155,19 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
             continue;
         }
         const bool guarding = pose.blocking && pose.attackState == 0;
-        bool swordArm = s == swordSide && (pose.attackState != 0 || guarding);
+        // The sword arm carries the blade whenever there is one to carry —
+        // there is no sheathing it mid-duel. At rest it holds the stance's
+        // ready angle, which is what makes the stance something the player can
+        // read off the fighter standing there rather than a shape that
+        // appears for the third of a second a swing takes. It also costs the
+        // arm its stride swing, which is right: nobody walks a sword around
+        // like an empty hand. Empty-handed, it goes back to being an arm.
+        const bool swordArm = s == swordSide && pose.armed;
         float swing;
         if (swordArm) {
-            swing = guarding ? kGuardAngle
-                             : swordArmAngle(pose.attackState, pose.attackKind,
-                                             pose.attackT);
+            swing = guarding ? stanceDef(pose.stance).guardAngle
+                             : swordArmAngle(pose.stance, pose.attackState,
+                                             pose.attackKind, pose.attackT);
         } else if (pose.grounded) {
             swing = std::sin(pose.walkPhase + (s > 0.0f ? pi : 0.0f)) * 0.45f * pose.moveAmount;
         } else {
@@ -169,7 +176,7 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         glm::mat4 arm = upper * pivotRotZ({0.0f, 1.36f, s * 0.26f}, swing);
         part(arm, {0.0f, 1.10f, s * 0.26f}, {0.11f, 0.44f, 0.11f}, colors.kimono);
         part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin); // hand
-        if (swordArm && pose.armed) {
+        if (swordArm) {
             // Drawn katana extending past the hand, parallel to the arm. The
             // blade runs from just past the guard down to the reach distance
             // measured from the shoulder pivot (y 1.36), so its tip matches
@@ -193,17 +200,18 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark);
     }
 
-    // Sheathed katana worn at the hip, angled slightly downward behind. The
-    // saya stays on the belt whatever happens — it is what a thrown-down
-    // blade leaves behind, and an empty one is the clearest thing on the model
-    // saying this fighter has nothing to swing.
+    // The saya worn at the hip, angled slightly downward behind, and always
+    // empty: the blade that belongs in it is in the fighter's hand from the
+    // first frame of the match to the last. It stays on the belt whatever
+    // happens, including after the sword has been thrown away — a sheath is
+    // not something you drop with the blade.
+    //
+    // So it is no longer what says "this fighter has nothing to swing"; the
+    // empty *hand* is, which is a far louder thing on screen than a 5 cm slat
+    // at the hip ever was.
     glm::mat4 katana = upper * glm::translate(glm::mat4(1.0f), {0.02f, 1.00f, 0.22f}) *
                        glm::rotate(glm::mat4(1.0f), 0.30f, glm::vec3(0.0f, 0.0f, 1.0f));
     part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer); // scabbard
-    if (pose.armed) {
-        part(katana, {0.01f, 0.0f, 0.0f}, {0.03f, 0.10f, 0.10f}, kTsuba);          // guard
-        part(katana, {0.15f, 0.0f, 0.0f}, {0.24f, 0.045f, 0.045f}, colors.accent); // grip
-    }
 }
 
 float bladeSteelLength(float reachBonus) {

@@ -33,8 +33,25 @@ PlayerInput Bot::think(const Game& game, float dt) {
     const CharacterStats& st = game.stats(m_self);
     const float foeReach = game.stats(1 - m_self).reach;
 
+    // Where a fighter's body actually is in depth, which for a toppled one is
+    // not where its capsule is: the fall rolls the whole model about the local
+    // +x axis at the feet, so the torso swings nearly a meter off `pos.z` and
+    // the head half again as far (main stretches the blob shadow the same way,
+    // for the same reason). Steering at the capsule leaves the blade lane
+    // sweeping the empty floor beside a body — connecting only when the hit
+    // pads happen to reach — which is a bot that stands over a downed opponent
+    // and cannot finish them. Half height is the torso's own line: aim at the
+    // body, not at the feet it fell away from.
+    //
+    // Applied to both fighters, so it also answers the other half of it: a
+    // *downed bot's* own blade sweeps from a shoulder that has swung just as
+    // far out of line. Upright, sin(0) is 0 and this is exactly what it was.
+    auto lieZ = [](const Player& p) {
+        return p.pos.z + p.facing * std::sin(p.bodyRoll()) * Player::kHalfHeight;
+    };
+
     const float dx = foe.pos.x - self.pos.x;
-    const float dz = foe.pos.z - self.pos.z;
+    const float dz = lieZ(foe) - lieZ(self);
     const float adx = std::abs(dx);
     const float toFoe = dx >= 0.0f ? 1.0f : -1.0f;
 
@@ -140,6 +157,20 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // A caught blow drops the guard for the counter: the riposte window
     // outranks whatever the block timer had left.
     in.block = m_blockTimer > 0.0f && self.riposteTime <= 0.0f;
+
+    // Finish what is already on the floor. The blade pivots at the shoulder,
+    // so a standing swing sweeps a lane a toppled fighter lies clean under —
+    // and a bot that keeps swinging over a body it cannot reach is how a match
+    // ends on the clock instead of with a kill. Crouching drops the pivot (and
+    // with it the whole arc) by kCrouchDrop, which is what puts the cut down
+    // where the body actually is.
+    //
+    // Only in striking range: the duck costs more than half the walk speed,
+    // which is a bad way to cross the arena, and the crouch is full inside
+    // ~0.1 s — well under any windup — so there is nothing to gain by
+    // starting it earlier. The sim ignores the press while the bot is itself
+    // downed, so a crawling bot is not asking for anything it cannot have.
+    in.crouch = foe.downed() && adx < st.reach + 0.25f;
 
     // Swing when lined up and off cooldown. The cooldown is what makes the
     // bot beatable: it won't re-swing the instant recovery ends — except a

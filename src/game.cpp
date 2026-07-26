@@ -50,31 +50,32 @@ constexpr float kHipHeight = 0.85f;       // leg pivot height (samurai.cpp legs)
 // Per-attack tuning, indexed by AttackKind. Each attack scales the wielder's
 // resolved stats (character + weapon) rather than replacing them, the same
 // contract weapons follow — a fast character jabs faster than a slow one.
-// The arc angles are about the shoulder (0 = hanging down, positive =
-// forward/up) and must mirror samurai.cpp's swordArmAngle so the cut lands
-// where the blade is drawn: light/heavy chop overhead-to-front, the jab
-// snaps a short arc to horizontal — a forward thrust.
+//
+// What the swing *looks* like is deliberately not here: the arc belongs to the
+// stance the blade is carried in (weapons/stance.hpp), which is what makes an
+// odachi's cleave and a wakizashi's rising cut different swings rather than
+// the same one at different speeds. This table only says how hard and how
+// fast each of the three attacks is in whatever stance it is thrown from.
 struct AttackTuning {
     float windupScale, activeScale, recoveryScale; // on the character's phase times
     float damageScale;    // on torso-hit and sever blood costs (never the beheading)
     float knockbackScale; // on shove dealt and upward pop
     float hitstunScale;   // on the victim's control lockout
-    float startAngle, endAngle; // rad, Active-phase blade arc
     bool canSever;        // false = a limb/head connect lands as a torso hit
 };
 constexpr AttackTuning kAttackTuning[kAttackKindCount] = {
     // Light: the baseline — exactly the pre-attack-types swing.
-    {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.60f, 0.55f, true},
-    // Heavy: wound up well past overhead, slow everywhere, ruinous on connect.
-    {1.9f, 1.25f, 1.6f, 2.4f, 1.9f, 1.4f, 2.95f, 0.45f, true},
+    {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, true},
+    // Heavy: wound up further, slow everywhere, ruinous on connect.
+    {1.9f, 1.25f, 1.6f, 2.4f, 1.9f, 1.4f, true},
     // Jab: quick poke, cheap cut, barely a shove; can't dismember.
-    {0.45f, 0.55f, 0.55f, 0.5f, 0.35f, 0.6f, 1.20f, 1.55f, false},
+    {0.45f, 0.55f, 0.55f, 0.5f, 0.35f, 0.6f, false},
 };
 
 // Blade sweep, mirroring the model's Active-phase swing (samurai.cpp
-// swordArmAngle case 2): the arm pivots at the shoulder along the attack's
-// arc (kAttackTuning angles), with the blade a segment along the arm
-// direction. The tip's distance from the shoulder is the character's reach.
+// swordArmAngle case 2): the arm pivots at the shoulder along the stance's
+// arc for this attack, with the blade a segment along the arm direction. The
+// tip's distance from the shoulder is the character's reach.
 constexpr float kShoulderHeight = 1.36f;  // above the feet
 constexpr float kShoulderSide = 0.26f;    // sword arm's z offset from center
 constexpr float kBladeRoot = 0.45f;       // blade segment start, distance from shoulder
@@ -545,6 +546,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // roll: a downed attacker's chop becomes a sweep along the ground,
         // and a downed defender is hit where the body actually lies.
         const AttackTuning& tun = kAttackTuning[static_cast<int>(p.attackKind)];
+        // The arc is the stance's, not the attack's: the same light swing
+        // falls from overhead with an odachi and rises off the floor with a
+        // wakizashi. samurai.cpp animates these very numbers.
+        const StanceDef& stance = stanceDef(m_stance[i]);
+        const StanceArc& arc = stance.arcs[static_cast<int>(p.attackKind)];
         const float swordSide =
             p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
         // A crouched attacker's shoulder (and so the whole sweep) rides lower.
@@ -560,7 +566,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         constexpr int kSweepSamples = 4;
         for (int k = 1; k <= kSweepSamples && hitLimb < 0; ++k) {
             float t = glm::mix(tPrev, tCur, static_cast<float>(k) / kSweepSamples);
-            float angle = glm::mix(tun.startAngle, tun.endAngle, t);
+            float angle = glm::mix(arc.start, arc.end, t);
             glm::vec3 dir = rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f});
             dir = {p.facing * dir.x, dir.y, p.facing * dir.z};
             glm::vec3 s0 = pivot + dir * kBladeRoot;
@@ -618,8 +624,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                                kBlockKnockbackScale / foeSt.weight);
             // The catch opens the counter window: the attacker is committed
             // to the rest of their swing, and a heavier caught blow leaves a
-            // longer opening.
-            foe.riposteTime = kRiposteWindow * tun.hitstunScale;
+            // longer opening. How much of it the blocker gets is their own
+            // stance's doing — a blade held low and ready to answer turns a
+            // catch into a counter far better than one parked overhead.
+            foe.riposteTime = kRiposteWindow * tun.hitstunScale *
+                              stanceDef(m_stance[1 - i]).riposteScale;
             m_soundCues.push_back({Sfx::Block, foe.pos.x});
             continue;
         }
@@ -637,16 +646,16 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         m_soundCues.push_back({hitLimb >= 0 ? Sfx::Dismember : Sfx::Hit, foe.pos.x});
 
         // The cut costs blood: a chunk for the torso, more for a limb, the
-        // whole pool for the head. The weapon's damage scale and the attack's
-        // price the first two, but never the head — beheading executes with
-        // any blade. Chopping at a corpse still severs and sprays but can't
-        // re-decide the match.
+        // whole pool for the head. The weapon's damage scale, the stance's,
+        // and the attack's price the first two, but never the head —
+        // beheading executes with any blade held any way. Chopping at a corpse
+        // still severs and sprays but can't re-decide the match.
         const bool wasDead = foe.dead();
         // Armed by construction — nothing can start a swing empty-handed, and
         // nothing can disarm mid-swing — but the blade is state now, so read
         // it as state rather than trusting a pointer three screens away.
-        const float dmg =
-            (m_weapons[i] ? m_weapons[i]->stats.damage : 1.0f) * tun.damageScale;
+        const float dmg = (m_weapons[i] ? m_weapons[i]->stats.damage : 1.0f) *
+                          stance.damageScale * tun.damageScale;
         const float cost = hitTorso ? kTorsoHitBlood * dmg
                            : hitLimb == static_cast<int>(Limb::Head)
                                ? Player::kMaxBlood
@@ -766,6 +775,10 @@ void Game::collapse(Player& p) {
 void Game::equip(int i, int weapon) {
     m_players[i].weapon = weapon;
     m_weapons[i] = weapon == Player::kUnarmed ? nullptr : &weaponDef(weapon);
+    // The stance travels with the blade — take up an odachi and you hold it
+    // the way an odachi is held. Empty-handed keeps Normal as a placeholder
+    // nothing reads: there is no swing to arc and no guard to raise.
+    m_stance[i] = m_weapons[i] ? m_weapons[i]->stance : Stance::Normal;
     CharacterStats st = m_defs[i]->stats;
     if (m_weapons[i]) {
         const WeaponStats& w = m_weapons[i]->stats;
@@ -773,7 +786,9 @@ void Game::equip(int i, int weapon) {
         st.activeTime *= w.swingScale;
         st.recoveryTime *= w.swingScale;
         st.reach += w.reachBonus;
-        st.knockback *= w.knockbackScale;
+        // Both the blade's shove and the stance's, folded in here so the bot
+        // and the HUD keep reading one resolved number.
+        st.knockback *= w.knockbackScale * stanceDef(m_stance[i]).knockbackScale;
     }
     // Empty-handed leaves the bare character stats standing. Nothing scales
     // them, because nothing uses them: an unarmed fighter cannot swing at all.

@@ -8,6 +8,13 @@
 // Dismemberment is what makes it worth carrying — sever costs scale with
 // damage, but a taken limb is gone for the match regardless, and beheading
 // empties the pool with any blade at all.
+//
+// Carried in the Low stance (gedan), trailing down and behind, which is the
+// answer to the reach it gave away: it has to work from inside the other
+// blades' range, and a stance that catches well — half again the counter
+// window on a block — is what makes standing there survivable. Its cuts rise
+// from the floor and finish above the head, so it threatens legs where the
+// other two threaten skulls.
 
 namespace weapons::wakizashi {
 
@@ -23,6 +30,7 @@ const WeaponDef kDef = {
             .knockbackScale = 0.75f,
             .bladeWidth = 0.80f,
         },
+    .stance = Stance::Low,
     .tileColor = {0.62f, 0.63f, 0.60f, 0.75f}, // pale steel
     .rSpeed = 5,
     .rDamage = 2,

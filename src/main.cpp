@@ -883,6 +883,16 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
         drawStatBar("Speed", w.rSpeed, kFill);
         drawStatBar("Damage", w.rDamage, kFill);
         drawStatBar("Reach", w.rReach, kFill);
+        // The stance is half of what picking a blade picks — it decides the
+        // shape of every swing — and none of the three bars above says a word
+        // about it, so it gets its own line.
+        const StanceDef& stance = stanceDef(w.stance);
+        ImGui::Dummy({0.0f, 2.0f});
+        ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.87f, 0.80f, 0.65f});
+        ImGui::PushFont(nullptr, 17.0f);
+        ImGui::Text("%s stance  -  %s", stance.name, stance.note);
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
     } else {
         const CharacterDef& c = characterDef(s.shown);
         drawStatBar("Speed", c.rSpeed, kFill);
@@ -1193,8 +1203,8 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
                     {p.animPhase, p.moveAmount, p.grounded, time,
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
                      p.attackT, p.blocking, p.crouchAmount, game.stats(i).reach,
-                     held ? held->stats.bladeWidth : 1.0f, held != nullptr,
-                     p.bodyRoll(), p.severed},
+                     held ? held->stats.bladeWidth : 1.0f, game.stance(i),
+                     held != nullptr, p.bodyRoll(), p.severed},
                     c);
     }
 
@@ -1449,6 +1459,23 @@ int main(int argc, char** argv) {
     // Rematch keeps it — and is the one place a local-versus or netplay match
     // would differ from this one.
     InputSource matchSources[2] = {InputSource::Local0, InputSource::Bot};
+    // --auto's opening: every fighter this machine drives walks right for a
+    // moment and swings at nothing. The fixture plays Hanami, whose stream
+    // runs at x = -6 with the left spawn three meters off it, and a fight that
+    // drifts that way ends with somebody wedged in the current — a match the
+    // bot cannot finish, which now runs out the 99-second clock instead of
+    // hanging but is still a soak run spent watching a body bob downstream.
+    // A second and a half of walking puts the pair on dry ground first.
+    //
+    // It is an ordinary input rather than a nudge to the sim: it goes through
+    // stepInput like any other, carries only what quantizeAxis can express,
+    // and is recorded and transmitted like any other — so a recording still
+    // replays and a peer still agrees. The count is in simulated steps, so
+    // two netplay peers may start walking a frame or two apart (their input
+    // delays differ); that is not a divergence, since each fighter's input is
+    // whatever their own machine sent, never something the other recomputed.
+    constexpr int kAutoOpeningSteps = 180; // 1.5 s at the fixed step
+    int autoOpening = 0;
     // Netplay. The transport is a plain UDP socket; the session is the
     // lockstep protocol over it (netplay/session.hpp). Both stay Idle unless
     // --host or --join was passed.
@@ -1596,6 +1623,7 @@ int main(int argc, char** argv) {
         game = std::make_unique<Game>(matchChars[0], matchWeapons[0], matchChars[1],
                                       matchWeapons[1], matchLevel);
         state = AppState::Playing;
+        autoOpening = autoMatch ? kAutoOpeningSteps : 0; // walk clear of the stream
         for (int i = 0; i < 2; ++i) {
             if (matchSources[i] == InputSource::Bot) {
                 bot = Bot{i, rng()}; // fresh brain (and rng stream) each match
@@ -1893,6 +1921,12 @@ int main(int argc, char** argv) {
             // One slot's input for one step. The bot is asked per step rather
             // than per frame because it reads sim state the last step moved.
             auto stepInput = [&](int i) -> PlayerInput {
+                if (autoOpening > 0) {
+                    // The fixture's opening walk: right, and nothing else.
+                    PlayerInput in;
+                    in.move = {quantizeAxis(1.0f), 0.0f};
+                    return in;
+                }
                 switch (matchSources[i]) {
                 case InputSource::Local0:
                 case InputSource::Local1:
@@ -1941,6 +1975,9 @@ int main(int argc, char** argv) {
 
                 game->update(inputs, kFixedDt);
                 accumulator -= kFixedDt;
+                if (autoOpening > 0) {
+                    --autoOpening;
+                }
                 for (int i = 0; i < 2; ++i) {
                     int slot = localSlot(matchSources[i]);
                     if (slot >= 0) {
