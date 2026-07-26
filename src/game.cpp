@@ -34,6 +34,12 @@ struct Hasher {
 constexpr float kGravity = 28.0f;         // m/s^2
 constexpr float kAttackMoveScale = 0.35f; // movement slowdown while swinging
 constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard is up
+// Meters covered by one full walk cycle — two steps, one per leg — which is
+// what the stride animation is paced against rather than a fixed cadence. A
+// samurai's step is roughly 0.85 m, so the cycle is a shade under 1.7. Every
+// movement slowdown above rides this for free: a blocking fighter's shorter,
+// slower shuffle is the same footfalls at the speed they are actually walking.
+constexpr float kStrideCycle = 1.7f;
 
 // Crouching: held input ducks the whole upper body kCrouchDrop meters at full
 // depth — pose, hurtboxes, and the blade pivot all ride crouchAmount, so a
@@ -470,8 +476,18 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.kbVel *= std::exp(-kKnockbackDecay * dt);
 
         p.moveAmount = glm::length(move) * speedScale;
-        p.animPhase = std::fmod(p.animPhase + p.moveAmount * 12.0f * dt,
-                                2.0f * 3.14159265358979f);
+        // Stride cadence is paced by ground covered, not by how hard the stick
+        // is pushed: one full cycle of the walk (both legs, so two steps) is
+        // kStrideCycle meters, whatever the fighter's speed stat. That is what
+        // keeps the feet planted against the floor — the phase used to advance
+        // at a fixed 12 rad/s scaled by the *fraction* of top speed, which was
+        // near enough at 6 m/s and reads as skating at a walk, since the legs
+        // would churn the same cadence over a quarter of the ground. It also
+        // gets the roster's speed differences for free: an Oni takes the same
+        // length steps as a Shinobi, just fewer of them.
+        constexpr float kTwoPi = 2.0f * 3.14159265358979f;
+        const float cyclesPerSec = p.moveAmount * st.moveSpeed / kStrideCycle;
+        p.animPhase = std::fmod(p.animPhase + cyclesPerSec * kTwoPi * dt, kTwoPi);
 
         if (p.grounded) {
             p.vy = 0.0f;

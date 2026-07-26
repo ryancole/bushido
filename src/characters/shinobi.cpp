@@ -15,7 +15,7 @@ const CharacterDef kDef = {
     .epithet = "Strikes before the breath",
     .stats =
         {
-            .moveSpeed = 7.6f,
+            .moveSpeed = 1.90f,
             .jumpVelocity = 11.5f,
             .windupTime = 0.09f,
             .activeTime = 0.12f,

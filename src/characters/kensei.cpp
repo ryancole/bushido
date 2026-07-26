@@ -15,7 +15,7 @@ const CharacterDef kDef = {
     .epithet = "Death at a distance",
     .stats =
         {
-            .moveSpeed = 5.4f,
+            .moveSpeed = 1.35f,
             .jumpVelocity = 9.5f,
             .windupTime = 0.16f,
             .activeTime = 0.14f,

@@ -1,9 +1,10 @@
 #include "characters/registry.hpp"
 
-// Ronin — the tuning baseline. Every number here is the old pre-roster global
-// constant, and the rest of the cast is authored as trades against it, so a
-// change to this file is a change to what "average" means. Ratings sit at 3
-// across the board for the same reason.
+// Ronin — the tuning baseline. The rest of the cast is authored as trades
+// against these numbers, so a change to this file is a change to what
+// "average" means. Ratings sit at 3 across the board for the same reason.
+// Every stat here is the old pre-roster global constant except moveSpeed,
+// which the whole roster was slowed by a quarter (see CharacterStats).
 
 namespace characters::ronin {
 
@@ -13,7 +14,7 @@ const CharacterDef kDef = {
     .epithet = "The wandering blade",
     .stats =
         {
-            .moveSpeed = 6.0f,
+            .moveSpeed = 1.50f,
             .jumpVelocity = 10.0f,
             .windupTime = 0.12f,
             .activeTime = 0.14f,
