@@ -491,11 +491,11 @@ bool Renderer::beginFrame() {
     return true;
 }
 
-void Renderer::drawBox(const glm::mat4& model, const glm::vec4& color) {
+void Renderer::drawBox(const glm::mat4& model, const glm::vec4& color, bool unlit) {
     glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(model)));
     ObjectPush object{};
     object.mvp = m_viewProj * model;
-    object.normal0 = glm::vec4(normalMat[0], 0.0f);
+    object.normal0 = glm::vec4(normalMat[0], unlit ? 1.0f : 0.0f);
     object.normal1 = glm::vec4(normalMat[1], 0.0f);
     object.normal2 = glm::vec4(normalMat[2], 0.0f);
     object.color = color;

@@ -11,12 +11,14 @@
 struct GLFWwindow;
 
 // Push constant block shared by cube.vert / cube.frag. Exactly 128 bytes —
-// the guaranteed minimum push constant budget; do not grow it.
+// the guaranteed minimum push constant budget; do not grow it. The unlit flag
+// rides in normal0.w, which the columns leave spare, for that reason: the
+// block is full, and a bool of its own would push it over.
 struct ObjectPush {
     glm::mat4 mvp;
     glm::vec4 normal0; // columns of the normal matrix (inverse-transpose of
     glm::vec4 normal1; // the model's upper 3x3), for correct lighting under
-    glm::vec4 normal2; // rotation and non-uniform scale
+    glm::vec4 normal2; // rotation and non-uniform scale; normal0.w = unlit
     glm::vec4 color;
 };
 
@@ -30,7 +32,9 @@ public:
     bool beginFrame();
     void setViewProj(const glm::mat4& viewProj) { m_viewProj = viewProj; }
     // Draws a shaded unit cube under `model` (any translate/rotate/scale).
-    void drawBox(const glm::mat4& model, const glm::vec4& color);
+    // `unlit` skips the diffuse term and emits `color` exactly as given, which
+    // is what the sky shell wants — see levels/sky.cpp.
+    void drawBox(const glm::mat4& model, const glm::vec4& color, bool unlit = false);
     void endFrame();
 
     void onResize() { m_resizeRequested = true; }

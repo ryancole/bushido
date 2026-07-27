@@ -1158,8 +1158,13 @@ void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 col
     renderer.drawBox(model, color);
 }
 
-void drawScene(Renderer& renderer, const Game& game, float time) {
-    // Level scenery (floor, backdrop, ambient animation) goes down first so
+void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3& eye) {
+    // The sky shell is built around the camera, so it needs the eye the frame
+    // is actually being drawn from — which during an intro is the sequence's,
+    // not the framing camera's. Everything else is inside it.
+    drawSky(renderer, game.level(), eye);
+
+    // Level scenery (floor, backdrop, ambient animation) goes down next so
     // everything gameplay draws sits on top of it. The game knows its own
     // battleground, which keeps the drawn scenery and the sim's obstacle
     // colliders on the same level by construction.
@@ -2167,19 +2172,20 @@ int main(int argc, char** argv) {
         // through a zoom. Both ease into where FramingCamera has settled, which
         // is why they are given it rather than a matrix.
         const CameraShot gameplayShot{camera.position(), camera.target()};
-        glm::mat4 view = camera.view();
+        CameraShot shot = gameplayShot;
         if (state == AppState::Title) {
-            view = shotView(titleIntro.shot(*game, gameplayShot));
+            shot = titleIntro.shot(*game, gameplayShot);
         } else if (state == AppState::Playing && versusIntro.active()) {
-            view = shotView(versusIntro.shot(*game, gameplayShot));
+            shot = versusIntro.shot(*game, gameplayShot);
         }
+        const glm::mat4 view = shotView(shot);
         if (versusIntro.takeStampCue()) {
             audio.play(Sfx::Hit, 0.0f, 0.7f, 1.3f); // FIGHT! landing
         }
 
         if (renderer.beginFrame()) {
             renderer.setViewProj(camera.proj(renderer.aspect()) * view);
-            drawScene(renderer, *game, elapsed);
+            drawScene(renderer, *game, elapsed, shot.eye);
             if (state == AppState::Title) {
                 titleIntro.draw();
             } else if (state == AppState::Menu) {

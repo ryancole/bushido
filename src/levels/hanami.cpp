@@ -173,6 +173,9 @@ const LevelDef kDef = {
     "Petals drift over quiet water",
     {0.83f, 0.54f, 0.62f, 0.75f},
     kHalfWidth,
+    // Afternoon: deep blue overhead falling to a warm haze the blossoms sit
+    // against, over distant wooded ground that carries the grass outward.
+    {{0.24f, 0.44f, 0.72f}, {0.80f, 0.74f, 0.70f}, {0.16f, 0.22f, 0.15f}},
 };
 
 // Everything solid here: the bank stones, the in-field tree trunks (half

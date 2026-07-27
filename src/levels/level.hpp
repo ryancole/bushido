@@ -18,6 +18,16 @@ class Renderer;
 // file beside it (dojo.cpp, hanami.cpp) and is wired up through registry.hpp;
 // level.cpp is nothing but the index → implementation dispatch.
 
+// The sky a battleground stands under: three authored colors the shared shell
+// (levels/sky.cpp) ramps between. Every level fills this in — it is a member of
+// LevelDef rather than an optional hook, so a new battleground cannot open onto
+// the empty clear color by forgetting to write one.
+struct SkyDef {
+    glm::vec3 zenith;  // straight overhead
+    glm::vec3 horizon; // where the sky meets the ground plane
+    glm::vec3 ground;  // the land beyond the arena floor, below the horizon
+};
+
 struct LevelDef {
     const char* id; // stable slug — the serialization/netplay key, never reordered
     const char* name;
@@ -27,6 +37,7 @@ struct LevelDef {
     // sized from. Game::kArenaHalfWidth is the baseline (Dojo); a level may
     // stretch it (Hanami widens for the house on its left flank).
     float arenaHalfWidth;
+    SkyDef sky;
 };
 
 // A solid scenery box: axis-aligned, static for the whole match. The same
@@ -54,6 +65,12 @@ const std::vector<LevelObstacle>& levelObstacles(int index);
 // at y = 0 everywhere). Hanami carves its stream channel out of these.
 const std::vector<LevelObstacle>& levelGround(int index);
 const LevelWater* levelWater(int index); // nullptr = dry level
+
+// Draws the level's sky in the shared shell, in this level's colors. Called by
+// main's drawScene first of all, before even the scenery. The shell is built
+// around `eye` rather than around the arena, which is what makes it read as
+// sky: it never gets closer, and no camera pull-back can leave it.
+void drawSky(Renderer& renderer, int index, const glm::vec3& eye);
 
 // Draws the level's scenery (floor, backdrop, ambient animation) for the
 // current frame. Called by main's drawScene before fighters/blood so the
