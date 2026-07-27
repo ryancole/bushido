@@ -9,10 +9,11 @@ class Renderer;
 // A selectable battleground. Same compiled-in-roster contract as characters
 // (characters/character.hpp) and weapons (weapons/weapon.hpp): constant data
 // addressed by index, so a match stays a handful of roster indices — peers
-// exchange the level index/id, never scene data. Levels share the arena depth
-// (Game::kArenaHalfDepth) but own their width; beyond what's drawn, a level
-// contributes solid obstacle boxes (Hanami's bank stones, tree trunks, and
-// house) that Game feeds to Physics as static colliders.
+// exchange the level index/id, never scene data. Levels own both of their
+// arena half extents (Game::kArenaHalfWidth/kArenaHalfDepth are only the
+// baseline); beyond what's drawn, a level contributes solid obstacle boxes
+// (Hanami's bank stones, tree trunks, and house) that Game feeds to Physics
+// as static colliders.
 //
 // This header is the whole public surface. Each battleground lives in its own
 // file beside it (dojo.cpp, hanami.cpp) and is wired up through registry.hpp;
@@ -67,10 +68,13 @@ struct LevelDef {
     const char* name;
     const char* epithet;  // select-screen flavor line
     glm::vec4 tileColor;  // select-screen tile face
-    // Playable half width: where Physics puts the side walls and the floor is
-    // sized from. Game::kArenaHalfWidth is the baseline (Dojo); a level may
-    // stretch it (Hanami widens for the house on its left flank).
+    // Playable half extents: where Physics puts the walls and the floor is
+    // sized from. Game::kArenaHalfWidth/kArenaHalfDepth are the baseline
+    // (Dojo); a level may stretch either — Hanami widens for the house on its
+    // left flank, Tanbo deepens so the paddies are ground to roam rather than
+    // a corridor to hold.
     float arenaHalfWidth;
+    float arenaHalfDepth;
     SkyDef sky;
 };
 
@@ -83,22 +87,26 @@ struct LevelObstacle {
     glm::vec3 halfExtent;
 };
 
-// A level's water volume (at most one, axis-aligned). Physics floats debris
-// that drifts inside — buoyancy against the surface plus the current's push,
-// so severed pieces bob off downstream — and Game suppresses blood floor
-// marks inside it (moving water washes blood away).
+// One of a level's water volumes (axis-aligned). Physics floats debris that
+// drifts inside — buoyancy against the surface plus the current's push, so
+// severed pieces bob off downstream — and Game suppresses blood floor marks
+// inside it (moving water washes blood away). A *list* per level rather than
+// at most one, because a body of water is not always one box: Sorihashi's
+// river shows on both sides of its dry deck, and a single AABB covering both
+// strips would cover the deck too — which is exactly the footprint Game's
+// blood marks test against, so the bridge would never stain.
 struct LevelWater {
     glm::vec3 min, max; // AABB; max.y is the surface height
     glm::vec3 current;  // m/s drift applied to floating debris
 };
 
-inline constexpr int kLevelCount = 2;
+inline constexpr int kLevelCount = 4;
 const LevelDef& levelDef(int index);
 const std::vector<LevelObstacle>& levelObstacles(int index);
 // Ground collider boxes replacing the default flat slab (empty = flat ground
 // at y = 0 everywhere). Hanami carves its stream channel out of these.
 const std::vector<LevelObstacle>& levelGround(int index);
-const LevelWater* levelWater(int index); // nullptr = dry level
+const std::vector<LevelWater>& levelWater(int index); // empty = dry level
 
 // Draws the level's sky in the shared shell, in this level's colors, with its
 // clouds where `time` has carried them. Called by main's drawScene first of

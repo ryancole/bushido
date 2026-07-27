@@ -157,12 +157,14 @@ struct Physics::Impl {
     bool prone[2] = {false, false};
     std::vector<JPH::BodyID> debris;
     DebrisContactListener contactListener;
-    Physics::Water water;
+    std::vector<Physics::Water> water;
 };
 
-Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
-                 const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes,
-                 const std::vector<StaticBox>& groundBoxes, const Water& water)
+Physics::Physics(float gravity, float arenaHalfWidth, float arenaHalfDepth,
+                 const glm::vec3& spawnA, const glm::vec3& spawnB,
+                 const std::vector<StaticBox>& staticBoxes,
+                 const std::vector<StaticBox>& groundBoxes,
+                 const std::vector<Water>& water)
     : m_gravity(gravity) {
     ensureJoltInitialized();
     m_impl = std::make_unique<Impl>();
@@ -202,7 +204,7 @@ Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
     constexpr float kWall = 0.5f; // wall/ground half thickness
     constexpr float kWallHalfHeight = 20.0f;
     const float hw = arenaHalfWidth;
-    const float hd = Game::kArenaHalfDepth;
+    const float hd = arenaHalfDepth;
     if (groundBoxes.empty()) {
         addStaticBox({hw + 2.0f * kWall, kWall, hd + 2.0f * kWall},
                      {0.0f, -kWall, 0.0f});
@@ -304,12 +306,14 @@ void Physics::setCharacterProne(int i, bool prone) {
 void Physics::step(float dt) {
     Impl& im = *m_impl;
 
-    // Water: float any debris that has drifted into the volume. Buoyancy
+    // Water: float any debris that has drifted into a volume. Buoyancy
     // against the surface plane makes a piece bob ~2/3 submerged; the drag
     // terms pull its velocity toward the current's, which is what actually
     // carries it downstream. Pieces are re-activated while in the water so a
-    // settled piece can't sleep through the current.
-    if (im.water.max.x > im.water.min.x) {
+    // settled piece can't sleep through the current. A piece is judged
+    // against each volume in turn and only the first that holds it applies —
+    // a level's volumes never overlap, so "first" is just "the one".
+    if (!im.water.empty()) {
         constexpr float kBuoyancy = 1.6f;    // fluid/body density ratio; >1 floats
         constexpr float kLinearDrag = 0.6f;
         constexpr float kAngularDrag = 0.3f;
@@ -319,9 +323,16 @@ void Physics::step(float dt) {
                 continue; // a blade somebody picked back up
             }
             JPH::RVec3 pos = bodies.GetPosition(id);
-            if (pos.GetX() < im.water.min.x || pos.GetX() > im.water.max.x ||
-                pos.GetZ() < im.water.min.z || pos.GetZ() > im.water.max.z ||
-                pos.GetY() > im.water.max.y + 0.3f) {
+            const Water* in = nullptr;
+            for (const Water& w : im.water) {
+                if (pos.GetX() >= w.min.x && pos.GetX() <= w.max.x &&
+                    pos.GetZ() >= w.min.z && pos.GetZ() <= w.max.z &&
+                    pos.GetY() <= w.max.y + 0.3f) {
+                    in = &w;
+                    break;
+                }
+            }
+            if (!in) {
                 continue;
             }
             bodies.ActivateBody(id);
@@ -330,9 +341,9 @@ void Physics::step(float dt) {
                 continue;
             }
             lock.GetBody().ApplyBuoyancyImpulse(
-                JPH::RVec3(pos.GetX(), im.water.max.y, pos.GetZ()),
+                JPH::RVec3(pos.GetX(), in->max.y, pos.GetZ()),
                 JPH::Vec3::sAxisY(), kBuoyancy, kLinearDrag, kAngularDrag,
-                {im.water.current.x, im.water.current.y, im.water.current.z},
+                {in->current.x, in->current.y, in->current.z},
                 JPH::Vec3(0.0f, -m_gravity, 0.0f), dt);
         }
     }

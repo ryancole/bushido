@@ -16,6 +16,10 @@ const LevelEntry kEntries[kLevelCount] = {
     {&levels::dojo::kDef, levels::dojo::draw},
     {&levels::hanami::kDef, levels::hanami::draw, levels::hanami::obstacles,
      levels::hanami::ground, levels::hanami::water, levels::hanami::shafts},
+    {&levels::sorihashi::kDef, levels::sorihashi::draw, levels::sorihashi::obstacles,
+     levels::sorihashi::ground, levels::sorihashi::water},
+    {&levels::tanbo::kDef, levels::tanbo::draw, levels::tanbo::obstacles,
+     levels::tanbo::ground, levels::tanbo::water, levels::tanbo::shafts},
 };
 
 const LevelEntry& entry(int index) {
@@ -40,9 +44,10 @@ const std::vector<LevelObstacle>& levelGround(int index) {
     return e.ground ? e.ground() : kFlat;
 }
 
-const LevelWater* levelWater(int index) {
+const std::vector<LevelWater>& levelWater(int index) {
+    static const std::vector<LevelWater> kDry;
     const LevelEntry& e = entry(index);
-    return e.water ? e.water() : nullptr;
+    return e.water ? e.water() : kDry;
 }
 
 void drawLevel(Renderer& renderer, int index, float time) {

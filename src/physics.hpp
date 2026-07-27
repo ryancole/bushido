@@ -20,7 +20,8 @@ public:
 
     // A water volume: debris that drifts inside floats (buoyancy against the
     // surface plane, drag toward the current's velocity) and rides the
-    // current downstream. Default (zero extent) = no water.
+    // current downstream. A level may have several (Sorihashi's river shows
+    // on both sides of its dry deck); empty list = no water.
     struct Water {
         glm::vec3 min{0.0f};
         glm::vec3 max{0.0f}; // max.y is the surface height
@@ -29,12 +30,14 @@ public:
 
     // Spawns are feet positions (the ground surface is y = 0). Gravity is the
     // magnitude of downward acceleration, matching the game's own constant.
-    // arenaHalfWidth places the side walls (per-level; depth is fixed).
+    // arenaHalfWidth/arenaHalfDepth place the four walls (both per-level).
     // groundBoxes replace the default flat ground slab when non-empty
     // (Hanami's carved stream channel).
-    Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
-            const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes = {},
-            const std::vector<StaticBox>& groundBoxes = {}, const Water& water = {});
+    Physics(float gravity, float arenaHalfWidth, float arenaHalfDepth,
+            const glm::vec3& spawnA, const glm::vec3& spawnB,
+            const std::vector<StaticBox>& staticBoxes = {},
+            const std::vector<StaticBox>& groundBoxes = {},
+            const std::vector<Water>& water = {});
     ~Physics();
 
     struct MoveResult {

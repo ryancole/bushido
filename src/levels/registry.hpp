@@ -24,7 +24,7 @@ struct LevelEntry {
     void (*draw)(Renderer& r, float time);
     const std::vector<LevelObstacle>& (*obstacles)() = nullptr;
     const std::vector<LevelObstacle>& (*ground)() = nullptr;
-    const LevelWater* (*water)() = nullptr;
+    const std::vector<LevelWater>& (*water)() = nullptr;
     // Shafts of sunlight, drawn after everything else — see drawLightShafts in
     // level.hpp for why they cannot go in `draw`. A hook of its own rather than
     // something the sky works out for itself, because where the light gets
@@ -44,7 +44,28 @@ void draw(Renderer& r, float time);
 void shafts(Renderer& r, float time);
 const std::vector<LevelObstacle>& obstacles();
 const std::vector<LevelObstacle>& ground();
-const LevelWater* water();
+const std::vector<LevelWater>& water();
 } // namespace hanami
+
+namespace sorihashi {
+extern const LevelDef kDef;
+void draw(Renderer& r, float time);
+const std::vector<LevelObstacle>& obstacles();
+const std::vector<LevelObstacle>& ground();
+const std::vector<LevelWater>& water();
+} // namespace sorihashi
+
+namespace tanbo {
+extern const LevelDef kDef;
+void draw(Renderer& r, float time);
+// The `shafts` hook carries Tanbo's morning mist rather than sunlight — the
+// hook's real contract is "translucent air, drawn after the fighters so the
+// depth test alone layers it", and mist is exactly that made of water
+// instead of light.
+void shafts(Renderer& r, float time);
+const std::vector<LevelObstacle>& obstacles();
+const std::vector<LevelObstacle>& ground();
+const std::vector<LevelWater>& water();
+} // namespace tanbo
 
 } // namespace levels
