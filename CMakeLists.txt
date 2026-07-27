@@ -108,6 +108,7 @@ add_executable(bushido
     src/levels/sun.cpp
     src/levels/dojo.cpp
     src/levels/hanami.cpp
+    src/levels/sorihashi.cpp
     src/physics.cpp
     src/samurai.cpp
     src/audio.cpp)

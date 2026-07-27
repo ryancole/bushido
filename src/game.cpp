@@ -427,12 +427,10 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
     for (const LevelObstacle& g : levelGround(level)) {
         ground.push_back({g.center, g.halfExtent});
     }
-    Physics::Water water;
-    if (const LevelWater* w = levelWater(level)) {
-        water = {w->min, w->max, w->current};
-        m_hasWater = true;
-        m_waterMinXZ = {w->min.x, w->min.z};
-        m_waterMaxXZ = {w->max.x, w->max.z};
+    std::vector<Physics::Water> water;
+    for (const LevelWater& w : levelWater(level)) {
+        water.push_back({w.min, w.max, w.current});
+        m_waterXZ.push_back({{w.min.x, w.min.z}, {w.max.x, w.max.z}});
     }
     m_physics = std::make_unique<Physics>(kGravity, m_arenaHalfWidth,
                                           glm::vec3{-3.0f, 0.0f, 0.0f},

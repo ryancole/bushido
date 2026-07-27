@@ -334,11 +334,15 @@ public:
     float arenaHalfWidth() const { return m_arenaHalfWidth; }
 
 private:
-    // Inside the level's water volume (xz)? Blood never marks the floor
-    // there — the moving water carries it away.
+    // Inside any of the level's water volumes (xz)? Blood never marks the
+    // floor there — the moving water carries it away.
     bool inWater(float x, float z) const {
-        return m_hasWater && x >= m_waterMinXZ.x && x <= m_waterMaxXZ.x &&
-               z >= m_waterMinXZ.y && z <= m_waterMaxXZ.y;
+        for (const WaterFootprint& w : m_waterXZ) {
+            if (x >= w.min.x && x <= w.max.x && z >= w.min.y && z <= w.max.y) {
+                return true;
+            }
+        }
+        return false;
     }
     // Puts a blade (or Player::kUnarmed) in fighter i's hand and re-resolves
     // their stats from it. The one place m_weapons/m_stats are written.
@@ -380,11 +384,12 @@ private:
     std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
     int m_level = 0;        // battleground roster index (scenery + obstacles)
     float m_arenaHalfWidth = kArenaHalfWidth; // this match's playable half width
-    // The level's water volume footprint (xz), mirrored from levels/level.hpp so
-    // blood marks can be suppressed in the stream; Physics holds the rest.
-    bool m_hasWater = false;
-    glm::vec2 m_waterMinXZ{0.0f};
-    glm::vec2 m_waterMaxXZ{0.0f};
+    // The level's water volume footprints (xz), mirrored from levels/level.hpp
+    // so blood marks can be suppressed in the water; Physics holds the rest.
+    struct WaterFootprint {
+        glm::vec2 min, max;
+    };
+    std::vector<WaterFootprint> m_waterXZ;
     int m_winner = -1;      // decided once; a post-match death can't flip it
     float m_overTime = 0.0f;
     float m_timeLeft = kMatchTimeLimit; // counts down only while the duel is live

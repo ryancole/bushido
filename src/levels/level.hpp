@@ -83,22 +83,26 @@ struct LevelObstacle {
     glm::vec3 halfExtent;
 };
 
-// A level's water volume (at most one, axis-aligned). Physics floats debris
-// that drifts inside — buoyancy against the surface plus the current's push,
-// so severed pieces bob off downstream — and Game suppresses blood floor
-// marks inside it (moving water washes blood away).
+// One of a level's water volumes (axis-aligned). Physics floats debris that
+// drifts inside — buoyancy against the surface plus the current's push, so
+// severed pieces bob off downstream — and Game suppresses blood floor marks
+// inside it (moving water washes blood away). A *list* per level rather than
+// at most one, because a body of water is not always one box: Sorihashi's
+// river shows on both sides of its dry deck, and a single AABB covering both
+// strips would cover the deck too — which is exactly the footprint Game's
+// blood marks test against, so the bridge would never stain.
 struct LevelWater {
     glm::vec3 min, max; // AABB; max.y is the surface height
     glm::vec3 current;  // m/s drift applied to floating debris
 };
 
-inline constexpr int kLevelCount = 2;
+inline constexpr int kLevelCount = 3;
 const LevelDef& levelDef(int index);
 const std::vector<LevelObstacle>& levelObstacles(int index);
 // Ground collider boxes replacing the default flat slab (empty = flat ground
 // at y = 0 everywhere). Hanami carves its stream channel out of these.
 const std::vector<LevelObstacle>& levelGround(int index);
-const LevelWater* levelWater(int index); // nullptr = dry level
+const std::vector<LevelWater>& levelWater(int index); // empty = dry level
 
 // Draws the level's sky in the shared shell, in this level's colors, with its
 // clouds where `time` has carried them. Called by main's drawScene first of

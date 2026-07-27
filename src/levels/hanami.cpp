@@ -300,7 +300,10 @@ const std::vector<LevelObstacle>& ground() {
     return v;
 }
 
-const LevelWater* water() { return &kWater; }
+const std::vector<LevelWater>& water() {
+    static const std::vector<LevelWater> v{kWater};
+    return v;
+}
 
 // Grass floor, a water band flowing toward the camera with drifting ripple
 // glints, stone banks, sakura through the playfield, the house on the left

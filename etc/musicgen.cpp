@@ -313,9 +313,66 @@ std::vector<float> renderHanami(float rate) {
     return pcm;
 }
 
+// Sorihashi — dusk on the river: koto in the in scale on A over a slow
+// walking taiko, a deep bell for the failing light, glints low on the water.
+// The B-flat pulling home to A at each turn is the in scale's own melancholy,
+// which is what a bridge at nightfall sounds like. 8 bars of 4 at 66 BPM.
+std::vector<float> renderSorihashi(float rate) {
+    constexpr float kSpb = 60.0f / 66.0f;
+    std::vector<float> pcm(static_cast<std::size_t>(rate * kSpb * 32.0f), 0.0f);
+    std::uint32_t rng = 0x50a1ba51u;
+    auto pluck = [&](float beat, float freq, float amp, float damp = 0.9965f) {
+        addPluck(pcm, rate, beat * kSpb, freq, amp, damp, rng);
+    };
+    // A2 110.00  Bb2 116.54  D3 146.83  E3 164.81  A3 220.00  Bb3 233.08
+    // D4 293.66  E4 329.63  F4 349.23  A4 440.00  D5 587.33
+    addBell(pcm, rate, 0.0f, 110.0f, 0.42f, 0.9f);
+    addBell(pcm, rate, 16.0f * kSpb, 110.0f, 0.32f, 0.9f);
+    // The walk across: one soft footfall to a bar, never hurried.
+    for (float b = 0.0f; b < 32.0f; b += 4.0f) {
+        addTaiko(pcm, rate, b * kSpb, 65.0f, 0.20f, rng);
+    }
+    // Low koto roots; Bb at the last turn leans the loop back onto A.
+    pluck(0.0f, 110.0f, 0.42f, 0.997f);
+    pluck(8.0f, 146.83f, 0.34f, 0.997f);
+    pluck(16.0f, 110.0f, 0.40f, 0.997f);
+    pluck(24.0f, 164.81f, 0.34f, 0.997f);
+    pluck(28.0f, 116.54f, 0.30f, 0.997f);
+    // The melody: out over the water, a long look down, and back.
+    pluck(0.0f, 440.00f, 0.38f);
+    pluck(2.0f, 349.23f, 0.30f);
+    pluck(3.0f, 329.63f, 0.32f);
+    pluck(6.0f, 293.66f, 0.30f);
+    pluck(8.0f, 329.63f, 0.34f);
+    pluck(10.0f, 349.23f, 0.28f);
+    pluck(11.0f, 329.63f, 0.26f);
+    pluck(12.0f, 293.66f, 0.30f);
+    pluck(14.0f, 233.08f, 0.26f);
+    pluck(16.0f, 220.00f, 0.34f);
+    pluck(18.0f, 293.66f, 0.30f);
+    pluck(20.0f, 329.63f, 0.34f);
+    pluck(22.0f, 349.23f, 0.28f);
+    pluck(23.0f, 329.63f, 0.24f);
+    pluck(24.0f, 440.00f, 0.36f);
+    pluck(26.0f, 329.63f, 0.28f);
+    pluck(28.0f, 293.66f, 0.26f);
+    pluck(29.5f, 233.08f, 0.24f);
+    pluck(30.5f, 220.00f, 0.26f);
+    // Glints before each phrase turn — the last light off the river.
+    addBell(pcm, rate, 7.75f * kSpb, 1174.66f, 0.055f, 3.4f);
+    addBell(pcm, rate, 15.75f * kSpb, 880.00f, 0.055f, 3.4f);
+    addBell(pcm, rate, 23.75f * kSpb, 1318.51f, 0.050f, 3.4f);
+    // A flute out of the dark on the far bank, twice, the second lower.
+    addFlute(pcm, rate, 8.0f * kSpb, 440.00f, 0.080f, 3.0f, rng);
+    addFlute(pcm, rate, 24.0f * kSpb, 349.23f, 0.075f, 3.6f, rng);
+    normalizePeak(pcm, kMusicPeak);
+    return pcm;
+}
+
 // In Music enum order, so kMusicFiles[i] names what kRenderers[i] produces.
 using Renderer = std::vector<float> (*)(float);
-constexpr Renderer kRenderers[kMusicCount] = {renderMenu, renderDojo, renderHanami};
+constexpr Renderer kRenderers[kMusicCount] = {renderMenu, renderDojo, renderHanami,
+                                              renderSorihashi};
 
 // ---- wav -----------------------------------------------------------------
 

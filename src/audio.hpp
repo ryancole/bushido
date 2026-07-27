@@ -14,13 +14,13 @@ inline constexpr int kSfxCount = 5;
 // WAVs below once. Menu underscores the whole front-end (main menu + select
 // screens); each battleground has its own theme, ordered after Menu to match
 // the level roster in level.cpp.
-enum class Music { Menu = 0, Dojo, Hanami };
-inline constexpr int kMusicCount = 3;
+enum class Music { Menu = 0, Dojo, Hanami, Sorihashi };
+inline constexpr int kMusicCount = 4;
 
 // Each track's file under assets/music/, indexed by the enum above — the one
 // place the generator and the loader agree on a name.
 inline constexpr const char* kMusicFiles[kMusicCount] = {
-    "menu.wav", "dojo.wav", "hanami.wav"};
+    "menu.wav", "dojo.wav", "hanami.wav", "sorihashi.wav"};
 
 // A battleground's theme (level roster index -> track).
 inline Music levelMusic(int levelIndex) {
