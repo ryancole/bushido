@@ -61,6 +61,30 @@ struct LegPose {
 LegPose shuffleLeg(float phase, float strideBlend, glm::vec2 dir, float crouch,
                    bool grounded, float side);
 
+// One hop, solved. A fighter who has lost a leg does not go down — there is
+// still a leg to stand on, and standing is what a duel is — so they hop on it.
+//
+// The hop keeps the shuffle's rule, and keeps it for the same reason: the foot
+// on the floor must not slide. All the ground is covered in the air, so
+// `surge` is flat zero through the plant and a bell through the flight, which
+// is what lets the foot sit still under a body that is not moving. It averages
+// to exactly 1 across the cycle the way the shuffle's 2·sin² does, so the mean
+// speed is still precisely the speed stat (times game.cpp's kHopMoveScale) and
+// cadence remains the only thing speed buys.
+//
+// Both ends read this one function — game.cpp for the surge and the leg's
+// hurtbox, samurai.cpp for the drawing — since two copies would disagree about
+// when the foot is down, and the fighter would be hit where their leg is not.
+struct HopPose {
+    float surge;   // × speed this instant; 0 while the foot is planted
+    float rise;    // m the hip and everything above it ride above the guard
+    LegPose leg;   // the leg that is left, solved for where its foot has to be
+};
+// One hop per π of phase, matching a footfall of the shuffle. `side` is the
+// remaining leg's z sign (+1 = the lead, sword-side leg).
+HopPose hopCycle(float phase, float strideBlend, float crouch, bool grounded,
+                 float side);
+
 struct SamuraiPose {
     float walkPhase = 0.0f;  // radians through the stride cycle
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed; drives bob and lean
@@ -82,6 +106,11 @@ struct SamuraiPose {
     float attackT = 0.0f;    // 0..1 progress through the current attack phase
     bool blocking = false;   // guard up: the sword arm holds the blade at the foe
     float crouch = 0.0f;     // 0..1 duck depth: legs fold, upper body drops
+    // One leg gone and still standing on the other: the surviving leg is
+    // placed by hopCycle rather than the shuffle, and the whole body rides the
+    // hop up and down. A flag rather than something read off `severed`,
+    // because a corpse with one leg is toppling, not hopping.
+    bool hopping = false;
     // Shoulder-to-tip length of the drawn katana, matching the fighter's
     // resolved reach (character + weapon) so what connects is what the
     // player sees. bladeWidth scales only the drawn blade's thickness —

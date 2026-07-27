@@ -62,6 +62,19 @@ constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard i
 constexpr float kSprintMoveScale = 2.2f; // on the character's move speed
 constexpr float kSprintTurnRate = 12.0f; // rad/s the body turns, into a run and out
 
+// Hopping: one leg gone, and the body stays up.
+//
+// Losing a leg used to be the end of standing — the fighter toppled and fought
+// the rest of the duel from the floor, which made the first leg taken very
+// nearly the whole match. But there is still a leg under them, and standing is
+// what a duel is, so they hop on it. The cost is the leg's and no more than
+// that: a hop covers its ground in the air (samurai.hpp's hopCycle keeps the
+// shuffle's rule — the surge is zero while the foot is down), and there is no
+// sprinting and no jumping on one leg, since a run is two legs alternating and
+// a leap wants one to spare. The guard, the swing and the crouch are all still
+// theirs — a fighter who can stand can fight.
+constexpr float kHopMoveScale = 0.55f; // on the character's move speed
+
 // Rolling: the same control, for a fighter with no legs left to run on.
 //
 // A crawl is paced by the arms (kCrawlSpeed), which for a fighter who has lost
@@ -315,27 +328,58 @@ glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
     return {h.x, c * h.y + s * h.z, s * h.y + c * h.z};
 }
 
-// A limb's model-local bounds with the player's crouch applied: arms and the
-// head drop with the upper body, legs squash toward the floor by the same
-// fraction the model compresses them.
+// Which leg a one-legged fighter is standing on, as its z sign.
+float hopSide(const Player& p) {
+    return p.severed[static_cast<int>(Limb::LegFront)] ? -1.0f : 1.0f;
+}
+
+// The hop this fighter is in the middle of. Zero surge and zero rise for
+// anyone standing on two legs or none, so every reader can ask unconditionally.
+HopPose hopOf(const Player& p) {
+    if (!p.hopping()) {
+        return {1.0f, 0.0f, {}};
+    }
+    return hopCycle(p.animPhase, p.strideBlend, p.crouchAmount, p.grounded,
+                    hopSide(p));
+}
+
+// Where everything from the hip up sits relative to the standing guard: a
+// crouch takes it down, a hop carries it up. Every sim height above the legs is
+// authored against that guard and rides this one number, so the blade sweeps
+// where it is drawn and the head you aim at is where the head is — which is
+// the whole reason the hop's rise is not left to the renderer.
+float bodyRiseY(const Player& p) {
+    return hopOf(p).rise - p.crouchAmount * kCrouchDrop;
+}
+
+// A limb's model-local bounds with the player's crouch and hop applied: arms
+// and the head ride the upper body, legs are wherever they have been solved to.
 LimbBounds crouchedLimbBounds(const Player& p, int limb) {
     LimbBounds b = samuraiLimbBounds(limb);
     const bool isLeg = limb == static_cast<int>(Limb::LegFront) ||
                        limb == static_cast<int>(Limb::LegBack);
     if (!isLeg) {
-        b.center.y -= p.crouchAmount * kCrouchDrop;
+        b.center.y += bodyRiseY(p);
         return b;
     }
-    // The legs are wherever the shuffle has put them, which is nowhere near a
+    // The legs are wherever the gait has put them, which is nowhere near a
     // fixed box now that a fighter holds a stance and steps out of it. Built
-    // from `shuffleLeg` — the very function samurai.cpp draws the leg with —
-    // over the hip, knee and foot, so what you have to hit is what you see. A
-    // static box cannot do this job: the same leg is 0.17 m from center in the
-    // guard and 0.45 m out at full extension, so one box either misses the
-    // extended leg or swallows a standing fighter whole.
+    // from the very solve samurai.cpp draws the leg with — `shuffleLeg`, or
+    // `hopCycle` for the one leg a hopping fighter has left — over the hip,
+    // knee and foot, so what you have to hit is what you see. A static box
+    // cannot do this job: the same leg is 0.17 m from center in the guard and
+    // 0.45 m out at full extension, so one box either misses the extended leg
+    // or swallows a standing fighter whole.
+    //
+    // Only the leg being stood on: severLimb asks for the bounds of the leg it
+    // has just taken off, to spawn the debris where it was, and that one was
+    // still shuffling when the blade went through it.
     const float side = limb == static_cast<int>(Limb::LegFront) ? 1.0f : -1.0f;
-    const LegPose leg = shuffleLeg(p.animPhase, p.strideBlend, p.strideDir,
-                                   p.crouchAmount, p.grounded, side);
+    const LegPose leg =
+        p.hopping() && side == hopSide(p)
+            ? hopOf(p).leg
+            : shuffleLeg(p.animPhase, p.strideBlend, p.strideDir, p.crouchAmount,
+                         p.grounded, side);
     glm::vec3 lo = glm::min(glm::min(leg.hipAt, leg.kneeAt), leg.footAt);
     glm::vec3 hi = glm::max(glm::max(leg.hipAt, leg.kneeAt), leg.footAt);
     // The joints are a centerline; the limb has width around it.
@@ -512,11 +556,12 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // Sprint: only while actually travelling — the control on its own is
         // not a state, and a fighter standing still holding it has neither
         // broken their stance nor any reason to be looking anywhere else.
-        // Never out of a swing, hitstun, a crouch or a fall. Resolved before
-        // the guard and the swing because it takes both away.
+        // Never out of a swing, hitstun, a crouch or a fall — and never on one
+        // leg, since a run is two legs alternating and the hop is already the
+        // fastest that body goes.
         p.sprinting = in.sprint && p.hitstun <= 0.0f &&
                       p.attackState == AttackState::None && !p.crouching &&
-                      !p.downed() && glm::length(in.move) > 0.01f;
+                      !p.downed() && !p.hopping() && glm::length(in.move) > 0.01f;
         // The same control on a fighter with no legs to run on: the body rolls
         // instead. Same gate, same trade, and the two can never both be set —
         // a sprint needs legs and a roll needs both of them gone. Only once the
@@ -587,6 +632,12 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         }
         if (p.sprinting) {
             speedScale *= kSprintMoveScale;
+        }
+        if (p.hopping()) {
+            // A hop covers its ground airborne and lands where it started
+            // pushing from, so it is slower than the shuffle it replaces —
+            // which is what losing a leg costs, along with the run.
+            speedScale *= kHopMoveScale;
         }
         if (p.downed()) {
             if (p.fallTilt < kMaxTilt) {
@@ -661,9 +712,22 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // feel broken. A roll is not driven by a foot either — the body's own
         // weight carries it round at an even rate — so it takes no surge, and
         // the spin below can then come straight out of the distance covered.
+        //
+        // A hop is the same statement about a different gait: it too covers no
+        // ground while the foot is down, so the surge comes from hopCycle —
+        // the function the model's leg is placed by — instead of from the
+        // shuffle's curve. It averages to 1 across a cycle exactly as this
+        // one does, so speed still buys cadence and nothing else.
         const float midPhase = p.animPhase + 0.5f * dPhase;
         const float surge = std::sin(midPhase);
-        const float gait = p.rolling ? 1.0f : (p.grounded ? 2.0f * surge * surge : 1.0f);
+        float gait = 1.0f;
+        if (p.hopping() && p.grounded) {
+            gait = hopCycle(midPhase, p.strideBlend, p.crouchAmount, true,
+                            hopSide(p))
+                       .surge;
+        } else if (!p.rolling && p.grounded) {
+            gait = 2.0f * surge * surge;
+        }
         p.animPhase = std::fmod(p.animPhase + dPhase, kTwoPi);
 
         // Turn the body over as far as the ground it covers: one radian per
@@ -687,7 +751,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         if (p.grounded) {
             p.vy = 0.0f;
-            if (in.jump && p.hitstun <= 0.0f && !p.downed() && !p.crouching) {
+            // Nothing to spring off on one leg — that leg is already spending
+            // itself on the hop, which is the only leaving the ground it gets.
+            if (in.jump && p.hitstun <= 0.0f && !p.downed() && !p.hopping() &&
+                !p.crouching) {
                 p.vy = st.jumpVelocity;
                 p.grounded = false;
             }
@@ -765,10 +832,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         const StanceArc& arc = stance.arcs[static_cast<int>(p.attackKind)];
         const float swordSide =
             p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
-        // A crouched attacker's shoulder (and so the whole sweep) rides lower.
+        // A crouched attacker's shoulder (and so the whole sweep) rides lower;
+        // a hopping one's rides up and down with the hop.
         const glm::vec3 pivot = modelToWorld(
-            p, {0.0f, kShoulderHeight - p.crouchAmount * kCrouchDrop,
-                swordSide * kShoulderSide});
+            p, {0.0f, kShoulderHeight + bodyRiseY(p), swordSide * kShoulderSide});
         const float tCur = p.attackT;
         const float tPrev =
             std::max(0.0f, tCur - dt / (st.activeTime * tun.activeScale));
@@ -806,8 +873,7 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             }
             if (hitLimb < 0 && !hitTorso) {
                 glm::vec3 torsoCenter = modelToWorld(
-                    foe,
-                    {0.0f, kTorsoCenterY - foe.crouchAmount * kCrouchDrop, 0.0f});
+                    foe, {0.0f, kTorsoCenterY + bodyRiseY(foe), 0.0f});
                 hitTorso = segmentHitsBox(s0, s1, torsoCenter,
                                           rollHalfExtent(foe, kTorsoHalf));
             }
@@ -880,8 +946,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
 
         // Blood sprays from the wound, away from the attacker and upward;
         // dismemberment gushes harder than a body hit.
-        glm::vec3 wound = modelToWorld(
-            foe, {0.0f, kTorsoCenterY - foe.crouchAmount * kCrouchDrop, 0.0f});
+        glm::vec3 wound =
+            modelToWorld(foe, {0.0f, kTorsoCenterY + bodyRiseY(foe), 0.0f});
         if (hitLimb >= 0) {
             wound = modelToWorld(foe, crouchedLimbBounds(foe, hitLimb).center);
         }
@@ -1061,13 +1127,12 @@ void Game::dropWeapon(int i) {
     const int weapon = p.weapon;
     equip(i, Player::kUnarmed);
 
-    // Leaves from the hand that was holding it, ducking with the crouch the
-    // way the drawn blade does, so the throw starts where the sword was.
+    // Leaves from the hand that was holding it, riding the crouch (and the hop)
+    // the way the drawn blade does, so the throw starts where the sword was.
     const float swordSide =
         p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
     const glm::vec3 hand = modelToWorld(
-        p, {0.0f, kHandHeight - p.crouchAmount * kCrouchDrop,
-            swordSide * kShoulderSide});
+        p, {0.0f, kHandHeight + bodyRiseY(p), swordSide * kShoulderSide});
     const float steel = bladeSteelLength(weaponDef(weapon).stats.reachBonus);
     // Thrown the way the body is turned, and tumbling end over end about its
     // own side axis, so a blade dropped mid-sprint leaves the hand along the
@@ -1152,10 +1217,13 @@ void Game::severLimb(int victim, Limb limb, const glm::vec2& impulseDir) {
         dropWeapon(victim);
     }
 
-    // Losing a leg starts the topple, toward the lost leg's side. If the
-    // other leg goes later the body is already down (or falling) — keep the
-    // direction it committed to.
-    if ((limb == Limb::LegFront || limb == Limb::LegBack) && v.fallSide == 0.0f) {
+    // Losing the *last* leg starts the topple, toward the side it went from.
+    // The first one costs the run and the walk but not the footing — that
+    // fighter hops on what is left (Player::hopping) — so there is nothing to
+    // tip yet and no side to tip toward. If the body is already falling for
+    // some other reason, keep the direction it committed to.
+    if ((limb == Limb::LegFront || limb == Limb::LegBack) && v.legless() &&
+        v.fallSide == 0.0f) {
         v.fallSide = limb == Limb::LegFront ? 1.0f : -1.0f;
         v.fallVel = kToppleKick;
     }

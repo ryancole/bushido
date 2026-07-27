@@ -86,12 +86,62 @@ bool isSevered(const SamuraiPose& pose, int limb) {
     return pose.severed && pose.severed[limb];
 }
 
+// The two-bone solve, given where the hip is and where the foot has to be.
+// With both ends fixed the knee is *not* pinned: it can sit anywhere on a
+// circle about the hip-to-foot axis, and which point of that circle it takes
+// is the whole difference between a leg and a horse's hind leg. A pole vector
+// picks it, and the pole is model forward — always — so both knees point the
+// way the fighter faces.
+//
+// Solving inside the vertical plane through hip and foot instead, which is
+// what this did first, silently bulges the knee toward whichever way the foot
+// is offset. The lead leg looked right by luck, its foot being ahead; the rear
+// leg, whose foot is behind, folded backward at the knee.
+LegPose solveLeg(glm::vec3 hip, glm::vec3 foot) {
+    glm::vec3 toFoot = foot - hip;
+    float dist = glm::length(toFoot);
+    const float maxReach = kLegLength - 0.002f;
+    if (dist > maxReach) { // a leg cannot reach further than it is long
+        toFoot *= maxReach / dist;
+        dist = maxReach;
+        foot = hip + toFoot;
+    }
+    const glm::vec3 axis = toFoot / dist;
+    // Equal-length bones (kThighLen == kShinLen), so the knee stands over the
+    // midpoint of the chord, out by whatever Pythagoras leaves.
+    const float half = 0.5f * dist;
+    const float bulge =
+        std::sqrt(std::max(0.0f, kThighLen * kThighLen - half * half));
+    glm::vec3 pole{1.0f, 0.0f, 0.0f};
+    pole -= axis * glm::dot(pole, axis); // the part of forward across the leg
+    const float poleLen = glm::length(pole);
+
+    LegPose out{};
+    out.hipAt = hip;
+    out.footAt = foot;
+    out.kneeAt = hip + axis * half +
+                 (poleLen > 1e-4f ? pole / poleLen : glm::vec3{0.0f, 0.0f, 1.0f}) *
+                     bulge;
+    return out;
+}
+
+// The hop, in numbers. The plant is the part of the cycle with the foot on the
+// floor and so the part that covers no ground at all; the rest is flight. The
+// body sinks a little to push off and rides up over the hop, and the foot
+// tucks up past that rise so it genuinely clears the floor rather than
+// skimming it. Every one of these is bounded by the leg being a fixed-length
+// lever: at full flight the hip is at 0.79 and the foot at 0.30, which is
+// 0.49 of a 0.80 m leg — a deep tuck, and nowhere near straightening it.
+constexpr float kHopPlant = 0.32f; // fraction of the cycle with the foot down
+constexpr float kHopRise = 0.09f;  // m the body lifts at the top of a hop
+constexpr float kHopDip = 0.05f;   // m it sinks into the push-off
+constexpr float kHopClear = 0.16f; // m the foot tucks up past the body's rise
+
 } // namespace
 
 LegPose shuffleLeg(float phase, float strideBlend, glm::vec2 dir, float crouch,
                    bool grounded, float side) {
     const float pi = glm::pi<float>();
-    LegPose out{};
     const float hipY = kStanceHipY - crouch * kCrouchDrop;
 
     // Where in the cycle, and which half. A cycle is two movements: *widen*,
@@ -140,44 +190,57 @@ LegPose shuffleLeg(float phase, float strideBlend, glm::vec2 dir, float crouch,
         foot = {side > 0.0f ? 0.30f : -0.20f,
                 kFootY + (side > 0.0f ? 0.26f : 0.44f), side * kLegSide};
     }
-    out.footAt = foot;
 
     // Solve the two-bone chain for that foot rather than swinging the hip and
-    // hoping. With the hip and the foot both fixed the knee is *not* pinned:
-    // it can sit anywhere on a circle about the hip-to-foot axis, and which
-    // point of that circle it takes is the whole difference between a leg and
-    // a horse's hind leg. A pole vector picks it, and the pole is model
-    // forward — always — so both knees point the way the fighter faces.
-    //
-    // Solving inside the vertical plane through hip and foot instead, which is
-    // what this did first, silently bulges the knee toward whichever way the
-    // foot is offset. The lead leg looked right by luck, its foot being ahead;
-    // the rear leg, whose foot is behind, folded backward at the knee.
-    const glm::vec3 hip{0.0f, hipY, side * kLegSide};
-    glm::vec3 toFoot = foot - hip;
-    float dist = glm::length(toFoot);
-    const float maxReach = kLegLength - 0.002f;
-    if (dist > maxReach) { // a leg cannot reach further than it is long
-        toFoot *= maxReach / dist;
-        dist = maxReach;
-        foot = hip + toFoot;
-    }
-    const glm::vec3 axis = toFoot / dist;
-    // Equal-length bones (kThighLen == kShinLen), so the knee stands over the
-    // midpoint of the chord, out by whatever Pythagoras leaves.
-    const float half = 0.5f * dist;
-    const float bulge =
-        std::sqrt(std::max(0.0f, kThighLen * kThighLen - half * half));
-    glm::vec3 pole{1.0f, 0.0f, 0.0f};
-    pole -= axis * glm::dot(pole, axis); // the part of forward across the leg
-    const float poleLen = glm::length(pole);
+    // hoping — a rigid leg has exactly one way to reach the ground, which is
+    // not enough freedom to hold a stance *and* put both feet on the floor.
+    return solveLeg({0.0f, hipY, side * kLegSide}, foot);
+}
 
-    out.hipAt = hip;
-    out.footAt = foot;
-    out.kneeAt = hip + axis * half +
-                 (poleLen > 1e-4f ? pole / poleLen : glm::vec3{0.0f, 0.0f, 1.0f}) *
-                     bulge;
-    return out;
+HopPose hopCycle(float phase, float strideBlend, float crouch, bool grounded,
+                 float side) {
+    const float pi = glm::pi<float>();
+    HopPose out{};
+    if (!grounded) {
+        // Already off the floor for some other reason — knocked into the air,
+        // or falling. There is nothing to hop off, so the leg just tucks the
+        // way it does in any other jump and the travel is ordinary air control.
+        out.surge = 1.0f;
+        out.leg = shuffleLeg(phase, strideBlend, {1.0f, 0.0f}, crouch, false, side);
+        return out;
+    }
+
+    const float hipY = kStanceHipY - crouch * kCrouchDrop;
+    const float u = std::fmod(phase, pi) / pi; // 0..1 through one hop
+    float lift = 0.0f;
+    if (u < kHopPlant) {
+        // Foot down. No ground is covered at all here, which is exactly what
+        // lets the foot stay where it was put — the sim's speed curve is this
+        // same surge, so a planted foot and a still body are one statement.
+        out.surge = 0.0f;
+        out.rise = -kHopDip * std::sin(pi * u / kHopPlant);
+    } else {
+        const float w = (u - kHopPlant) / (1.0f - kHopPlant);
+        // Zero at both ends of the flight, so the body neither jerks off the
+        // floor nor lands still travelling; ∫(1−cos 2πw)dw = 1 over the flight,
+        // and dividing by its share of the cycle puts the mean back at 1 across
+        // the whole of it.
+        out.surge = (1.0f - std::cos(2.0f * pi * w)) / (1.0f - kHopPlant);
+        out.rise = kHopRise * std::sin(pi * w);
+        lift = (kHopRise + kHopClear) * std::sin(pi * w);
+    }
+    // Amplitude closes with the step, exactly as the shuffle's foot lift does:
+    // a fighter standing still on one leg is balancing, not hopping in place.
+    out.rise *= strideBlend;
+    lift *= strideBlend;
+
+    // The foot stays under the body — that *is* the hop, and it is why nothing
+    // here needs the direction of travel: a body carried through the air lands
+    // where it is going without the leg having to reach for it. So the leg only
+    // ever rises and falls, and the ground it covers is covered airborne.
+    return {out.surge, out.rise,
+            solveLeg({0.0f, hipY + out.rise, side * kLegSide},
+                     {0.0f, kFootY + lift, side * kLegSide})};
 }
 
 // Heights here are authored against a fighter standing tall and then dropped
@@ -226,11 +289,21 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     // height and kCrouchDrop must match game.cpp so the ducked hurtboxes sit
     // where the body is drawn.
     const float crouchDrop = pose.crouch * kCrouchDrop;
-    const float hipY = kStanceHipY - crouchDrop;
+    // A fighter down to one leg hops on it, and the whole body rides that hop —
+    // so this is a signed offset rather than the drop it used to be. Its sign
+    // is the only difference between ducking and being carried up off the
+    // floor, and everything above the hip takes it either way.
+    const float hopSide = isSevered(pose, 2) ? -1.0f : 1.0f;
+    const float hopRise =
+        pose.hopping ? hopCycle(pose.walkPhase, pose.strideBlend, pose.crouch,
+                                pose.grounded, hopSide)
+                           .rise
+                     : 0.0f;
+    const float hipY = kStanceHipY - crouchDrop + hopRise;
     // How far the whole body sits below a fighter standing tall, which the
     // upper body rides down by — and which every sim height is authored
     // against too, so the blade cuts where it is drawn.
-    const float stanceDrop = kStanceDrop + crouchDrop;
+    const float stanceDrop = kStanceDrop + crouchDrop - hopRise;
 
     for (float s : {-1.0f, 1.0f}) {
         if (isSevered(pose, s > 0.0f ? 2 : 3)) {
@@ -241,8 +314,15 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         }
         // Solved, not posed — and solved by the same function game.cpp bounds
         // the leg with, so the fighter is hit where their legs actually are.
-        const LegPose leg = shuffleLeg(pose.walkPhase, pose.strideBlend,
-                                       pose.strideDir, pose.crouch, pose.grounded, s);
+        // On one leg that is the hop's solve instead of the shuffle's: there is
+        // no shuffling onto a leg that is not there.
+        const LegPose leg =
+            pose.hopping
+                ? hopCycle(pose.walkPhase, pose.strideBlend, pose.crouch,
+                           pose.grounded, s)
+                      .leg
+                : shuffleLeg(pose.walkPhase, pose.strideBlend, pose.strideDir,
+                             pose.crouch, pose.grounded, s);
         // Boxes hang from the rest pose — leg straight down from the hip — and
         // each bone is carried onto the joints the solve produced. The roll
         // reference is model forward, the same vector the knee was poled with,
