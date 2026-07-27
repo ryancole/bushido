@@ -1152,10 +1152,96 @@ bool drawInviteButton(bool overlayRefused) {
     return clicked;
 }
 
-void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color) {
+void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 color,
+             bool unlit = false) {
     glm::mat4 model = glm::translate(glm::mat4(1.0f), center);
     model = glm::scale(model, size);
-    renderer.drawBox(model, color);
+    renderer.drawBox(model, color, unlit);
+}
+
+// The mark under a blade lying in the arena, and the one thing on screen that
+// says it can be taken up. A thrown sword is a debris box among the stones, the
+// petals and the severed limbs, and nothing told them apart: a disarmed fighter
+// had to know from having watched it land, which is no use at all to the one
+// who was disarmed by losing an arm and never saw it go.
+//
+// It belongs on the **floor**, drawn around the sword rather than over it: the
+// camera looks level, so anything hanging in the air above a blade reads at a
+// glance as something in flight — a petal, a droplet, a piece of somebody —
+// which is the pile this has to be picked out of, not joined to. On the ground
+// it is unmistakably a mark *on the arena*, and it says where to stand as well
+// as what is there.
+//
+// A pure function of the clock and the blade's index, the way all ambient
+// motion here is (levels/scenery.hpp): no stored state, nothing for the sim to
+// know about, nothing the checksum has to carry — two peers draw the same ring
+// because they are looking at the same blade at the same time, not because
+// anybody agreed about it.
+constexpr int kRingDashes = 22;
+constexpr float kRingSlab = 0.014f;    // m thick, so it survives a glancing view
+constexpr float kRingWidth = 0.06f;    // m across each dash, radially
+constexpr float kRingLift = 0.008f;    // m above whatever the blade is resting on
+constexpr float kRingGap = 0.14f;      // m of clearance between blade tip and ring
+constexpr float kRingSpin = 0.4f;      // rad/s
+constexpr float kRipplePeriod = 1.7f;  // s between pulses running out to the ring
+
+// One circle of dashes lying flat on the floor. Every dash is turned onto its
+// own tangent, which is why this builds a matrix instead of going through the
+// axis-aligned drawBox above — and it is also why the ring is drawn **unlit**:
+// turned that way, the fixed light direction in cube.frag lights the dashes on
+// one side of the circle and not the other, and a ring that is bright at one
+// end reads as scattered gravel rather than as a mark somebody left.
+void groundRing(Renderer& renderer, glm::vec3 center, float radius, float spin,
+                float fill, float width, const glm::vec4& color) {
+    constexpr float kTau = 6.2831853f;
+    const float arc = kTau * radius / static_cast<float>(kRingDashes);
+    for (int i = 0; i < kRingDashes; ++i) {
+        const float a = spin + static_cast<float>(i) * (kTau / kRingDashes);
+        glm::mat4 model = glm::translate(
+            glm::mat4(1.0f), {center.x + std::cos(a) * radius, center.y,
+                              center.z + std::sin(a) * radius});
+        // A turn of -a about +Y puts the dash's own +x out along the radius and
+        // its +z along the tangent, which is the way a dash has to lie.
+        model = glm::rotate(model, -a, {0.0f, 1.0f, 0.0f});
+        model = glm::scale(model, {width, kRingSlab, arc * fill});
+        renderer.drawBox(model, color, true);
+    }
+}
+
+// `half` is the blade's own half length (droppedBladeHalfExtent), so the ring
+// is drawn round the sword it marks and an odachi gets the wider one — a fixed
+// radius would either strangle the long blades or swim around the short.
+//
+// `ready` is the sim's own answer to whether a fighter can claim this blade
+// right now (Game::takeableWeapon), never a distance measured out here: the
+// ring brightens and thickens on it, so the mark says "press it" as well as
+// "it is there", and stops saying so the instant the sim would refuse.
+//
+// What `ready` deliberately does *not* change is any **rate**. These are pure
+// functions of the clock with no state to ease from, so a spin or a pulse that
+// ran faster in reach would jump phase — by whole turns, a minute into a match
+// — at the exact moment a fighter stepped over the sword.
+void drawPickupRing(Renderer& renderer, glm::vec3 base, float half, float time,
+                    int seed, bool ready) {
+    const float sf = static_cast<float>(seed);
+    const float radius = half + kRingGap;
+    // The blade's center sits its own half thickness above whatever it came to
+    // rest on; the ring goes on that surface, not on y = 0, since a sword can
+    // land on Hanami's engawa or down in the stream bed.
+    const glm::vec3 at{base.x, base.y - droppedBladeHalfExtent(0.0f).y + kRingLift,
+                       base.z};
+    const float spin = time * kRingSpin + sf * 1.3f;
+    const float breathe = 0.5f + 0.5f * std::sin(time * 2.2f + sf * 1.7f);
+    glm::vec4 gold{0.98f, 0.86f, 0.52f, ready ? 0.9f : 0.32f + 0.16f * breathe};
+    groundRing(renderer, at, radius, spin, 0.55f,
+               kRingWidth * (ready ? 1.6f : 1.0f), gold);
+
+    // A pulse running out from the blade to the ring and fading — the motion
+    // that makes the mark catch an eye, without ever leaving the floor.
+    const float t = std::fmod(time / kRipplePeriod + sf * 0.31f, 1.0f);
+    gold.a = (1.0f - t) * (ready ? 0.55f : 0.25f);
+    groundRing(renderer, at, radius * (0.25f + 0.75f * t), -spin * 0.6f, 0.9f,
+               kRingWidth * 0.55f, gold);
 }
 
 // Where a fighter's model stands, and how it is posed this frame. Both are
@@ -1249,11 +1335,28 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
     // Blades lying where they were thrown, tumbling as debris on the same
     // terms. They belong to nobody now, so they wear the weapon's own tile
     // color on the grip rather than either fighter's accent.
-    for (const DroppedWeapon& blade : game.droppedWeapons()) {
+    const int takeable[2] = {game.takeableWeapon(0), game.takeableWeapon(1)};
+    for (std::size_t n = 0; n < game.droppedWeapons().size(); ++n) {
+        const DroppedWeapon& blade = game.droppedWeapons()[n];
         const WeaponStats& w = weaponDef(blade.weapon).stats;
-        drawDroppedBlade(renderer, game.droppedWeaponTransform(blade),
-                         bladeSteelLength(w.reachBonus), w.bladeWidth,
-                         {0.16f, 0.13f, 0.11f, 1.0f});
+        const float steel = bladeSteelLength(w.reachBonus);
+        // The ring goes down before the blade, the way the blood marks and the
+        // shadows do: it is something lying on the floor, and the sword lying
+        // on top of it is the whole picture. It is translucent and the pipeline
+        // writes depth, so where it passes nearer the camera than the blade it
+        // takes the pixel — but the camera looks level and the ring is a 14 mm
+        // slab seen almost edge on, so that is a two-pixel sliver rather than a
+        // stripe cut out of the sword. A blade still settling gets no ring at
+        // all: advertising a pickup the sim refuses for another half second is
+        // worse than saying nothing.
+        if (blade.settle <= 0.0f) {
+            const int idx = static_cast<int>(n);
+            drawPickupRing(renderer, game.droppedWeaponPos(blade),
+                           droppedBladeHalfExtent(steel).x, time, idx,
+                           takeable[0] == idx || takeable[1] == idx);
+        }
+        drawDroppedBlade(renderer, game.droppedWeaponTransform(blade), steel,
+                         w.bladeWidth, {0.16f, 0.13f, 0.11f, 1.0f});
     }
 
     // Blood droplets in flight.

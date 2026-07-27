@@ -298,6 +298,15 @@ public:
     // sword forever or stand there pressing at nothing.
     static constexpr float kPickupRange = 1.25f;
 
+    // Which blade fighter i would take up if they pressed for it this instant —
+    // an index into droppedWeapons(), or -1 for none. This is the *rule*, and
+    // takeUpWeapon is nothing but this plus the act, so that the thing drawn to
+    // say "you can claim this" and the thing that claims it can never disagree.
+    // Renderers have no business knowing what is in a fighter's hand, and a
+    // second copy of the test out there would eventually promise a pickup the
+    // sim refuses.
+    int takeableWeapon(int i) const;
+
     const std::vector<BloodParticle>& bloodParticles() const { return m_blood; }
     const std::vector<BloodMark>& bloodMarks() const { return m_bloodMarks; }
 
@@ -337,9 +346,8 @@ private:
     // Throws fighter i's blade to the ground in front of them, where either
     // fighter can take it up again. A no-op if they have nothing to throw.
     void dropWeapon(int i);
-    // Takes up the nearest blade within reach of fighter i, if there is one
-    // and they have a hand to hold it with. Returns whether anything was
-    // picked up.
+    // Takes up the blade takeableWeapon(i) names, if there is one. Returns
+    // whether anything was picked up.
     bool takeUpWeapon(int i);
     // Is this debris body one of the severed limbs? Blades bleed no blood, so
     // the impact stream has to be able to tell them apart.
