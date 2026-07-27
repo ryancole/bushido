@@ -15,6 +15,10 @@ const LevelDef kDef = {
     "Stone, shadow, and discipline",
     {0.22f, 0.21f, 0.26f, 0.75f},
     Game::kArenaHalfWidth,
+    // Night. The zenith is the near-black the frame used to be cleared to, so
+    // the arena reads as it always has; all the sky adds is a cold moonlit
+    // wash behind the pillars, and hills darker than the sky under it.
+    {{0.04f, 0.04f, 0.08f}, {0.20f, 0.19f, 0.26f}, {0.06f, 0.06f, 0.08f}},
 };
 
 // Dark stone slab with pillars behind for depth reference.
