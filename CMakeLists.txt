@@ -105,6 +105,7 @@ add_executable(bushido
     src/netplay/transport.cpp
     src/levels/level.cpp
     src/levels/sky.cpp
+    src/levels/sun.cpp
     src/levels/dojo.cpp
     src/levels/hanami.cpp
     src/physics.cpp

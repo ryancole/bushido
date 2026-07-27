@@ -15,7 +15,7 @@ using levels::LevelEntry;
 const LevelEntry kEntries[kLevelCount] = {
     {&levels::dojo::kDef, levels::dojo::draw},
     {&levels::hanami::kDef, levels::hanami::draw, levels::hanami::obstacles,
-     levels::hanami::ground, levels::hanami::water},
+     levels::hanami::ground, levels::hanami::water, levels::hanami::shafts},
 };
 
 const LevelEntry& entry(int index) {
@@ -47,4 +47,11 @@ const LevelWater* levelWater(int index) {
 
 void drawLevel(Renderer& renderer, int index, float time) {
     entry(index).draw(renderer, time);
+}
+
+void drawLightShafts(Renderer& renderer, int index, float time) {
+    const LevelEntry& e = entry(index);
+    if (e.shafts) {
+        e.shafts(renderer, time);
+    }
 }

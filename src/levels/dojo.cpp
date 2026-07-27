@@ -23,7 +23,12 @@ const LevelDef kDef = {
     {{0.04f, 0.04f, 0.08f},
      {0.20f, 0.19f, 0.26f},
      {0.06f, 0.06f, 0.08f},
-     {10, {0.25f, 0.25f, 0.32f}, {0.08f, 0.08f, 0.12f}, 0.95f, 0.008f}},
+     {10, {0.25f, 0.25f, 0.32f}, {0.08f, 0.08f, 0.12f}, 0.95f, 0.008f},
+     // No sun over a night stage: cold moonlight, and zeroes for both the
+     // shafts and the shadows. That is the point of the sun being authored per
+     // level rather than assumed — Dojo draws exactly what it always drew, and
+     // pays nothing for a feature it doesn't use.
+     {{0.55f, 0.60f, 0.80f}, 0.0f, 0.0f}},
 };
 
 // Dark stone slab with pillars behind for depth reference.

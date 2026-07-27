@@ -1239,6 +1239,13 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
     for (const BloodParticle& drop : game.bloodParticles()) {
         drawBox(renderer, drop.pos, glm::vec3{drop.size}, {0.48f, 0.03f, 0.03f, 1.0f});
     }
+
+    // Shafts of sunlight, last of everything — they are lit air rather than a
+    // surface, so a fighter can stand behind one and be seen through it. That
+    // is also the only order that works: the pipeline writes depth, so a
+    // translucent beam drawn any earlier would cut a hole in the depth buffer
+    // and swallow whoever walked behind it (levels/level.hpp says the same).
+    drawLightShafts(renderer, game.level(), time);
 }
 
 } // namespace

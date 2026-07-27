@@ -25,6 +25,12 @@ struct LevelEntry {
     const std::vector<LevelObstacle>& (*obstacles)() = nullptr;
     const std::vector<LevelObstacle>& (*ground)() = nullptr;
     const LevelWater* (*water)() = nullptr;
+    // Shafts of sunlight, drawn after everything else — see drawLightShafts in
+    // level.hpp for why they cannot go in `draw`. A hook of its own rather than
+    // something the sky works out for itself, because where the light gets
+    // through is a fact about a level's own canopy, and only the level knows
+    // where its trees are.
+    void (*shafts)(Renderer& r, float time) = nullptr;
 };
 
 namespace dojo {
@@ -35,6 +41,7 @@ void draw(Renderer& r, float time);
 namespace hanami {
 extern const LevelDef kDef;
 void draw(Renderer& r, float time);
+void shafts(Renderer& r, float time);
 const std::vector<LevelObstacle>& obstacles();
 const std::vector<LevelObstacle>& ground();
 const LevelWater* water();
