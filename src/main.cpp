@@ -1162,7 +1162,7 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
     // The sky shell is built around the camera, so it needs the eye the frame
     // is actually being drawn from — which during an intro is the sequence's,
     // not the framing camera's. Everything else is inside it.
-    drawSky(renderer, game.level(), eye);
+    drawSky(renderer, game.level(), eye, time);
 
     // Level scenery (floor, backdrop, ambient animation) goes down next so
     // everything gameplay draws sits on top of it. The game knows its own

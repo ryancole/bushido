@@ -175,7 +175,12 @@ const LevelDef kDef = {
     kHalfWidth,
     // Afternoon: deep blue overhead falling to a warm haze the blossoms sit
     // against, over distant wooded ground that carries the grass outward.
-    {{0.24f, 0.44f, 0.72f}, {0.80f, 0.74f, 0.70f}, {0.16f, 0.22f, 0.15f}},
+    // Fair-weather cumulus crossing on the same breeze that takes the petals:
+    // white crowns over a base warmed by the haze they sit in.
+    {{0.24f, 0.44f, 0.72f},
+     {0.80f, 0.74f, 0.70f},
+     {0.16f, 0.22f, 0.15f},
+     {20, {0.99f, 0.98f, 0.96f}, {0.68f, 0.69f, 0.76f}, 1.15f, 0.018f}},
 };
 
 // Everything solid here: the bank stones, the in-field tree trunks (half

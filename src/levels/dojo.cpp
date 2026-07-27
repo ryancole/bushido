@@ -18,7 +18,12 @@ const LevelDef kDef = {
     // Night. The zenith is the near-black the frame used to be cleared to, so
     // the arena reads as it always has; all the sky adds is a cold moonlit
     // wash behind the pillars, and hills darker than the sky under it.
-    {{0.04f, 0.04f, 0.08f}, {0.20f, 0.19f, 0.26f}, {0.06f, 0.06f, 0.08f}},
+    // Thin high cloud, barely moving: a few moonlit tops over bases nearly as
+    // dark as the sky behind them, which is all night ever shows of a cloud.
+    {{0.04f, 0.04f, 0.08f},
+     {0.20f, 0.19f, 0.26f},
+     {0.06f, 0.06f, 0.08f},
+     {10, {0.25f, 0.25f, 0.32f}, {0.08f, 0.08f, 0.12f}, 0.95f, 0.008f}},
 };
 
 // Dark stone slab with pillars behind for depth reference.
