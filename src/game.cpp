@@ -1145,18 +1145,23 @@ void Game::dropWeapon(int i) {
     m_dropped.push_back({weapon, id, kDropSettle});
 }
 
-// Takes up the nearest settled blade within reach. Nearest rather than first
-// so two blades at the same feet resolve the way the player expects, and by
-// planar distance because depth is where the fight is fought — a blade a
-// fighter is standing over is in reach whether or not they are mid-jump above
-// it, but one on a bank a metre up is not.
-bool Game::takeUpWeapon(int i) {
-    Player& p = m_players[i];
+// The nearest settled blade within reach. Nearest rather than first so two
+// blades at the same feet resolve the way the player expects, and by planar
+// distance because depth is where the fight is fought — a blade a fighter is
+// standing over is in reach whether or not they are mid-jump above it, but one
+// on a bank a metre up is not.
+//
+// Asking is separate from doing because the answer is also drawn: main rings
+// the blade a fighter could claim (drawPickupRing), and the cue promising
+// something the sim would refuse is exactly the bug two copies of this test
+// would produce.
+int Game::takeableWeapon(int i) const {
+    const Player& p = m_players[i];
     // It takes a hand. A fighter who lost both arms dropped the blade for
     // exactly that reason and is not going to pick it back up.
     if (p.armed() || (p.severed[static_cast<int>(Limb::ArmFront)] &&
                       p.severed[static_cast<int>(Limb::ArmBack)])) {
-        return false;
+        return -1;
     }
     int best = -1;
     float bestDist = kPickupRange;
@@ -1174,9 +1179,15 @@ bool Game::takeUpWeapon(int i) {
             best = static_cast<int>(n);
         }
     }
+    return best;
+}
+
+bool Game::takeUpWeapon(int i) {
+    const int best = takeableWeapon(i);
     if (best < 0) {
         return false;
     }
+    Player& p = m_players[i];
     equip(i, m_dropped[best].weapon);
     m_physics->removeDebris(m_dropped[best].debrisId);
     m_dropped.erase(m_dropped.begin() + best);
