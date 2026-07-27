@@ -2,6 +2,7 @@
 
 #include "game.hpp" // arena bounds — scenery is sized off the playable area
 #include "levels/scenery.hpp"
+#include "levels/sun.hpp"
 
 #include <cmath>
 
@@ -132,24 +133,56 @@ constexpr LevelWater kWater = {
     {0.0f, 0.0f, 0.55f},
 };
 
+// A blossom clump, as an offset from the crown's origin. The canopy became a
+// table the moment the sun started casting it: the shadow on the grass has to
+// be the shadow of the crown that is actually drawn, and two copies of this
+// list would drift apart the way any two copies do — a shadow under a clump
+// that had since moved is the whole failure, and it is silent.
+struct Blob {
+    glm::vec3 offset;
+    glm::vec3 size;
+    bool deep;     // the deeper of the two pinks
+    bool onBranch; // hangs off the low branch, so its side follows branchDir
+};
+constexpr Blob kCrown[] = {
+    {{0.0f, 0.55f, 0.0f}, {2.1f, 1.15f, 1.8f}, false, false},
+    {{-0.85f, 0.25f, 0.3f}, {1.2f, 0.85f, 1.1f}, true, false},
+    {{0.8f, 0.35f, -0.35f}, {1.25f, 0.9f, 1.05f}, true, false},
+    {{1.05f, -0.35f, 0.0f}, {0.9f, 0.6f, 0.8f}, false, true},
+};
+
+// One tree resolved for this frame: everything both the drawing and the
+// shadowing need to agree on, worked out once from (x, z, seed, time).
+struct Canopy {
+    float height;    // trunk height
+    float lean;      // radians about +z; in-field trees stand upright
+    float branchDir; // which side the low branch reaches
+    glm::vec3 crown; // origin the blossom clumps hang off, swaying included
+};
+
+Canopy canopyOf(float x, float z, int seed, float time, bool leaning) {
+    const float h = trunkHeight(seed);
+    const float lean = leaning ? (hash01(seed + 1) - 0.5f) * 0.35f : 0.0f;
+    const float sway = std::sin(time * 0.7f + seed * 1.7f) * 0.06f;
+    return {h, lean, hash01(seed + 2) > 0.5f ? 1.0f : -1.0f,
+            {x + lean * h + sway, h, z}};
+}
+
 // A cherry tree: trunk plus a clump of blossom boxes that sway together.
 // Everything hangs off (x, z) at the ground; `seed` varies the build so the
 // grove doesn't look copy-pasted. Backdrop trees lean for charm; in-field
 // trees grow upright (`leaning` false) so their trunk exactly fills the
 // axis-aligned collider box the level registers for them.
 void drawCherryTree(Renderer& r, float x, float z, int seed, float time, bool leaning) {
-    const float h = trunkHeight(seed);
-    const float lean = leaning ? (hash01(seed + 1) - 0.5f) * 0.35f : 0.0f;
-    const float sway = std::sin(time * 0.7f + seed * 1.7f) * 0.06f;
+    const Canopy c = canopyOf(x, z, seed, time, leaning);
 
     glm::mat4 trunk = glm::translate(glm::mat4(1.0f), {x, 0.0f, z});
-    trunk = glm::rotate(trunk, lean, {0.0f, 0.0f, 1.0f});
-    r.drawBox(glm::scale(glm::translate(trunk, {0.0f, h * 0.5f, 0.0f}),
-                         {0.32f, h, 0.32f}),
+    trunk = glm::rotate(trunk, c.lean, {0.0f, 0.0f, 1.0f});
+    r.drawBox(glm::scale(glm::translate(trunk, {0.0f, c.height * 0.5f, 0.0f}),
+                         {0.32f, c.height, 0.32f}),
               {0.30f, 0.20f, 0.14f, 1.0f});
     // One low branch reaching sideways.
-    float branchDir = hash01(seed + 2) > 0.5f ? 1.0f : -1.0f;
-    r.drawBox(glm::scale(glm::translate(trunk, {branchDir * 0.55f, h * 0.72f, 0.0f}),
+    r.drawBox(glm::scale(glm::translate(trunk, {c.branchDir * 0.55f, c.height * 0.72f, 0.0f}),
                          {1.0f, 0.16f, 0.16f}),
               {0.30f, 0.20f, 0.14f, 1.0f});
 
@@ -157,12 +190,24 @@ void drawCherryTree(Renderer& r, float x, float z, int seed, float time, bool le
     // crown drifts on the sway so the grove feels alive.
     const glm::vec4 pinkLight{0.95f, 0.72f, 0.79f, 1.0f};
     const glm::vec4 pinkDeep{0.89f, 0.55f, 0.68f, 1.0f};
-    glm::vec3 crown{x + lean * h + sway, h, z};
-    box(r, crown + glm::vec3{0.0f, 0.55f, 0.0f}, {2.1f, 1.15f, 1.8f}, pinkLight);
-    box(r, crown + glm::vec3{-0.85f, 0.25f, 0.3f}, {1.2f, 0.85f, 1.1f}, pinkDeep);
-    box(r, crown + glm::vec3{0.8f, 0.35f, -0.35f}, {1.25f, 0.9f, 1.05f}, pinkDeep);
-    box(r, crown + glm::vec3{branchDir * 1.05f, -0.35f, 0.0f}, {0.9f, 0.6f, 0.8f},
-        pinkLight);
+    for (const Blob& b : kCrown) {
+        const float sx = b.onBranch ? b.offset.x * c.branchDir : b.offset.x;
+        box(r, c.crown + glm::vec3{sx, b.offset.y, b.offset.z}, b.size,
+            b.deep ? pinkDeep : pinkLight);
+    }
+}
+
+// The same tree, printed on the grass. Trunk and every blossom clump cast
+// separately rather than the crown casting as one slab: a canopy's shadow is
+// dappled, and four overlapping footprints is the cheapest dappling there is.
+void shadowCherryTree(Renderer& r, float x, float z, int seed, float time,
+                      bool leaning, const SunDef& sun) {
+    const Canopy c = canopyOf(x, z, seed, time, leaning);
+    sunShadow(r, {x, c.height * 0.5f, z}, {0.16f, c.height * 0.5f, 0.16f}, sun);
+    for (const Blob& b : kCrown) {
+        const float sx = b.onBranch ? b.offset.x * c.branchDir : b.offset.x;
+        sunShadow(r, c.crown + glm::vec3{sx, b.offset.y, b.offset.z}, b.size * 0.5f, sun);
+    }
 }
 
 } // namespace
@@ -180,8 +225,38 @@ const LevelDef kDef = {
     {{0.24f, 0.44f, 0.72f},
      {0.80f, 0.74f, 0.70f},
      {0.16f, 0.22f, 0.15f},
-     {20, {0.99f, 0.98f, 0.96f}, {0.68f, 0.69f, 0.76f}, 1.15f, 0.018f}},
+     {20, {0.99f, 0.98f, 0.96f}, {0.68f, 0.69f, 0.76f}, 1.15f, 0.018f},
+     // A warm afternoon sun with enough haze under the blossoms to show its
+     // shafts. The shadows are kept well short of black: this is open ground
+     // under a bright sky, where half the light on a shaded patch arrives from
+     // the sky rather than the sun, and a shadow drawn as an absence of sun
+     // alone reads as a hole cut in the grass.
+     {{1.0f, 0.95f, 0.80f}, 1.0f, 0.30f}},
 };
+
+// Where the light gets through the canopy: the *top* of each shaft, in the
+// blossoms, with the beam falling from there down the sun's own line — see
+// levels/sun.hpp for why a level authors the gap rather than the beam. The
+// heights sit at crown level so each beam's upper end is buried in the
+// blossoms it is supposed to be squeezing past, and the gaps are placed
+// between the in-field trees so the grove is what breaks the light up.
+struct Gap {
+    float x, y, z;
+    float width;
+    float strength;
+};
+constexpr Gap kGaps[] = {
+    {-9.2f, 4.4f, -1.2f, 0.55f, 1.0f},  // between the two trees on the left
+    {-6.4f, 4.0f, 2.6f, 0.42f, 0.75f},  // catches the stream on its way down
+    {-1.0f, 4.6f, -1.8f, 0.60f, 1.0f},  // over center stage
+    {2.6f, 4.1f, 1.2f, 0.45f, 0.80f},
+    {6.6f, 4.5f, 3.8f, 0.50f, 0.90f},
+    {9.4f, 4.3f, 0.2f, 0.55f, 0.95f},   // the right-hand tree
+};
+// Beams are kept a couple of metres clear of the two spawn points (x = ±3,
+// z = 0) — not for the duel's sake, where walking through a shaft is the whole
+// idea, but for the versus intro, whose close-up sits a short way in front of
+// a fighter's face and would otherwise open the match inside a column of haze.
 
 // Everything solid here: the bank stones, the in-field tree trunks (half
 // extents matching the drawn 0.32-wide trunk exactly), and the house's
@@ -263,6 +338,30 @@ void draw(Renderer& r, float time) {
             {0.55f, 0.72f, 0.82f, 0.85f});
     }
 
+    // Everything the sun has to go around, printed on the grass before the
+    // things themselves are drawn over it. Cast from the same authored boxes
+    // that are about to be drawn, which is the same guarantee the obstacle
+    // list gives the colliders: a shadow on the ground belongs to a thing that
+    // is actually standing there.
+    const SunDef& sun = kDef.sky.sun;
+    for (const LevelObstacle& stone : stones()) {
+        sunShadow(r, stone.center, stone.halfExtent, sun);
+    }
+    for (const Tree& t : kTrees) {
+        if (t.backdrop) {
+            continue; // stands past the playable depth; its shadow falls off the floor
+        }
+        shadowCherryTree(r, t.x, t.z, t.seed, time, false, sun);
+    }
+    // The house casts from its roof alone. The roof overhangs every wall, post
+    // and platform beneath it, so their shadows are already inside its own —
+    // casting them too would only stack four alphas into a black rectangle.
+    for (const HouseBox& b : kHouse) {
+        if (b.center.y > 2.0f) {
+            sunShadow(r, b.center, b.halfExtent, sun);
+        }
+    }
+
     // Bank stones — drawn from the shared obstacle list so they sit exactly
     // where their colliders are.
     for (const LevelObstacle& stone : stones()) {
@@ -297,6 +396,18 @@ void draw(Renderer& r, float time) {
                         {0.4f, 1.0f, 0.3f});
         m = glm::scale(m, {0.10f, 0.02f, 0.07f});
         r.drawBox(m, {0.96f, 0.76f, 0.82f, 0.9f});
+    }
+}
+
+// The light itself, hanging in the air between the blossoms. Drawn after the
+// fighters rather than with the rest of the scenery — see drawLightShafts in
+// level.hpp; a translucent beam that wrote depth over a fighter would erase
+// them, and drawn last the depth test alone puts every beam on the right side
+// of everything it crosses.
+void shafts(Renderer& r, float time) {
+    int seed = 0;
+    for (const Gap& g : kGaps) {
+        sunShaft(r, {g.x, g.y, g.z}, g.width, g.strength, kDef.sky.sun, time, seed++);
     }
 }
 

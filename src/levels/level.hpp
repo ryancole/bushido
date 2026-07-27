@@ -30,16 +30,36 @@ struct CloudDef {
     float drift;       // rad/s of wind — see sky.cpp for why it is an angle
 };
 
+// Where the sun stands over every battleground, as a unit vector *toward* it.
+// This is deliberately not per-level: shaders/cube.frag shades every surface in
+// the game against one hardcoded kLightDir and cannot be told otherwise
+// (ObjectPush is full at its 128-byte budget, so there is no room to send a
+// light), and a level whose sun sat somewhere else would cast its shadows away
+// from the faces the shader had lit. **The two numbers must stay equal** — one
+// sun kept in two languages, since there is nowhere to keep it once.
+inline const glm::vec3 kSunDir = glm::normalize(glm::vec3{0.35f, 0.9f, 0.5f});
+
+// What that sun does to the air and the ground of one battleground. The
+// direction is shared; the *character* is the level's, which is what lets a
+// night stage write zeroes and pay nothing at all — no shafts drawn, no shadows
+// cast, exactly the level it was before any of this existed.
+struct SunDef {
+    glm::vec3 color; // the light itself: shafts take their color from here
+    float shafts;    // 0..1 haze hanging in the air; 0 = clear air, no beams
+    float shadow;    // 0..1 darkness of the footprints it prints on the ground
+};
+
 // The sky a battleground stands under: three authored colors the shared shell
-// (levels/sky.cpp) ramps between, plus its weather. Every level fills this in —
-// it is a member of LevelDef rather than an optional hook, so a new
-// battleground cannot open onto the empty clear color by forgetting to write
-// one.
+// (levels/sky.cpp) ramps between, plus its weather and its sun. Every level
+// fills this in — it is a member of LevelDef rather than an optional hook, so a
+// new battleground cannot open onto the empty clear color by forgetting to
+// write one.
 struct SkyDef {
     glm::vec3 zenith;  // straight overhead
     glm::vec3 horizon; // where the sky meets the ground plane
     glm::vec3 ground;  // the land beyond the arena floor, below the horizon
     CloudDef clouds;
+    SunDef sun;
 };
 
 struct LevelDef {
@@ -89,5 +109,17 @@ void drawSky(Renderer& renderer, int index, const glm::vec3& eye, float time);
 
 // Draws the level's scenery (floor, backdrop, ambient animation) for the
 // current frame. Called by main's drawScene before fighters/blood so the
-// scenery sits under everything gameplay draws.
+// scenery sits under everything gameplay draws. The sun's ground shadows are
+// part of this — they are printed on the floor, so they belong under
+// everything, and a level casts them from the same authored boxes it draws.
 void drawLevel(Renderer& renderer, int index, float time);
+
+// Draws the level's shafts of sunlight — the light hanging in the air rather
+// than lying on the ground, so it is the one thing main's drawScene draws
+// *last*, after the fighters. That is not a preference: the shafts are
+// translucent and the pipeline writes depth, so drawn any earlier a beam would
+// punch a hole in the depth buffer and swallow whoever walked behind it. Drawn
+// last, the depth test alone gets it right — a beam nearer than a fighter
+// tints them, a beam behind them is rejected, which is what a volume of lit
+// air actually does. A level with no shafts (Dojo's night) draws nothing.
+void drawLightShafts(Renderer& renderer, int index, float time);
