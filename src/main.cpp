@@ -1158,6 +1158,26 @@ void drawBox(Renderer& renderer, glm::vec3 center, glm::vec3 size, glm::vec4 col
     renderer.drawBox(model, color);
 }
 
+// Where a fighter's model stands, and how it is posed this frame. Both are
+// asked for twice now — once to cast the shadow and once to draw the fighter —
+// and the two calls have to be handed the identical thing or the shadow would
+// be a frame's worth of stance out from the body throwing it.
+glm::vec3 fighterFeet(const Player& p) {
+    return {p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
+}
+
+SamuraiPose fighterPose(const Game& game, int i, float time) {
+    const Player& p = game.player(i);
+    const WeaponDef* held = game.weapon(i);
+    return {p.animPhase, p.moveAmount, p.strideBlend, p.strideDir,
+            p.grounded, time,
+            static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
+            p.attackT, p.blocking, p.crouchAmount, p.hopping(),
+            game.stats(i).reach,
+            held ? held->stats.bladeWidth : 1.0f, game.stance(i),
+            held != nullptr, p.bodyRoll(), p.rollSpin, p.severed};
+}
+
 void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3& eye) {
     // The sky shell is built around the camera, so it needs the eye the frame
     // is actually being drawn from — which during an intro is the sequence's,
@@ -1179,12 +1199,23 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
         renderer.drawBox(model, {0.32f, 0.02f, 0.02f, mark.alpha});
     }
 
-    // Blob shadows: without these, depth position is unreadable while airborne.
-    // A toppled body stretches its shadow toward the side it lies on — which is
-    // a direction rather than a z sign, since a body can go down turned any
-    // which way out of a run.
+    // Fighters' shadows. Under a sun that casts, this is the fighter itself
+    // printed on the ground — the same boxes drawSamurai is about to draw, cast
+    // down the sun's own line, so the shadow holds the stance and swings the
+    // blade with them. On an unlit stage (Dojo's night) there is nothing to
+    // cast, and the old blob stands in: it was never lighting, it is what makes
+    // depth readable while a fighter is in the air, and that is owed whatever
+    // the sky is doing. A toppled body stretches its blob toward the side it
+    // lies on — a direction rather than a z sign, since a body can go down
+    // turned any which way out of a run.
+    const SunDef& sun = levelDef(game.level()).sky.sun;
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
+        if (sun.shadow > 0.0f) {
+            drawSamuraiShadow(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time),
+                              sun);
+            continue;
+        }
         const glm::vec2 lie = p.lieOffset();
         drawBox(renderer, {p.pos.x + lie.x * 0.8f, 0.03f, p.pos.z + lie.y * 0.8f},
                 {Player::kHalfWidth * 2.2f + std::abs(lie.x) * 1.4f, 0.02f,
@@ -1196,7 +1227,6 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
     // resolved reach (character + weapon) and its thickness the weapon's.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        glm::vec3 feet{p.pos.x, p.pos.y - Player::kHalfHeight, p.pos.z};
         SamuraiColors c = game.character(i).colors;
         if (p.hitstun > 0.0f) {
             c.kimono = glm::mix(c.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
@@ -1206,16 +1236,7 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
             c.kimono = glm::mix(c.kimono, glm::vec4{0.95f, 0.78f, 0.30f, 1.0f},
                                 0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
-        const WeaponDef* held = game.weapon(i);
-        drawSamurai(renderer, feet, p.yaw,
-                    {p.animPhase, p.moveAmount, p.strideBlend, p.strideDir,
-                     p.grounded, time,
-                     static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
-                     p.attackT, p.blocking, p.crouchAmount, p.hopping(),
-                     game.stats(i).reach,
-                     held ? held->stats.bladeWidth : 1.0f, game.stance(i),
-                     held != nullptr, p.bodyRoll(), p.rollSpin, p.severed},
-                    c);
+        drawSamurai(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time), c);
     }
 
     // Severed limbs tumbling as physics debris, in their owner's colors.

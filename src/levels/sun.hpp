@@ -28,9 +28,30 @@ namespace levels {
 // this gets and is most of what stops a canopy's shadow reading as a rug. The
 // slab is lifted a couple of millimetres by a hash of its own position, so two
 // overlapping footprints never land coplanar and z-fight; everything stays
-// under the blood marks (y = 0.006 and up) and the blob shadows (y = 0.03), so
-// gameplay's own floor marks still draw on top of scenery's.
+// under the blood marks (y = 0.006 and up) and under the fighters' own shadows
+// above those (y = 0.03 and down), so gameplay's floor marks still draw on top
+// of scenery's — a fighter's shadow falls *across* a tree's, not into it.
 void sunShadow(Renderer& r, glm::vec3 center, glm::vec3 halfExtent, const SunDef& sun);
+
+// How one cast footprint is laid on the floor. Scenery never fills this in —
+// sunShadow works all four out from the caster's own height, which is the whole
+// of what a stone or a canopy needs. A *fighter* is told instead, because the
+// ten slabs a body casts share one thin band and have to be placed against each
+// other rather than each against the ground (see drawSamuraiShadow).
+struct ShadowSlab {
+    float y;         // the plane this footprint lies on
+    float thickness; // keep under the spacing of whatever else shares the band
+    float soften;    // metres of penumbra added on every side
+    float alpha;     // darkness before the sun's own `shadow` scales it
+};
+
+// The ground shadow of an *oriented* box — the unit cube under `model`, which
+// is the one shape everything in this game is made of. Same cast as sunShadow
+// and the same rectangle out the far end; what it adds is the ability to shadow
+// geometry that is not axis aligned, which every box of a samurai is the moment
+// the fighter turns, ducks, swings or topples.
+void sunShadowBox(Renderer& r, const glm::mat4& model, const SunDef& sun,
+                  const ShadowSlab& slab);
 
 // One shaft of sunlight, entering the air at `gap` — the hole in the canopy the
 // light came through — and slanting down the sun's own direction to the floor.
