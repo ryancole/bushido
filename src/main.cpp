@@ -1208,7 +1208,7 @@ void drawScene(Renderer& renderer, const Game& game, float time) {
                      static_cast<int>(p.attackState), static_cast<int>(p.attackKind),
                      p.attackT, p.blocking, p.crouchAmount, game.stats(i).reach,
                      held ? held->stats.bladeWidth : 1.0f, game.stance(i),
-                     held != nullptr, p.bodyRoll(), p.severed},
+                     held != nullptr, p.bodyRoll(), p.rollSpin, p.severed},
                     c);
     }
 

@@ -115,6 +115,10 @@ struct Player {
     // trade is the whole of it: more than twice the ground covered, and no
     // guard, no swing, and a body turned away from the foe while it lasts.
     bool sprinting = false;
+    // The same control, and the same trade, for a fighter with no legs left to
+    // run on: the body rolls along the ground instead. Mutually exclusive with
+    // sprinting by construction — one needs legs and the other needs none.
+    bool rolling = false;
     float animPhase = 0.0f;  // walk-cycle phase in radians, advances with ground speed
     float moveAmount = 0.0f; // 0..1 fraction of max ground speed this tick
     // 0..1 ease into a full-length stride. Not a fraction of speed: a fighter
@@ -170,6 +174,14 @@ struct Player {
     float fallVel = 0.0f;  // rad/s
     float fallSide = 0.0f; // ±1 once toppling, toward the severed leg
 
+    // How far the body has rolled about its own spine — the model's local +y,
+    // which is the long axis a lying fighter turns about, so this is a barrel
+    // roll rather than a second topple. Applied *inside* the topple (the model
+    // spins, then the spun model is tipped over), which is why it is an angle
+    // of its own rather than something folded into fallTilt. It is not wound
+    // back when the roll stops: a body that came to rest face down stays there.
+    float rollSpin = 0.0f; // rad
+
     // The model's local axes in the world's ground plane (x, z): +x is the way
     // the fighter faces, +z the sword side. A rotation about +Y matching
     // drawSamurai's base transform — which at yaw 0 and pi is precisely the
@@ -181,6 +193,13 @@ struct Player {
     bool dead() const { return blood <= 0.0f; }
     bool downed() const {
         return dead() || severed[static_cast<int>(Limb::LegFront)] ||
+               severed[static_cast<int>(Limb::LegBack)];
+    }
+    // Both legs gone. One leg is still something to push with — that fighter
+    // crawls — but with neither there is nothing left to move by except
+    // turning the whole body over, which is what the roll is.
+    bool legless() const {
+        return severed[static_cast<int>(Limb::LegFront)] &&
                severed[static_cast<int>(Limb::LegBack)];
     }
     // Signed roll about the model's local +x axis (what the renderer applies).
