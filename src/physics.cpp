@@ -160,8 +160,9 @@ struct Physics::Impl {
     std::vector<Physics::Water> water;
 };
 
-Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
-                 const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes,
+Physics::Physics(float gravity, float arenaHalfWidth, float arenaHalfDepth,
+                 const glm::vec3& spawnA, const glm::vec3& spawnB,
+                 const std::vector<StaticBox>& staticBoxes,
                  const std::vector<StaticBox>& groundBoxes,
                  const std::vector<Water>& water)
     : m_gravity(gravity) {
@@ -203,7 +204,7 @@ Physics::Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
     constexpr float kWall = 0.5f; // wall/ground half thickness
     constexpr float kWallHalfHeight = 20.0f;
     const float hw = arenaHalfWidth;
-    const float hd = Game::kArenaHalfDepth;
+    const float hd = arenaHalfDepth;
     if (groundBoxes.empty()) {
         addStaticBox({hw + 2.0f * kWall, kWall, hd + 2.0f * kWall},
                      {0.0f, -kWall, 0.0f});

@@ -369,10 +369,68 @@ std::vector<float> renderSorihashi(float rate) {
     return pcm;
 }
 
+// Tanbo — a summer morning over the paddies: easy koto in the yo scale on G,
+// high bell drips like water off the seedlings, one soft heartbeat drum, a
+// flute clear across the fields. The brightest of the battleground themes —
+// no half-step anywhere, which is what morning has that dusk does not.
+// 8 bars of 4 at 76 BPM.
+std::vector<float> renderTanbo(float rate) {
+    constexpr float kSpb = 60.0f / 76.0f;
+    std::vector<float> pcm(static_cast<std::size_t>(rate * kSpb * 32.0f), 0.0f);
+    std::uint32_t rng = 0x7a0b0f1eu;
+    auto pluck = [&](float beat, float freq, float amp, float damp = 0.9965f) {
+        addPluck(pcm, rate, beat * kSpb, freq, amp, damp, rng);
+    };
+    // G2 98.00  C3 130.81  D3 146.83  G3 196.00  E4 329.63  G4 392.00
+    // A4 440.00  C5 523.25  D5 587.33  E5 659.26
+    // A soft heartbeat, half as often as Hanami's — the field is in no hurry.
+    addTaiko(pcm, rate, 0.0f, 70.0f, 0.16f, rng);
+    addTaiko(pcm, rate, 16.0f * kSpb, 70.0f, 0.16f, rng);
+    // Low koto roots walking G - C - G - D and home.
+    pluck(0.0f, 98.00f, 0.40f, 0.997f);
+    pluck(8.0f, 130.81f, 0.32f, 0.997f);
+    pluck(16.0f, 98.00f, 0.38f, 0.997f);
+    pluck(24.0f, 146.83f, 0.32f, 0.997f);
+    pluck(28.0f, 196.00f, 0.28f, 0.997f);
+    // The melody: up with the sun, a look across the water, and settle.
+    pluck(0.0f, 392.00f, 0.36f);
+    pluck(1.5f, 440.00f, 0.26f);
+    pluck(2.0f, 523.25f, 0.34f);
+    pluck(4.0f, 587.33f, 0.36f);
+    pluck(6.0f, 523.25f, 0.28f);
+    pluck(7.0f, 440.00f, 0.26f);
+    pluck(8.0f, 392.00f, 0.32f);
+    pluck(10.0f, 329.63f, 0.28f);
+    pluck(12.0f, 392.00f, 0.30f);
+    pluck(14.0f, 440.00f, 0.26f);
+    pluck(16.0f, 523.25f, 0.34f);
+    pluck(18.0f, 587.33f, 0.32f);
+    pluck(20.0f, 659.26f, 0.34f);
+    pluck(22.0f, 587.33f, 0.28f);
+    pluck(23.0f, 523.25f, 0.24f);
+    pluck(24.0f, 440.00f, 0.30f);
+    pluck(26.0f, 392.00f, 0.30f);
+    pluck(28.0f, 329.63f, 0.26f);
+    pluck(29.5f, 392.00f, 0.24f);
+    pluck(30.5f, 440.00f, 0.22f);
+    // Bell drips — water off a lifted seedling, scattered on the offbeats.
+    addBell(pcm, rate, 3.75f * kSpb, 2093.00f, 0.040f, 4.5f);
+    addBell(pcm, rate, 7.5f * kSpb, 1568.00f, 0.035f, 4.5f);
+    addBell(pcm, rate, 11.75f * kSpb, 1760.00f, 0.038f, 4.5f);
+    addBell(pcm, rate, 19.5f * kSpb, 2093.00f, 0.038f, 4.5f);
+    addBell(pcm, rate, 27.75f * kSpb, 1568.00f, 0.035f, 4.5f);
+    // The flute, morning-clear, twice across the loop.
+    addFlute(pcm, rate, 4.0f * kSpb, 587.33f, 0.075f, 2.6f, rng);
+    addFlute(pcm, rate, 16.0f * kSpb, 392.00f, 0.080f, 3.0f, rng);
+    addFlute(pcm, rate, 26.0f * kSpb, 440.00f, 0.070f, 3.2f, rng);
+    normalizePeak(pcm, kMusicPeak);
+    return pcm;
+}
+
 // In Music enum order, so kMusicFiles[i] names what kRenderers[i] produces.
 using Renderer = std::vector<float> (*)(float);
 constexpr Renderer kRenderers[kMusicCount] = {renderMenu, renderDojo, renderHanami,
-                                              renderSorihashi};
+                                              renderSorihashi, renderTanbo};
 
 // ---- wav -----------------------------------------------------------------
 

@@ -30,11 +30,12 @@ public:
 
     // Spawns are feet positions (the ground surface is y = 0). Gravity is the
     // magnitude of downward acceleration, matching the game's own constant.
-    // arenaHalfWidth places the side walls (per-level; depth is fixed).
+    // arenaHalfWidth/arenaHalfDepth place the four walls (both per-level).
     // groundBoxes replace the default flat ground slab when non-empty
     // (Hanami's carved stream channel).
-    Physics(float gravity, float arenaHalfWidth, const glm::vec3& spawnA,
-            const glm::vec3& spawnB, const std::vector<StaticBox>& staticBoxes = {},
+    Physics(float gravity, float arenaHalfWidth, float arenaHalfDepth,
+            const glm::vec3& spawnA, const glm::vec3& spawnB,
+            const std::vector<StaticBox>& staticBoxes = {},
             const std::vector<StaticBox>& groundBoxes = {},
             const std::vector<Water>& water = {});
     ~Physics();

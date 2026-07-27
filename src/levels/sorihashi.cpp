@@ -171,6 +171,7 @@ const LevelDef kDef = {
     "Fireflies cross the vermillion span",
     {0.55f, 0.20f, 0.16f, 0.75f},
     kHalfWidth,
+    Game::kArenaHalfDepth,
     // Dusk: violet overhead falling to an amber band the bridge stands
     // against, the far land already night. Long sunset streaks, lit hard from
     // below the way only the last light manages, drifting slowly.

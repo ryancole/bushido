@@ -326,12 +326,13 @@ public:
     // that feeds them.
     std::uint32_t checksum() const;
 
-    // Baseline arena bounds. Depth is shared by every level; width is only
-    // the default — each level authors its own (LevelDef::arenaHalfWidth),
-    // baked into this match as arenaHalfWidth().
+    // Baseline arena bounds — only the defaults: each level authors both
+    // (LevelDef::arenaHalfWidth/arenaHalfDepth), baked into this match as
+    // arenaHalfWidth()/arenaHalfDepth().
     static constexpr float kArenaHalfWidth = 12.0f;
     static constexpr float kArenaHalfDepth = 5.0f;
     float arenaHalfWidth() const { return m_arenaHalfWidth; }
+    float arenaHalfDepth() const { return m_arenaHalfDepth; }
 
 private:
     // Inside any of the level's water volumes (xz)? Blood never marks the
@@ -383,7 +384,8 @@ private:
     std::vector<BloodMark> m_bloodMarks;
     std::size_t m_bloodMarkCursor = 0; // next mark to recycle once at the cap
     int m_level = 0;        // battleground roster index (scenery + obstacles)
-    float m_arenaHalfWidth = kArenaHalfWidth; // this match's playable half width
+    float m_arenaHalfWidth = kArenaHalfWidth; // this match's playable half extents
+    float m_arenaHalfDepth = kArenaHalfDepth;
     // The level's water volume footprints (xz), mirrored from levels/level.hpp
     // so blood marks can be suppressed in the water; Physics holds the rest.
     struct WaterFootprint {

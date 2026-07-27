@@ -55,4 +55,17 @@ const std::vector<LevelObstacle>& ground();
 const std::vector<LevelWater>& water();
 } // namespace sorihashi
 
+namespace tanbo {
+extern const LevelDef kDef;
+void draw(Renderer& r, float time);
+// The `shafts` hook carries Tanbo's morning mist rather than sunlight — the
+// hook's real contract is "translucent air, drawn after the fighters so the
+// depth test alone layers it", and mist is exactly that made of water
+// instead of light.
+void shafts(Renderer& r, float time);
+const std::vector<LevelObstacle>& obstacles();
+const std::vector<LevelObstacle>& ground();
+const std::vector<LevelWater>& water();
+} // namespace tanbo
+
 } // namespace levels

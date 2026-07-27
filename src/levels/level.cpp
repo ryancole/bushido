@@ -18,6 +18,8 @@ const LevelEntry kEntries[kLevelCount] = {
      levels::hanami::ground, levels::hanami::water, levels::hanami::shafts},
     {&levels::sorihashi::kDef, levels::sorihashi::draw, levels::sorihashi::obstacles,
      levels::sorihashi::ground, levels::sorihashi::water},
+    {&levels::tanbo::kDef, levels::tanbo::draw, levels::tanbo::obstacles,
+     levels::tanbo::ground, levels::tanbo::water, levels::tanbo::shafts},
 };
 
 const LevelEntry& entry(int index) {

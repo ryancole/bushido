@@ -218,6 +218,7 @@ const LevelDef kDef = {
     "Petals drift over quiet water",
     {0.83f, 0.54f, 0.62f, 0.75f},
     kHalfWidth,
+    Game::kArenaHalfDepth,
     // Afternoon: deep blue overhead falling to a warm haze the blossoms sit
     // against, over distant wooded ground that carries the grass outward.
     // Fair-weather cumulus crossing on the same breeze that takes the petals:

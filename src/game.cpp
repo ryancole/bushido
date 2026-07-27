@@ -419,6 +419,7 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
     // flat slab (Hanami's carved stream channel), and its water volume gives
     // debris buoyancy and a downstream current.
     m_arenaHalfWidth = levelDef(level).arenaHalfWidth;
+    m_arenaHalfDepth = levelDef(level).arenaHalfDepth;
     std::vector<Physics::StaticBox> statics;
     for (const LevelObstacle& o : levelObstacles(level)) {
         statics.push_back({o.center, o.halfExtent});
@@ -433,6 +434,7 @@ Game::Game(int p0Character, int p0Weapon, int p1Character, int p1Weapon, int lev
         m_waterXZ.push_back({{w.min.x, w.min.z}, {w.max.x, w.max.z}});
     }
     m_physics = std::make_unique<Physics>(kGravity, m_arenaHalfWidth,
+                                          m_arenaHalfDepth,
                                           glm::vec3{-3.0f, 0.0f, 0.0f},
                                           glm::vec3{3.0f, 0.0f, 0.0f}, statics,
                                           ground, water);
