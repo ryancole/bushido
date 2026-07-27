@@ -61,6 +61,27 @@ constexpr float kBlockMoveScale = 0.55f;  // movement slowdown while the guard i
 // gait — feet crossing, a real stride — not a bigger multiplier here.
 constexpr float kSprintMoveScale = 2.2f; // on the character's move speed
 constexpr float kSprintTurnRate = 12.0f; // rad/s the body turns, into a run and out
+
+// Rolling: the same control, for a fighter with no legs left to run on.
+//
+// A crawl is paced by the arms (kCrawlSpeed), which for a fighter who has lost
+// both legs is a quarter of a walk at best and nothing at all with no arms
+// either — a state with no way out of a swing and no way to reach a dropped
+// blade. Turning the whole body over is the way a legless body actually
+// travels, so the sprint control rolls it: faster than the crawl, slower than
+// the walk it can no longer manage, and it keeps the sprint's bargain exactly —
+// no guard, no swing, and a body turned to where it is going rather than at the
+// foe. It cannot be held indefinitely without cost either, since a rolling
+// fighter is presenting their back to a blade half of every turn.
+//
+// The rate is set by the same rule the shuffle obeys: a planted foot must not
+// slide, and a rolling body must not skid. So the spin comes out of the
+// distance covered rather than being a number of its own — one radian per
+// kRollRadius of ground, the radius being the torso's own half-thickness
+// (kTorsoHalf.z, which is what a body lying on its side rolls on).
+constexpr float kRollMoveScale = 0.7f; // on the character's move speed
+constexpr float kRollRadius = 0.30f;   // m, the torso half-thickness it rolls on
+
 // Meters covered by one full walk cycle — two steps, one per leg — which is
 // what the stride animation is paced against rather than a fixed cadence. A
 // samurai's step is roughly 0.85 m, so the cycle is a shade under 1.7. Every
@@ -247,10 +268,24 @@ glm::vec3 yawLocal(const Player& p, const glm::vec3& v) {
     return {c * v.x + s * v.z, v.y, c * v.z - s * v.x};
 }
 
+// Rotates a model-local vector by the barrel roll — about the model's own +y,
+// i.e. the spine, which is the axis a lying body rolls about. The same
+// rotation yawLocal applies, one frame further in: it goes *before* the topple,
+// so the body spins about its long axis wherever that axis has ended up
+// pointing, instead of tipping over a second time.
+glm::vec3 spinLocal(const Player& p, const glm::vec3& v) {
+    if (p.rollSpin == 0.0f) {
+        return v;
+    }
+    const float c = std::cos(p.rollSpin), s = std::sin(p.rollSpin);
+    return {c * v.x + s * v.z, v.y, c * v.z - s * v.x};
+}
+
 // Model-local point (feet origin, +x forward) to world space, applying the
-// topple roll and the body's yaw — must match drawSamurai's base transform.
+// barrel roll, the topple roll and the body's yaw — must match drawSamurai's
+// base transform, in that order.
 glm::vec3 modelToWorld(const Player& p, const glm::vec3& local) {
-    const glm::vec3 v = yawLocal(p, rollLocal(p, local));
+    const glm::vec3 v = yawLocal(p, rollLocal(p, spinLocal(p, local)));
     return {p.pos.x + v.x, p.pos.y - Player::kHalfHeight + v.y, p.pos.z + v.z};
 }
 
@@ -265,12 +300,19 @@ float wrapAngle(float a) {
     return a - kPi;
 }
 
-// AABB half extents of a model-local box after the topple roll (a lying
-// limb is long in z, not y).
+// AABB half extents of a model-local box after the barrel roll and the topple
+// roll (a lying limb is long in z, not y). Both rotations, in the order
+// modelToWorld applies them, so a box stays around the point that goes with it.
 glm::vec3 rollHalfExtent(const Player& p, const glm::vec3& half) {
+    glm::vec3 h = half;
+    if (p.rollSpin != 0.0f) {
+        const float sc = std::abs(std::cos(p.rollSpin));
+        const float ss = std::abs(std::sin(p.rollSpin));
+        h = {sc * h.x + ss * h.z, h.y, ss * h.x + sc * h.z};
+    }
     float roll = p.bodyRoll();
     float c = std::abs(std::cos(roll)), s = std::abs(std::sin(roll));
-    return {half.x, c * half.y + s * half.z, s * half.y + c * half.z};
+    return {h.x, c * h.y + s * h.z, s * h.y + c * h.z};
 }
 
 // A limb's model-local bounds with the player's crouch applied: arms and the
@@ -475,6 +517,14 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.sprinting = in.sprint && p.hitstun <= 0.0f &&
                       p.attackState == AttackState::None && !p.crouching &&
                       !p.downed() && glm::length(in.move) > 0.01f;
+        // The same control on a fighter with no legs to run on: the body rolls
+        // instead. Same gate, same trade, and the two can never both be set —
+        // a sprint needs legs and a roll needs both of them gone. Only once the
+        // topple has finished, for the same reason a crawl is: mid-fall there
+        // is nothing to push against.
+        p.rolling = in.sprint && p.hitstun <= 0.0f &&
+                    p.attackState == AttackState::None && p.legless() &&
+                    p.fallTilt >= kMaxTilt && glm::length(in.move) > 0.01f;
         // Guard: held while standing and not mid-swing. It takes an arm to
         // hold the blade up, and it wins over an attack press — the sword is
         // committed to the guard. A sprint has already thrown it away.
@@ -489,9 +539,12 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.attackBuffer = std::max(0.0f, p.attackBuffer - dt);
         }
         // A press made mid-sprint is not lost, it waits: the buffer holds it
-        // for kAttackBufferTime, so letting go of the run swings.
+        // for kAttackBufferTime, so letting go of the run swings. A roll is the
+        // same bargain — the blade is not pointed at anybody while the body is
+        // turning over — so it holds the press on exactly the same terms.
         if (p.attackState == AttackState::None && p.hitstun <= 0.0f &&
-            p.attackBuffer > 0.0f && canSwing && !p.blocking && !p.sprinting) {
+            p.attackBuffer > 0.0f && canSwing && !p.blocking && !p.sprinting &&
+            !p.rolling) {
             p.attackState = AttackState::Windup;
             p.attackKind = p.bufferedKind;
             p.attackBuffer = 0.0f;
@@ -538,6 +591,12 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.downed()) {
             if (p.fallTilt < kMaxTilt) {
                 speedScale = 0.0f; // mid-fall: no footing at all
+            } else if (p.rolling) {
+                // Rolling is the body's own weight going over, so unlike the
+                // crawl it does not care how many arms are left — which is the
+                // point of it: a fighter with nothing but a torso can still
+                // cross the arena for a dropped blade.
+                speedScale *= kRollMoveScale;
             } else {
                 int arms = (p.severed[static_cast<int>(Limb::ArmFront)] ? 0 : 1) +
                            (p.severed[static_cast<int>(Limb::ArmBack)] ? 0 : 1);
@@ -599,11 +658,29 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         //
         // Grounded only: in the air there is no planted foot to be moving away
         // from, and pulsing the air control against an imaginary one would just
-        // feel broken.
+        // feel broken. A roll is not driven by a foot either — the body's own
+        // weight carries it round at an even rate — so it takes no surge, and
+        // the spin below can then come straight out of the distance covered.
         const float midPhase = p.animPhase + 0.5f * dPhase;
         const float surge = std::sin(midPhase);
-        const float gait = p.grounded ? 2.0f * surge * surge : 1.0f;
+        const float gait = p.rolling ? 1.0f : (p.grounded ? 2.0f * surge * surge : 1.0f);
         p.animPhase = std::fmod(p.animPhase + dPhase, kTwoPi);
+
+        // Turn the body over as far as the ground it covers: one radian per
+        // kRollRadius, so the body rolls rather than skidding along on its side.
+        // The sign is the whole of the geometry. spinLocal turns the model about
+        // its local +y before the topple lays it down, so with the body tipped
+        // toward +z (fallSide +1) a rising spin lifts its front — which is
+        // rolling *backwards*. Hence the negation, and hence fallSide: tipped
+        // the other way the spine points the other way and so does the roll.
+        // Only the forward component counts, since that is the part of the
+        // travel that is across the spine; the body turns onto its heading
+        // (orient, below) and the rest goes away as it comes round.
+        if (p.rolling) {
+            const float ds = st.moveSpeed * speedScale * glm::length(move) * dt;
+            p.rollSpin =
+                wrapAngle(p.rollSpin - p.fallSide * ds * p.strideDir.x / kRollRadius);
+        }
 
         glm::vec2 planarVel = move * (st.moveSpeed * speedScale * gait) + p.kbVel;
         p.kbVel *= std::exp(-kKnockbackDecay * dt);
@@ -702,8 +779,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         for (int k = 1; k <= kSweepSamples && hitLimb < 0; ++k) {
             float t = glm::mix(tPrev, tCur, static_cast<float>(k) / kSweepSamples);
             float angle = glm::mix(arc.start, arc.end, t);
-            glm::vec3 dir =
-                yawLocal(p, rollLocal(p, {std::sin(angle), -std::cos(angle), 0.0f}));
+            glm::vec3 dir = yawLocal(
+                p, rollLocal(p, spinLocal(p, {std::sin(angle), -std::cos(angle),
+                                              0.0f})));
             glm::vec3 s0 = pivot + dir * kBladeRoot;
             glm::vec3 s1 = pivot + dir * st.reach;
 
@@ -844,7 +922,11 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             return;
         }
         const float step = kSprintTurnRate * dt;
-        if (self.sprinting) {
+        // A rolling body turns onto its heading on exactly the same terms as a
+        // running one: the spin is about the spine, so which way the roll
+        // carries the fighter *is* which way the body is turned, and steering
+        // one is steering the other.
+        if (self.sprinting || self.rolling) {
             // strideDir is the travel direction in the body's own frame, so the
             // angle to it is the turn itself — no wrapping, and no second copy
             // of the direction to keep in step with this one.
@@ -853,18 +935,23 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             return;
         }
         const float duelYaw = other.pos.x >= self.pos.x ? 0.0f : kPi;
-        // A body on the ground never comes round gradually — it is not walking
-        // its feet anywhere — which also keeps the fallSide mirror below to the
-        // one case it was written for. A toppled body must not swing about when
-        // the facing flips: negating fallSide alongside it leaves the
-        // world-space lie direction unchanged, so only the sword side mirrors.
-        if (self.downed() || self.yaw == 0.0f || self.yaw == kPi) {
+        // A body already square to the duel flips outright rather than coming
+        // round, since it is not walking its feet anywhere — and that flip must
+        // not swing a toppled fighter about: negating fallSide alongside it
+        // leaves the world-space lie direction unchanged, so only the sword
+        // side mirrors. The mirror is only ever right for a half turn, which is
+        // exactly what this branch is and why it is asked for so exactly.
+        if (self.yaw == 0.0f || self.yaw == kPi) {
             if (duelYaw != self.yaw && self.downed()) {
                 self.fallSide = -self.fallSide;
             }
             self.yaw = duelYaw;
             return;
         }
+        // Off the axis: a fighter coming out of a run walks their yaw back, and
+        // a body that was rolling swivels round on the ground the same way —
+        // there the yaw carries the lie direction with it, which is precisely
+        // what a rolling fighter turning to face the foe again looks like.
         const float turn = wrapAngle(duelYaw - self.yaw);
         // Landing exactly on the axis is what hands the body back to the
         // instant flip above; easing toward it forever never would.
@@ -1125,6 +1212,7 @@ std::uint32_t Game::checksum() const {
         hs.b(p.grounded);
         hs.f(p.yaw);
         hs.b(p.sprinting);
+        hs.b(p.rolling);
         hs.f(p.animPhase);
         hs.f(p.moveAmount);
         hs.f(p.strideBlend);
@@ -1156,6 +1244,9 @@ std::uint32_t Game::checksum() const {
         hs.f(p.fallTilt);
         hs.f(p.fallVel);
         hs.f(p.fallSide);
+        // The barrel roll is where every hurtbox on a legless body is, so two
+        // peers disagreeing about it would cut at different places.
+        hs.f(p.rollSpin);
     }
     hs.u(m_rng);
     hs.u(m_cosmeticRng);

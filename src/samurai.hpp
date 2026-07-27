@@ -105,6 +105,12 @@ struct SamuraiPose {
     // Signed topple roll about the local +x axis at the feet: a fighter who
     // has lost a leg tips toward ±z and ends up lying on the ground.
     float bodyRoll = 0.0f;
+    // Barrel roll about the model's own +y — the spine, which is the long axis
+    // a body lying on the ground turns over about. Applied *inside* bodyRoll
+    // (spin the model, then tip it), which is what makes it a roll along the
+    // ground rather than a second topple. game.cpp's spinLocal is the same
+    // rotation, and every hurtbox on a rolling fighter goes through it.
+    float rollSpin = 0.0f;
     // Optional [5] dismemberment flags, indexed like samuraiLimbBounds. Severed
     // parts draw as stumps; if the +z (sword) arm is gone, the -z arm swings.
     const bool* severed = nullptr;

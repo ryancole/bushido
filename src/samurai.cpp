@@ -207,6 +207,13 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         // Topple: the whole body tips about the feet toward ±z.
         base = glm::rotate(base, pose.bodyRoll, glm::vec3(1.0f, 0.0f, 0.0f));
     }
+    if (pose.rollSpin != 0.0f) {
+        // Barrel roll, inside the topple: the body turns about its own spine,
+        // which by then is lying along the ground, so it rolls rather than
+        // tipping again. game.cpp's modelToWorld composes these two in this
+        // order — a hurtbox that disagreed would be cut where the body is not.
+        base = glm::rotate(base, pose.rollSpin, glm::vec3(0.0f, 1.0f, 0.0f));
+    }
 
     auto part = [&](const glm::mat4& local, glm::vec3 center, glm::vec3 size,
                     const glm::vec4& color) {
