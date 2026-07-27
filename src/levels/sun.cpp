@@ -31,6 +31,47 @@ float shadowY(const glm::vec2& at) {
     return 0.0015f + hash01(key) * 0.0035f;
 }
 
+// What one box prints on the floor: all eight corners of the unit cube under
+// `model` cast down the sun, and the axis-aligned rectangle enclosing them.
+// Corners already below the floor cast straight down onto their own footing,
+// which is what keeps a caster standing in a hollow from throwing its shadow
+// off sideways from underground.
+//
+// One function for both entry points, because an oriented box and an
+// axis-aligned one differ only in how the corners are reached: the rectangle
+// this returns for a box with no rotation is exactly the top-face/bottom-face
+// spread sunShadow used to compute by hand.
+struct Footprint {
+    glm::vec2 mid, half;
+    float top; // highest the caster stands — what softens and fades its shadow
+};
+
+Footprint castBox(const glm::mat4& model) {
+    glm::vec2 lo{1e9f, 1e9f};
+    glm::vec2 hi{-1e9f, -1e9f};
+    float top = -1e9f;
+    for (int i = 0; i < 8; ++i) {
+        const glm::vec3 corner{(i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f,
+                               (i & 4) ? 0.5f : -0.5f};
+        const glm::vec3 p = glm::vec3(model * glm::vec4(corner, 1.0f));
+        top = std::max(top, p.y);
+        const glm::vec2 at = castDown({p.x, std::max(p.y, 0.0f), p.z});
+        lo = glm::min(lo, at);
+        hi = glm::max(hi, at);
+    }
+    return {(lo + hi) * 0.5f, (hi - lo) * 0.5f, top};
+}
+
+void drawFootprint(Renderer& r, const Footprint& f, const ShadowSlab& slab) {
+    box(r, {f.mid.x, slab.y, f.mid.y},
+        {(f.half.x + slab.soften) * 2.0f, slab.thickness,
+         (f.half.y + slab.soften) * 2.0f},
+        // Clamped because a caster is allowed to ask for more than the level's
+        // own shadow strength (a fighter does) and blending past 1 does not
+        // mean anything darker — only wrong.
+        {0.03f, 0.04f, 0.07f, std::min(slab.alpha, 1.0f)});
+}
+
 // ---- Shafts ---------------------------------------------------------------
 
 // A beam has to end somewhere, and both of its ends are lies: the top is where
@@ -67,20 +108,26 @@ void sunShadow(Renderer& r, glm::vec3 center, glm::vec3 halfExtent, const SunDef
     // The footprint spans everything between the cast of the box's top face and
     // the cast of its bottom — that spread along the sun is what makes a tall
     // thing's shadow long and a stone's nearly its own size.
-    const glm::vec2 hi = castDown({center.x, top, center.z});
-    const glm::vec2 lo = castDown({center.x, std::max(center.y - halfExtent.y, 0.0f), center.z});
-    const glm::vec2 mid = (hi + lo) * 0.5f;
-    const glm::vec2 spread = glm::abs(hi - lo) * 0.5f;
+    const Footprint f =
+        castBox(glm::scale(glm::translate(glm::mat4(1.0f), center), halfExtent * 2.0f));
 
     // The higher the caster, the softer and the fainter: a canopy four metres up
     // prints a wide grey suggestion, a stone prints a crisp dark patch.
-    const float soften = top * 0.09f;
-    const float fade = 1.0f / (1.0f + top * 0.22f);
+    drawFootprint(r, f,
+                  {shadowY(f.mid), 0.0018f, top * 0.09f,
+                   sun.shadow / (1.0f + top * 0.22f)});
+}
 
-    box(r, {mid.x, shadowY(mid), mid.y},
-        {(halfExtent.x + spread.x + soften) * 2.0f, 0.0018f,
-         (halfExtent.z + spread.y + soften) * 2.0f},
-        {0.03f, 0.04f, 0.07f, sun.shadow * fade});
+void sunShadowBox(Renderer& r, const glm::mat4& model, const SunDef& sun,
+                  const ShadowSlab& slab) {
+    if (sun.shadow <= 0.0f) {
+        return;
+    }
+    const Footprint f = castBox(model);
+    if (f.top <= 0.0f) {
+        return; // nothing standing above the floor to cast anything
+    }
+    drawFootprint(r, f, {slab.y, slab.thickness, slab.soften, sun.shadow * slab.alpha});
 }
 
 void sunShaft(Renderer& r, glm::vec3 gap, float width, float strength,

@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 
 class Renderer;
+struct SunDef; // levels/level.hpp — one sun over every battleground
 
 struct SamuraiColors {
     glm::vec4 kimono; // torso, arms, shoulder plates
@@ -185,3 +186,21 @@ void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float stee
 // rotates about +Y (0 faces +x).
 void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
                  const SamuraiPose& pose, const SamuraiColors& colors);
+
+// The same fighter, printed on the floor by the level's sun. Every box the
+// model is built from is cast down the sun's own line, so the shadow holds a
+// stance, takes a step, ducks, swings its blade and lies down with the body —
+// none of which a disc at the feet can do.
+//
+// It walks the *same* part list drawSamurai draws, which is the point rather
+// than an economy: a shadow built from a second description of the fighter
+// would be the shadow of a fighter who is not there, and would drift from this
+// one exactly the way a second copy of shuffleLeg would drift from the legs.
+//
+// `feet`, `yaw` and `pose` are the very arguments drawSamurai was given, so the
+// two calls are read as one thing. A level whose sun casts nothing (Dojo's
+// night) draws nothing here and wants main's blob instead — the blob was never
+// lighting, it is what makes depth readable in the air, and an unlit stage
+// still owes the player that.
+void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
+                       const SamuraiPose& pose, const SunDef& sun);

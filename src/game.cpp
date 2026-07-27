@@ -1259,7 +1259,8 @@ void Game::addBloodMark(const glm::vec3& pos, float radius) {
         return; // washed away downstream
     }
     // Each mark gets its own tiny y offset so overlapping splats don't
-    // z-fight; all stay below the blob shadows (y = 0.03).
+    // z-fight; all stay below the fighters' shadows, whose band starts at
+    // y = 0.03 and is placed against the 0.022 these reach (samurai.cpp).
     BloodMark mark{{pos.x, 0.006f + 0.010f * cfrand(), pos.z},
                    radius,
                    cfrand() * 6.2831853f,

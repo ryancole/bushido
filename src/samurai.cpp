@@ -1,5 +1,7 @@
 #include "samurai.hpp"
 
+#include "levels/sun.hpp" // the same cast the battlegrounds' own shadows use
+
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -259,11 +261,27 @@ LimbBounds samuraiLimbBounds(int limb) {
     }
 }
 
+namespace {
+
 // Local space: origin at the feet, +x forward (facing), +y up, legs/arms
 // offset to the sides along z. Proportions add up to ~1.8 units tall,
 // matching the Player collision box.
-void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
-                 const SamuraiPose& pose, const SamuraiColors& colors) {
+//
+// Every box the model is made of, handed to `emit` as a finished world
+// transform and the color it wears. drawSamurai draws them; drawSamuraiShadow
+// casts them on the floor. One walk of the body with two consumers, for the
+// same reason shuffleLeg is one function with two: a second description of the
+// fighter would drift from this one, and a shadow is the most literal way that
+// drift could ever show.
+//
+// `detail` marks a box lying wholly inside another's silhouette — a kneecap
+// inside its own thigh, the head under its kasa, an obi inside the hip skirt.
+// Drawing does not care and never reads it. The shadow skips them: each slab
+// it casts costs a slice of the thin band they are all stacked in, and a
+// silhouette is made of the outermost boxes and nothing else.
+template <typename Emit>
+void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
+                  const SamuraiColors& colors, Emit&& emit) {
     glm::mat4 base =
         glm::rotate(glm::translate(glm::mat4(1.0f), feet), yaw, glm::vec3(0.0f, 1.0f, 0.0f));
     if (pose.bodyRoll != 0.0f) {
@@ -279,8 +297,8 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     }
 
     auto part = [&](const glm::mat4& local, glm::vec3 center, glm::vec3 size,
-                    const glm::vec4& color) {
-        renderer.drawBox(base * local * boxAt(center, size), color);
+                    const glm::vec4& color, bool detail = false) {
+        emit(base * local * boxAt(center, size), color, detail);
     };
 
     const float pi = glm::pi<float>();
@@ -309,7 +327,7 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         if (isSevered(pose, s > 0.0f ? 2 : 3)) {
             // Stump peeking out below the hip skirt.
             part(glm::mat4(1.0f), {0.0f, hipY - 0.11f, s * kLegSide},
-                 {0.18f, 0.10f, 0.20f}, kStump);
+                 {0.18f, 0.10f, 0.20f}, kStump, true);
             continue;
         }
         // Solved, not posed — and solved by the same function game.cpp bounds
@@ -335,11 +353,11 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         part(thigh, {0.0f, hipY - 0.5f * kThighLen, s * kLegSide},
              {0.21f, kThighLen + 0.02f, 0.225f}, colors.hakama);
         // Kneecap, centered on the pivot so it covers the joint at any fold.
-        part(thigh, kneeRest, {0.20f, 0.19f, 0.23f}, colors.hakama);
+        part(thigh, kneeRest, {0.20f, 0.19f, 0.23f}, colors.hakama, true);
         part(shin, {0.0f, hipY - kThighLen - 0.5f * kShinLen, s * kLegSide},
              {0.19f, kShinLen + 0.02f, 0.21f}, colors.hakama);
         part(shin, {0.04f, hipY - kLegLength, s * kLegSide}, {0.26f, 0.10f, 0.16f},
-             kLacquer);
+             kLacquer, true);
     }
 
     // Upper body: breathes at rest, rides the hip, leans into motion. There is
@@ -362,18 +380,18 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         pivotRotZ({0.0f, 0.95f, 0.0f}, lean);
 
     part(upper, {0.0f, 0.86f, 0.0f}, {0.44f, 0.28f, 0.36f}, colors.hakama); // hip skirt
-    part(upper, {0.0f, 1.02f, 0.0f}, {0.42f, 0.10f, 0.32f}, colors.accent); // obi
+    part(upper, {0.0f, 1.02f, 0.0f}, {0.42f, 0.10f, 0.32f}, colors.accent, true); // obi
     part(upper, {0.0f, 1.22f, 0.0f}, {0.40f, 0.34f, 0.30f}, colors.kimono); // torso
-    part(upper, {0.0f, 1.40f, 0.0f}, {0.28f, 0.08f, 0.24f}, colors.hakama); // collar
+    part(upper, {0.0f, 1.40f, 0.0f}, {0.28f, 0.08f, 0.24f}, colors.hakama, true); // collar
 
     // Shoulder plates and arms. The +z arm is the sword arm — unless it has
     // been severed, in which case the -z arm takes over the katana. During an
     // attack the sword arm overrides the walk swing and carries the blade.
     const float swordSide = isSevered(pose, 0) ? -1.0f : 1.0f;
     for (float s : {-1.0f, 1.0f}) {
-        part(upper, {0.0f, 1.38f, s * 0.24f}, {0.16f, 0.12f, 0.20f}, colors.kimono);
+        part(upper, {0.0f, 1.38f, s * 0.24f}, {0.16f, 0.12f, 0.20f}, colors.kimono, true);
         if (isSevered(pose, s > 0.0f ? 0 : 1)) {
-            part(upper, {0.0f, 1.28f, s * 0.26f}, {0.10f, 0.10f, 0.10f}, kStump);
+            part(upper, {0.0f, 1.28f, s * 0.26f}, {0.10f, 0.10f, 0.10f}, kStump, true);
             continue;
         }
         const bool guarding = pose.blocking && pose.attackState == 0;
@@ -397,13 +415,13 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
         }
         glm::mat4 arm = upper * pivotRotZ({0.0f, 1.36f, s * 0.26f}, swing);
         part(arm, {0.0f, 1.10f, s * 0.26f}, {0.11f, 0.44f, 0.11f}, colors.kimono);
-        part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin); // hand
+        part(arm, {0.0f, 0.84f, s * 0.26f}, {0.09f, 0.10f, 0.09f}, kSkin, true); // hand
         if (swordArm) {
             // Drawn katana extending past the hand, parallel to the arm. The
             // blade runs from just past the guard down to the reach distance
             // measured from the shoulder pivot (y 1.36), so its tip matches
             // the gameplay sweep segment.
-            part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba);
+            part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba, true);
             const float bladeTop = kBladeTop;
             const float bladeTip = kShoulderY - pose.reach;
             const float bw = 0.05f * pose.bladeWidth;
@@ -414,12 +432,15 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
 
     // Head under a wide straw kasa (stacked slabs read as a cone).
     if (isSevered(pose, 4)) {
-        part(upper, {0.0f, 1.46f, 0.0f}, {0.14f, 0.08f, 0.14f}, kStump);
+        part(upper, {0.0f, 1.46f, 0.0f}, {0.14f, 0.08f, 0.14f}, kStump, true);
     } else {
-        part(upper, {0.0f, 1.56f, 0.0f}, {0.20f, 0.20f, 0.20f}, kSkin);
+        part(upper, {0.0f, 1.56f, 0.0f}, {0.20f, 0.20f, 0.20f}, kSkin, true);
+        // The brim is the widest thing on the fighter, so of the four boxes up
+        // here it is the only one with a silhouette of its own — a shadow with
+        // a hat on is most of what says which way a head is turned.
         part(upper, {0.0f, 1.70f, 0.0f}, {0.56f, 0.06f, 0.56f}, kStraw);
-        part(upper, {0.0f, 1.75f, 0.0f}, {0.36f, 0.06f, 0.36f}, kStraw);
-        part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark);
+        part(upper, {0.0f, 1.75f, 0.0f}, {0.36f, 0.06f, 0.36f}, kStraw, true);
+        part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark, true);
     }
 
     // The saya worn at the hip, angled slightly downward behind, and always
@@ -433,7 +454,69 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
     // at the hip ever was.
     glm::mat4 katana = upper * glm::translate(glm::mat4(1.0f), {0.02f, 1.00f, 0.22f}) *
                        glm::rotate(glm::mat4(1.0f), 0.30f, glm::vec3(0.0f, 0.0f, 1.0f));
-    part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer); // scabbard
+    part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer, true); // scabbard
+}
+
+// The floor band a fighter's ten shadow slabs are stacked in, emitted top down.
+// The pipeline writes depth, so wherever two of them overlap the higher one
+// wins and the lower is rejected outright — which is exactly what makes a body
+// print one flat silhouette instead of a heap of translucent rectangles going
+// darker at every joint where they pile up. It is the same depth-write the
+// shafts have to build their lanes around, used the other way about.
+//
+// So the band is a *stack*, and everything about it is ordering. The step has
+// to be wide enough that the depth buffer can still tell two slabs apart out at
+// the far end of a camera pull-back, and the whole band has to sit clear of the
+// blood marks below it (which reach y = 0.022 — Game::addBloodMark's 0.016 of
+// jitter plus half their drawn thickness) or a fresh stain would punch holes
+// through a shadow crossing it. It costs nothing to be generous: the camera
+// looks level rather than down, so lift is a fraction of a percent of screen
+// height and not the slide across the ground it would be in a top-down game.
+constexpr float kShadowTop = 0.030f;
+constexpr float kShadowStep = 0.0006f;
+constexpr float kShadowSlab = 0.0004f; // under the step, so no two slabs meet
+
+} // namespace
+
+void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
+                 const SamuraiPose& pose, const SamuraiColors& colors) {
+    buildSamurai(feet, yaw, pose, colors,
+                 [&](const glm::mat4& model, const glm::vec4& color, bool) {
+                     renderer.drawBox(model, color);
+                 });
+}
+
+void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
+                       const SamuraiPose& pose, const SunDef& sun) {
+    // Softness and darkness come from how high the *fighter* is off the floor,
+    // not from each box's own height the way scenery's does. A samurai is not a
+    // tree: the parts are all within arm's length of each other, and grading
+    // them separately would blur the kasa to a smudge while the sandals stayed
+    // crisp. Taken off the body instead, one number does the job the blob was
+    // really there for — a fighter in the air throws a wide faint shadow well
+    // off to the side, which is how you read where they will land.
+    //
+    // A fighter also prints harder than the scenery around them: the level's
+    // own `shadow` is the strength of a thing standing *in* the battleground,
+    // and the two people fighting in it are what the eye is actually tracking.
+    // kShadowWeight puts a grounded fighter back at about the weight of the
+    // blob this replaced — under it, a shadow on Hanami's grass was there but
+    // not readable, which is the one job it cannot fail at.
+    constexpr float kShadowWeight = 1.5f;
+    const float height = std::max(feet.y, 0.0f);
+    const levels::ShadowSlab slab{kShadowTop, kShadowSlab, 0.035f + height * 0.07f,
+                                  kShadowWeight / (1.0f + height * 0.30f)};
+
+    int cast = 0;
+    buildSamurai(feet, yaw, pose, SamuraiColors{},
+                 [&](const glm::mat4& model, const glm::vec4&, bool detail) {
+                     if (detail) {
+                         return; // inside another box's silhouette already
+                     }
+                     levels::ShadowSlab s = slab;
+                     s.y -= static_cast<float>(cast++) * kShadowStep;
+                     levels::sunShadowBox(renderer, model, sun, s);
+                 });
 }
 
 float bladeSteelLength(float reachBonus) {
