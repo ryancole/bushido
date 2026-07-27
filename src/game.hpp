@@ -166,8 +166,9 @@ struct Player {
     static constexpr float kMaxBlood = 100.0f;
     float blood = kMaxBlood;
 
-    // Toppling: a fighter missing a leg cannot stay standing. fallSide is the
-    // model-space z sign they tip toward (0 until a leg is lost); fallTilt is
+    // Toppling: a fighter with no legs left — or none left alive — cannot stay
+    // standing. fallSide is the model-space z sign they tip toward (0 until
+    // there is nothing to stand on and no reason to pick a side); fallTilt is
     // the roll about the local x axis at the feet, integrated like an inverted
     // pendulum until the body lies on the ground, where it stays.
     float fallTilt = 0.0f; // rad, 0 = upright
@@ -191,13 +192,24 @@ struct Player {
     glm::vec2 sideAxis() const { return {std::sin(yaw), std::cos(yaw)}; }
 
     bool dead() const { return blood <= 0.0f; }
-    bool downed() const {
-        return dead() || severed[static_cast<int>(Limb::LegFront)] ||
-               severed[static_cast<int>(Limb::LegBack)];
+    // On the floor: dead, or with no legs left to stand on. Losing *one* leg
+    // used to be enough — the body toppled and the rest of the duel was fought
+    // from the ground — but a fighter with a leg still under them has
+    // something to stand on, and standing is what a duel is. So they hop
+    // (hopping()) and this is only where the topple runs, movement is a crawl
+    // or a roll, and the collision capsule goes prone.
+    bool downed() const { return dead() || legless(); }
+    // Exactly one leg gone, and alive to stand on the other. Its own gait
+    // (samurai.hpp's hopCycle), and its own bargain: slower than a walk, and
+    // no sprinting or jumping — a run is two legs alternating and a leap needs
+    // a leg to spare. Everything else a fighter can do, they can still do.
+    bool hopping() const {
+        return !dead() && severed[static_cast<int>(Limb::LegFront)] !=
+                              severed[static_cast<int>(Limb::LegBack)];
     }
-    // Both legs gone. One leg is still something to push with — that fighter
-    // crawls — but with neither there is nothing left to move by except
-    // turning the whole body over, which is what the roll is.
+    // Both legs gone. One leg is still something to stand on — that fighter
+    // hops — but with neither there is nothing left to move by except crawling
+    // on the arms, or turning the whole body over, which is what the roll is.
     bool legless() const {
         return severed[static_cast<int>(Limb::LegFront)] &&
                severed[static_cast<int>(Limb::LegBack)];
