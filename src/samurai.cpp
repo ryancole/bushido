@@ -421,12 +421,19 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
             // blade runs from just past the guard down to the reach distance
             // measured from the shoulder pivot (y 1.36), so its tip matches
             // the gameplay sweep segment.
-            part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba, true);
+            part(arm, {0.0f, 0.76f, s * 0.26f}, {0.13f, 0.03f, 0.13f}, kTsuba);
             const float bladeTop = kBladeTop;
             const float bladeTip = kShoulderY - pose.reach;
             const float bw = 0.05f * pose.bladeWidth;
+            // boxAt takes a *full* size — the cube in cube.vert spans ±0.5 —
+            // so the steel is the whole guard-to-tip span, not half of it.
+            // Halved, the box kept its center and lost a quarter of the span
+            // off each end: a hand's width of nothing where the guard should
+            // be, and a tip stopping 25 cm short of the arc game.cpp actually
+            // sweeps. The gap was the visible half of that bug and the short
+            // tip the expensive one.
             part(arm, {0.0f, (bladeTop + bladeTip) * 0.5f, s * 0.26f},
-                 {bw, (bladeTop - bladeTip) * 0.5f, bw}, kSteel);
+                 {bw, bladeTop - bladeTip, bw}, kSteel);
         }
     }
 
@@ -457,7 +464,8 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
     part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer, true); // scabbard
 }
 
-// The floor band a fighter's ten shadow slabs are stacked in, emitted top down.
+// The floor band a fighter's eleven shadow slabs are stacked in, emitted top
+// down (two thighs, two shins, hip skirt, torso, two arms, guard, blade, kasa).
 // The pipeline writes depth, so wherever two of them overlap the higher one
 // wins and the lower is rejected outright — which is exactly what makes a body
 // print one flat silhouette instead of a heap of translucent rectangles going
@@ -469,7 +477,9 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
 // the far end of a camera pull-back, and the whole band has to sit clear of the
 // blood marks below it (which reach y = 0.022 — Game::addBloodMark's 0.016 of
 // jitter plus half their drawn thickness) or a fresh stain would punch holes
-// through a shadow crossing it. It costs nothing to be generous: the camera
+// through a shadow crossing it. Eleven slabs at this step reach 0.024, so the
+// headroom is 2 mm: another caster wants a look at these three numbers rather
+// than just a flag. It costs nothing to be generous otherwise: the camera
 // looks level rather than down, so lift is a fraction of a percent of screen
 // height and not the slide across the ground it would be in a top-down game.
 constexpr float kShadowTop = 0.030f;
@@ -521,7 +531,10 @@ void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
 
 float bladeSteelLength(float reachBonus) {
     // Same span the in-hand blade draws, at the baseline reach: guard to tip.
-    return (kBladeTop - (kShoulderY - (kNominalReach + reachBonus))) * 0.5f;
+    // A full length, like the size drawSamurai hands boxAt and the one
+    // drawDroppedBlade lays along +x — halving it here made a thrown sword
+    // half the sword that left the hand.
+    return kBladeTop - (kShoulderY - (kNominalReach + reachBonus));
 }
 
 glm::vec3 droppedBladeHalfExtent(float steel) {
