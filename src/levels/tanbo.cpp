@@ -123,16 +123,19 @@ const LevelDef kDef = {
     {0.35f, 0.48f, 0.22f, 0.75f},
     kHalfWidth,
     kHalfDepth,
-    // Early summer morning: fresh blue falling to a milky gold where the sun
-    // is still low, green country running out below. Small fair clouds on a
-    // light breeze.
-    {{0.35f, 0.55f, 0.78f},
-     {0.88f, 0.86f, 0.78f},
-     {0.20f, 0.26f, 0.16f},
-     {12, {1.0f, 0.99f, 0.95f}, {0.78f, 0.80f, 0.84f}, 1.0f, 0.015f},
-     // A clear morning sun: crisp shadows, and no haze for shafts — the
-     // `shafts` hook carries the ground mist instead (see registry.hpp).
-     {{1.0f, 0.97f, 0.88f}, 0.0f, 0.35f}},
+    // A fog morning: blue overhead, but the horizon is swallowed grey — the
+    // sky agreeing with the fog the `shafts` hook hangs over the field,
+    // since a foggy ground under a crisp gold horizon reads as two
+    // different mornings. Grey country running out below, clouds muted the
+    // way everything is through vapour.
+    {{0.38f, 0.52f, 0.70f},
+     {0.72f, 0.75f, 0.78f},
+     {0.30f, 0.33f, 0.32f},
+     {12, {0.92f, 0.93f, 0.94f}, {0.68f, 0.71f, 0.76f}, 1.0f, 0.015f},
+     // The sun is up there somewhere: shadows softened by all the vapour in
+     // the way, and no haze for shafts — the `shafts` hook carries the fog
+     // itself instead (see registry.hpp).
+     {{0.96f, 0.95f, 0.90f}, 0.0f, 0.26f}},
 };
 
 // Solid scenery: the scarecrow's pole and the drying racks' posts. Everything
@@ -320,22 +323,84 @@ void draw(Renderer& r, float time) {
     box(r, {8.2f, 4.5f, -9.6f}, {1.1f, 0.7f, 1.0f}, {0.21f, 0.33f, 0.17f, 1.0f});
 }
 
-// The morning mist, low over the pools — this level's translucent air, in
-// the after-the-fighters slot the light shafts use elsewhere (see the note
-// in registry.hpp). Each band breathes and drifts a little in place, and
-// fades out entirely as its drift cycle turns over so nothing ever pops.
+// The morning fog, in three layers — this level's translucent air, in the
+// after-the-fighters slot the light shafts use elsewhere (see the note in
+// registry.hpp). Every piece is unlit (fog is light, not surface) and drawn
+// far-to-near so the depth writes land back-to-front: the haze veils first,
+// then the drifting banks, then the ground blanket whose near face is the
+// closest fog there is.
 void shafts(Renderer& r, float time) {
-    for (int i = 0; i < 6; ++i) {
+    // Grey, not white, on purpose: the scene under it is pale water and a
+    // pale horizon, and a white fog over that is invisible — it has to sit
+    // *darker* than what it hangs in front of to read at all.
+    const glm::vec3 kFog{0.68f, 0.72f, 0.78f};
+
+    // Distance haze: three veils across the back of the scene, thickest
+    // furthest, so the farmhouse, the tree and the horizon all but dissolve
+    // the way far things do on a wet morning. Fighters can never be behind
+    // any of them — the arena ends at z = -8 — so they only grade the
+    // backdrop, however heavy they get.
+    box(r, {0.0f, 2.9f, -9.35f}, {44.0f, 6.4f, 0.5f}, {kFog, 0.32f}, true);
+    box(r, {0.0f, 2.4f, -8.6f}, {44.0f, 5.2f, 0.5f}, {kFog, 0.24f}, true);
+    box(r, {0.0f, 1.9f, -8.05f}, {44.0f, 4.2f, 0.4f}, {kFog, 0.16f}, true);
+
+    // Drifting banks: the fog that has somewhere to be. Each breathes and
+    // wanders a little in place, and fades out entirely as its cycle turns
+    // over so nothing ever pops. Kept off the causeway line so the versus
+    // intro's close-ups never open inside a bank.
+    for (int i = 0; i < 12; ++i) {
         const float phase = hash01(i * 11 + 60) * 100.0f;
         const float cycle = std::fmod(time * 0.05f + hash01(i * 11 + 61), 1.0f);
         const float fade = std::sin(cycle * 3.14159265f);
-        const float mx = (hash01(i * 11 + 62) - 0.5f) * 22.0f +
+        const float mx = (hash01(i * 11 + 62) - 0.5f) * 24.0f +
                          std::sin(time * 0.11f + phase) * 3.0f;
-        const float mz = (hash01(i * 11 + 63) - 0.5f) * 12.0f;
-        const float w = 8.0f + hash01(i * 11 + 64) * 5.0f;
-        const float breathe = 0.06f + 0.03f * std::sin(time * 0.23f + phase);
-        box(r, {mx, 0.32f + 0.08f * std::sin(time * 0.17f + phase), mz},
-            {w, 0.45f, 2.4f}, {0.93f, 0.96f, 1.0f, breathe * fade}, true);
+        const float side = i % 2 == 0 ? -1.0f : 1.0f;
+        const float mz = side * (1.8f + hash01(i * 11 + 63) * 4.6f);
+        const float w = 9.0f + hash01(i * 11 + 64) * 6.0f;
+        const float breathe = 0.115f + 0.045f * std::sin(time * 0.23f + phase);
+        box(r, {mx, 0.42f + 0.09f * std::sin(time * 0.17f + phase), mz},
+            {w, 0.55f, 2.8f}, {kFog, breathe * fade}, true);
+    }
+
+    // The ground blanket, in two layers: a dense shin-deep one lying on the
+    // field and a thinner waist-high one breathing over it. Together they
+    // put the fighters *in* the fog to the hip while the sword arm, the
+    // guard and both faces stay clear — thick enough to feel, never thick
+    // enough to hide a swing.
+    const float lie = 0.105f + 0.03f * std::sin(time * 0.13f);
+    box(r, {0.0f, 0.15f, 0.0f}, {kFieldX * 2.0f + 4.0f, 0.38f, kFieldZ * 2.0f + 3.0f},
+        {kFog, lie}, true);
+    box(r, {0.0f, 0.52f, 0.0f}, {kFieldX * 2.0f + 4.0f, 0.45f, kFieldZ * 2.0f + 3.0f},
+        {kFog, lie * 0.55f}, true);
+
+    // Foreground wisps: the fog that crosses in *front* of the duel. These
+    // live in the near field, between the fighters and the camera, and they
+    // are the reason the whole system sits in the after-the-fighters slot —
+    // each one drifts across on the breeze and visibly washes over whoever
+    // it passes, torso and all, then fades out at the end of its run so the
+    // crossing never pops. Nearer wisps ride lower alphas: a bank two
+    // meters from the lens covers half the screen, and at full strength it
+    // would be a whiteout rather than weather. Drawn last — they are the
+    // nearest fog there is.
+    for (int i = 0; i < 10; ++i) {
+        const float h0 = hash01(i * 13 + 90);
+        const float cycle =
+            std::fmod(time * (0.026f + hash01(i * 13 + 95) * 0.014f) + h0, 1.0f);
+        const float fade = std::sin(cycle * 3.14159265f);
+        const float wx = -22.0f + cycle * 44.0f;
+        // Just in front of where the duel actually happens (the spawns are
+        // at z = 0), so a wisp reads as fog *around the fighters* rather
+        // than as a pane sliding across the screen — and a fighter roaming
+        // toward the camera walks straight into one.
+        const float wz = 1.5f + hash01(i * 13 + 91) * 4.5f;
+        const float wy = 0.75f + hash01(i * 13 + 92) * 0.6f +
+                         0.10f * std::sin(time * 0.19f + h0 * 100.0f);
+        const float ww = 10.0f + hash01(i * 13 + 93) * 5.0f;
+        const float wh = 1.5f + hash01(i * 13 + 94) * 0.6f;
+        const float near = (wz - 1.5f) / 4.5f; // 0 at the duel, 1 toward the lens
+        const float wa = (0.26f - 0.09f * near) *
+                         (0.8f + 0.2f * std::sin(time * 0.27f + h0 * 100.0f));
+        box(r, {wx, wy, wz}, {ww, wh, 1.9f}, {kFog, wa * fade}, true);
     }
 }
 
