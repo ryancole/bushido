@@ -28,6 +28,7 @@
 #include "input.hpp"
 #include "intro.hpp"
 #include "levels/level.hpp"
+#include "levels/scenery.hpp" // hash01, for the dirt clumps' stable scatter
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
 #include "netplay/simlink.hpp"
@@ -539,11 +540,11 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 4.0f});
 
-    // Fixed-size content area, tall enough for the longest section (eight
+    // Fixed-size content area, tall enough for the longest section (nine
     // keybind rows per column): the window is centered and auto-sized, so
     // letting it resize per section would jump the whole panel on every tab
     // click.
-    ImGui::BeginChild("section", {contentW, 356.0f}, ImGuiChildFlags_None,
+    ImGui::BeginChild("section", {contentW, 400.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
         // Enum order runs down the first column and continues down the
@@ -1029,6 +1030,43 @@ void drawMatchClock(const Game& game) {
     dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 16.0f}, color, text);
 }
 
+// Dirt in the eyes. The sim charges nothing for a blinding because *this* is
+// the blind: the screen of whichever local player took the fistful browns
+// over, heaviest the moment it lands and thinning as it clears. Only local
+// humans' fighters count — a bot's blind is played out in bot.cpp's refusal
+// to read the foe, and painting the screen for it would blind the person
+// watching instead. (In a shared-screen versus a blinding unavoidably dims
+// both people's view; the one who threw it knows why.)
+void drawBlindOverlay(const Game& game, const InputSource sources[2]) {
+    float frac = 0.0f;
+    for (int i = 0; i < 2; ++i) {
+        if (localSlot(sources[i]) < 0) {
+            continue;
+        }
+        frac = std::max(frac, game.player(i).blindTime / Game::kBlindTime);
+    }
+    if (frac <= 0.0f) {
+        return;
+    }
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const float a = std::min(1.0f, frac * 1.25f);
+    dl->AddRectFilled({0.0f, 0.0f}, {vp->Size.x, vp->Size.y},
+                      IM_COL32(86, 66, 40, static_cast<int>(205 * a)));
+    // Heavier clods stuck across the view, fixed in place so the smear reads
+    // as something *on* the eyes rather than weather in the world.
+    constexpr float kClods[][3] = {{0.22f, 0.30f, 0.16f},
+                                   {0.60f, 0.18f, 0.20f},
+                                   {0.44f, 0.62f, 0.18f},
+                                   {0.78f, 0.55f, 0.14f},
+                                   {0.12f, 0.72f, 0.12f}};
+    for (const auto& s : kClods) {
+        dl->AddCircleFilled({vp->Size.x * s[0], vp->Size.y * s[1]},
+                            vp->Size.x * s[2],
+                            IM_COL32(56, 42, 26, static_cast<int>(180 * a)));
+    }
+}
+
 // Post-match overlay, styled after the main menu. Shown once the kill has had
 // a moment to play out; Rematch reruns the same pairing with a fresh Game.
 enum class OverAction { None, Rematch, Select, Disconnect };
@@ -1367,6 +1405,23 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
                          0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
         drawSamurai(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time), look);
+    }
+
+    // Dirt in flight: each throw draws as a loose clump of earth-colored
+    // boxes scattered about the sim's one ballistic point. The scatter hangs
+    // off the throw's own seed, so it is stable for that throw's whole flight
+    // and identical on every machine drawing it.
+    for (const DirtThrow& d : game.dirtThrows()) {
+        for (int c = 0; c < 5; ++c) {
+            const float a = levels::hash01(d.seed * 23 + c * 7);
+            const float b = levels::hash01(d.seed * 41 + c * 13);
+            const float e = levels::hash01(d.seed * 57 + c * 29);
+            const glm::vec3 off{(a - 0.5f) * 0.24f, (b - 0.5f) * 0.20f,
+                                (e - 0.5f) * 0.24f};
+            const float size = 0.035f + 0.045f * levels::hash01(d.seed * 71 + c);
+            drawBox(renderer, d.pos + off, {size, size, size},
+                    {0.36f, 0.28f, 0.18f, 0.9f});
+        }
     }
 
     // Severed limbs tumbling as physics debris, in their owner's look — a
@@ -2388,6 +2443,7 @@ int main(int argc, char** argv) {
             } else {
                 drawBloodBars(*game);
                 drawMatchClock(*game);
+                drawBlindOverlay(*game, matchSources);
                 if (session.active()) {
                     drawNetStatus(session);
                     if (session.waiting()) {

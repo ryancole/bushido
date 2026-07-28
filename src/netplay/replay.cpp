@@ -82,7 +82,7 @@ bool Recorder::open(const char* path, const MatchSetup& setup) {
     return true;
 }
 
-void Recorder::step(std::uint16_t inputA, std::uint16_t inputB,
+void Recorder::step(std::uint32_t inputA, std::uint32_t inputB,
                     std::uint32_t checksum) {
     if (!m_out.is_open()) {
         return;
@@ -164,7 +164,7 @@ bool Replayer::next(PlayerInput inputs[2], std::uint32_t& checksum) {
     if (!m_in.is_open()) {
         return false;
     }
-    std::uint16_t bits[2] = {};
+    std::uint32_t bits[2] = {};
     m_in.read(reinterpret_cast<char*>(bits), sizeof bits);
     readU32(m_in, checksum);
     if (!m_in) {

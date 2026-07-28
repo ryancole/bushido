@@ -43,6 +43,8 @@ enum class Action {
     LowerStance,
     Dodge,
     Surrender,
+    LayDown,
+    Throw,
     Count,
 };
 constexpr int kActionCount = static_cast<int>(Action::Count);

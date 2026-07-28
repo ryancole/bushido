@@ -161,6 +161,8 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"Lower Stance", "lower_stance", "Carry the blade a stance lower - rising cuts, better guard"},
     {"Dodge", "dodge", "After your guard catches a blow - spring away instead of striking back"},
     {"Surrender", "surrender", "Concede the duel"},
+    {"Lie Down", "lie_down", "Lie flat on purpose - press again to get back up"},
+    {"Throw", "throw", "Hurl your blade at the foe - or, empty-handed and crouched, blinding dirt"},
 };
 
 } // namespace
@@ -187,6 +189,9 @@ Keybinds defaultKeybinds() {
     k[Action::LowerStance] = key(GLFW_KEY_F);
     k[Action::Dodge] = key(GLFW_KEY_LEFT_ALT);
     k[Action::Surrender] = key(GLFW_KEY_BACKSPACE);
+    // C for the floor (under the crouch key's finger), T for throw.
+    k[Action::LayDown] = key(GLFW_KEY_C);
+    k[Action::Throw] = key(GLFW_KEY_T);
     return k;
 }
 
@@ -218,6 +223,10 @@ Keybinds defaultKeybinds2() {
     k[Action::LowerStance] = key(GLFW_KEY_L);
     k[Action::Dodge] = key(GLFW_KEY_RIGHT_ALT);
     k[Action::Surrender] = key(GLFW_KEY_END);
+    // K beside the semicolon cluster for the floor; O beside P for the
+    // throw, a reach from the stance keys the way T is from R.
+    k[Action::LayDown] = key(GLFW_KEY_K);
+    k[Action::Throw] = key(GLFW_KEY_O);
     return k;
 }
 

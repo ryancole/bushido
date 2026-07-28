@@ -7,24 +7,27 @@
 
 struct GLFWwindow;
 
-// A PlayerInput in sixteen bits. This is the replay record *and* the netplay
-// wire format, defined once so a recorded match and a transmitted one can
-// never drift apart. move.x/move.y only ever take -1, 0 or +1 (readHeld
-// builds each from two opposed buttons), so two bits apiece is lossless — and
-// saying so here is what keeps a non-canonical float out of the input path,
-// where it would be a desync waiting to happen.
+// A PlayerInput in nineteen bits of a four-byte word. This is the replay
+// record *and* the netplay wire format, defined once so a recorded match and
+// a transmitted one can never drift apart. move.x/move.y only ever take -1, 0
+// or +1 (readHeld builds each from two opposed buttons), so two bits apiece
+// is lossless — and saying so here is what keeps a non-canonical float out of
+// the input path, where it would be a desync waiting to happen.
 //
 // Layout: [1:0] move.x + 1, [3:2] move.y + 1, [4] jump, [5] block,
 //         [6] crouch, [7] attack, [9:8] attackKind, [10] drop, [11] sprint,
-//         [12] stanceUp, [13] stanceDown, [14] dodge, [15] surrender.
-// Bits are only ever appended: the packet is a fixed two bytes either way, so
-// widening the meaning of a spare bit costs nothing on the wire, and an older
-// recording replays with the new bit clear, which is exactly right — nobody
-// dropped anything in a match played before the control existed. The two
-// bytes are now fully spoken for: the *next* control widens the packet, which
-// is a kReplayVersion and kProtocol bump, not a spare bit.
-std::uint16_t packInput(const PlayerInput& in);
-PlayerInput unpackInput(std::uint16_t bits);
+//         [12] stanceUp, [13] stanceDown, [14] dodge, [15] surrender,
+//         [16] dash, [17] layDown, [18] hurl.
+// Bits are only ever appended: within one width that costs nothing on the
+// wire, and an older recording replays with the new bit clear, which is
+// exactly right — nobody dashed in a match played before the control existed.
+// The dash/layDown/hurl bits are what pushed the packet past the two bytes it
+// spent its whole life in, which is why this is a u32 and why kReplayVersion
+// and kProtocol both moved with it: a file or a peer speaking the two-byte
+// format is a different layout, not a missing bit. Thirteen bits are spare
+// before the next widening.
+std::uint32_t packInput(const PlayerInput& in);
+PlayerInput unpackInput(std::uint32_t bits);
 
 // Round a movement axis to one of the three states the wire format carries.
 //
@@ -61,14 +64,22 @@ inline int localSlot(InputSource s) {
 // The held controls (move/jump/block/crouch) are levels and can be read fresh
 // whenever. The rest are *edges*: the attack control fires on release — a tap
 // is the light swing, a hold past kHeavyHoldTime charges the heavy — while
-// jab, drop, the stance shifts, dodge and surrender fire on press. Edges are
-// detected once per render frame but consumed by fixed steps, and a frame can
-// run zero of those, so a press has to sit here until a step takes it. This
-// state used to be six loose locals in the main loop, which worked only for
-// as long as exactly one fighter could ever be human.
+// jab, drop, the stance shifts, dodge, surrender, lay-down and hurl fire on
+// press. Edges are detected once per render frame but consumed by fixed
+// steps, and a frame can run zero of those, so a press has to sit here until
+// a step takes it. This state used to be six loose locals in the main loop,
+// which worked only for as long as exactly one fighter could ever be human.
+//
+// The dash has no control of its own: it is read off a *double tap* of any
+// move control — press, release, press again inside kDoubleTapTime — and
+// emitted as the dash edge. Detected here rather than in the sim because
+// "the player asked for a dash" is the input; a sim re-deriving intent from
+// key timings would be a second copy of this logic that every other source
+// (the bot, a peer) would then have to fake taps to satisfy.
 class LocalInput {
 public:
     static constexpr float kHeavyHoldTime = 0.28f; // s of hold that makes it a heavy
+    static constexpr float kDoubleTapTime = 0.28f; // s in which a re-press dashes
 
     // Re-seed from live control state at the start of a match. A control that
     // is already down is flagged suppressed, so the click that locked in the
@@ -102,8 +113,18 @@ private:
     bool m_stanceDownHeld = false;
     bool m_dodgeHeld = false;
     bool m_surrenderHeld = false;
+    bool m_layDownHeld = false;
+    bool m_hurlHeld = false;
     bool m_stanceUpPending = false;
     bool m_stanceDownPending = false;
     bool m_dodgePending = false;
     bool m_surrenderPending = false;
+    bool m_layDownPending = false;
+    bool m_hurlPending = false;
+
+    // Double-tap detection for the dash: one held flag and one time-since-tap
+    // window per move control (MoveLeft/Right/Away/Toward, in Action order).
+    bool m_moveHeld[4] = {};
+    float m_tapWindow[4] = {}; // s left in which a re-press of [i] is a dash
+    bool m_dashPending = false;
 };

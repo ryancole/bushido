@@ -30,7 +30,11 @@ struct MatchSetup {
     std::int32_t level = 0;
 };
 
-inline constexpr std::uint32_t kReplayVersion = 1;
+// Version 2: inputs widened from two bytes to four when the dash/lay-down/
+// hurl bits overflowed the sixteen the format was born with. A step is now
+// 12 bytes (two u32 inputs + the checksum), so a partial log holds
+// (size - 28) / 12 steps.
+inline constexpr std::uint32_t kReplayVersion = 2;
 
 // Where recordings live, relative to the working directory.
 inline constexpr const char* kReplayDir = "replays";
@@ -56,7 +60,7 @@ public:
     Recorder& operator=(const Recorder&) = delete;
 
     bool open(const char* path, const MatchSetup& setup);
-    void step(std::uint16_t inputA, std::uint16_t inputB, std::uint32_t checksum);
+    void step(std::uint32_t inputA, std::uint32_t inputB, std::uint32_t checksum);
     void close(); // logs the frame count; also called by the destructor
     bool active() const { return m_out.is_open(); }
 
