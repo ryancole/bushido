@@ -80,6 +80,17 @@ PlayerInput Bot::think(const Game& game, float dt) {
     }
     m_foeWasWinding = foeWinding;
 
+    // A catch opens the riposte window, and the choice of how to spend it is
+    // made once, at the clang: mostly the counter (the window bypasses the
+    // attack cooldown below), sometimes the dodge instead — sprung clear, the
+    // bot re-approaches like anything else, which is what keeps its defense
+    // from being a metronome a player can set a watch by.
+    const bool haveRiposte = self.riposteTime > 0.0f;
+    if (haveRiposte && !m_hadRiposte) {
+        m_dodgePlanned = frand() < 0.3f;
+    }
+    m_hadRiposte = haveRiposte;
+
     // Empty-handed, nothing else on this page matters: with no blade there is
     // no attack and no guard, so the only move that changes anything is
     // getting one back in hand — the one the other fighter threw away, or
@@ -176,6 +187,11 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // outranks whatever the block timer had left.
     in.block = m_blockTimer > 0.0f && self.riposteTime <= 0.0f;
 
+    // Held for as long as the window it means to spend is open: the sim
+    // buffers the press through the blockstun the clang dealt, and once the
+    // spring goes off the window is gone and this drops on its own.
+    in.dodge = m_dodgePlanned && haveRiposte;
+
     // Finish what is already on the floor. The blade pivots at the shoulder,
     // so a standing swing sweeps a lane a toppled fighter lies clean under —
     // and a bot that keeps swinging over a body it cannot reach is how a match
@@ -195,7 +211,7 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // riposte, which it takes the moment it's earned. The guard wins while
     // it's up (the sim would drop the press anyway).
     if ((m_attackDelay <= 0.0f || self.riposteTime > 0.0f) && !in.block &&
-        self.attackState == AttackState::None &&
+        !in.dodge && self.attackState == AttackState::None &&
         adx < st.reach + 0.25f && std::abs(dz) < kDepthAligned) {
         in.attack = true;
         // Pick the blow: mostly the standard cut. The heavy's long windup

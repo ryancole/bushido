@@ -507,7 +507,12 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
 
     const float labelW = 190.0f;
     const float fieldW = 210.0f;
-    const float contentW = labelW + fieldW;
+    // Fifteen keybind rows outgrew one column of a 720p window, so a controls
+    // section is two columns of eight; everything below (tabs, footer,
+    // buttons) spans the pair.
+    const float colW = labelW + fieldW;
+    const float colGap = 36.0f;
+    const float contentW = colW * 2.0f + colGap;
     const char* hint = nullptr; // the hovered row's hint, drawn in the footer
 
     // Section tabs. The live one wears the same crimson as a hot button, so
@@ -534,39 +539,56 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 4.0f});
 
-    // Fixed-size content area, tall enough for the longest section (the eleven
-    // keybind rows): the window is centered and auto-sized, so letting it
-    // resize per section would jump the whole panel on every tab click.
-    ImGui::BeginChild("section", {contentW, 477.0f}, ImGuiChildFlags_None,
+    // Fixed-size content area, tall enough for the longest section (eight
+    // keybind rows per column): the window is centered and auto-sized, so
+    // letting it resize per section would jump the whole panel on every tab
+    // click.
+    ImGui::BeginChild("section", {contentW, 356.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
-        for (int i = 0; i < kActionCount; ++i) {
-            const Action a = static_cast<Action>(i);
-            ImGui::PushFont(nullptr, 22.0f);
-            ImGui::TextUnformatted(actionName(a));
-            ImGui::PopFont();
-            ImGui::SameLine(labelW);
+        // Enum order runs down the first column and continues down the
+        // second, so display order is still config.hpp's roster, read the way
+        // a page is read.
+        const int rows = (kActionCount + 1) / 2;
+        for (int r = 0; r < rows; ++r) {
+            for (int col = 0; col < 2; ++col) {
+                const int i = col * rows + r;
+                if (i >= kActionCount) {
+                    continue;
+                }
+                const Action a = static_cast<Action>(i);
+                const float x = col * (colW + colGap);
+                if (col > 0) {
+                    ImGui::SameLine(x);
+                }
+                ImGui::PushFont(nullptr, 22.0f);
+                ImGui::TextUnformatted(actionName(a));
+                ImGui::PopFont();
+                ImGui::SameLine(x + labelW);
 
-            ImGui::PushID(i);
-            const bool capturing = s.capturing == i;
-            if (capturing) {
-                ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.09f, 0.09f, 0.85f});
+                ImGui::PushID(i);
+                const bool capturing = s.capturing == i;
+                if (capturing) {
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          {0.55f, 0.09f, 0.09f, 0.85f});
+                }
+                ImGui::PushFont(nullptr, 22.0f);
+                const bool clicked =
+                    ImGui::Button(capturing ? "press a control" : bindName((*keys)[a]),
+                                  {fieldW, 0.0f});
+                ImGui::PopFont();
+                if (capturing) {
+                    ImGui::PopStyleColor();
+                }
+                if (clicked && !s.swallow) {
+                    s.capturing = capturing ? -1 : i;
+                    s.armed = false;
+                }
+                if (ImGui::IsItemHovered() && s.capturing < 0) {
+                    hint = actionHint(a);
+                }
+                ImGui::PopID();
             }
-            ImGui::PushFont(nullptr, 22.0f);
-            const bool clicked = ImGui::Button(
-                capturing ? "press a control" : bindName((*keys)[a]), {fieldW, 0.0f});
-            ImGui::PopFont();
-            if (capturing) {
-                ImGui::PopStyleColor();
-            }
-            if (clicked && !s.swallow) {
-                s.capturing = capturing ? -1 : i;
-                s.armed = false;
-            }
-            if (ImGui::IsItemHovered() && s.capturing < 0) {
-                hint = actionHint(a);
-            }
-            ImGui::PopID();
         }
     } else {
         // A level applies the moment it moves (the menu theme is playing, so
@@ -958,10 +980,19 @@ void drawBloodBars(const Game& game) {
 
         char label[64];
         // The blade can change hands mid-match, or be thrown away entirely, so
-        // the bar names what is in the hand now rather than what was picked.
+        // the bar names what is in the hand now rather than what was picked —
+        // and since the carry became the fighter's own to shift, the stance
+        // rides along: the pose says it to anyone who can read a guard, the
+        // label says it to everyone else.
         const WeaponDef* held = game.weapon(i);
-        std::snprintf(label, sizeof(label), "%s - %s", game.character(i).name,
-                      held ? held->name : "Empty-handed");
+        if (held) {
+            std::snprintf(label, sizeof(label), "%s - %s, %s",
+                          game.character(i).name, held->name,
+                          stanceDef(game.stance(i)).name);
+        } else {
+            std::snprintf(label, sizeof(label), "%s - Empty-handed",
+                          game.character(i).name);
+        }
         ImFont* font = ImGui::GetFont();
         const float nameSize = 19.0f;
         const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, label).x;
@@ -1010,9 +1041,14 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
     OverAction action = OverAction::None;
     // Against the bot (or across a wire) the verdict is the reader's own; with
     // two humans at one keyboard, "VICTORY" would be true for exactly one of
-    // the people looking at the screen.
-    const char* title = versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
-                               : (game.winner() == localSlot ? "VICTORY" : "SLAIN");
+    // the people looking at the screen. A fighter who conceded was not slain,
+    // and the screen owes them the word for what they actually did.
+    const bool yielded = game.surrenderedBy() >= 0;
+    const char* title =
+        versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
+        : game.winner() == localSlot ? "VICTORY"
+        : yielded                    ? "YIELDED"
+                                     : "SLAIN";
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -1029,8 +1065,11 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
     ImGui::PushFont(nullptr, 22.0f);
     // A match called on the clock was won by being in better shape, not by a
     // killing blow, and saying "takes the duel" over two fighters both still
-    // on their feet would be the screen's one dishonest line.
-    ImGui::Text(game.timedOut() ? "%s is left standing" : "%s takes the duel",
+    // on their feet would be the screen's one dishonest line. A surrender is
+    // the third ending, and the verdict names what the winner did about it.
+    ImGui::Text(yielded             ? "%s accepts the surrender"
+                : game.timedOut()   ? "%s is left standing"
+                                    : "%s takes the duel",
                 game.character(game.winner()).name);
     ImGui::PopFont();
     ImGui::PopStyleColor();
@@ -1261,6 +1300,7 @@ SamuraiPose fighterPose(const Game& game, int i, float time) {
             p.attackT, p.blocking, p.crouchAmount, p.hopping(),
             game.stats(i).reach,
             held ? held->stats.bladeWidth : 1.0f, game.stance(i),
+            game.stancePrev(i), game.stanceEase(i),
             held != nullptr, p.bodyRoll(), p.rollSpin, p.severed};
 }
 

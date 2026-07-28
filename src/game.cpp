@@ -241,6 +241,24 @@ constexpr float kRiposteWindupScale = 0.35f;  // on the riposte swing's windup
 // without it, clicking at the clang would eat the riposte it just earned.
 constexpr float kAttackBufferTime = 0.15f;
 
+// Dodging: the other thing a catch can buy. The riposte window is a license
+// to answer while the attacker is stuck in their swing, and the dodge spends
+// it on distance instead of a counter — a spring through the ground plane,
+// riding the knockback velocity so the decay, the physics and the slide all
+// come for free. It goes where the fighter is steering, or straight away from
+// the foe if they aren't, and it consumes the window: escape and answer are
+// the same coin, and the whole choice is which side to spend.
+constexpr float kDodgeSpeed = 6.0f; // m/s at the spring's start (decays away)
+
+// How fast the arm carries the blade from one stance's rest to the next's
+// (Game::stanceEase, 0..1). Quick enough that a shift can't be watched like a
+// transition, slow enough that High to Low reads as the blade travelling.
+// Only the drawn arm rides this: a swing begun mid-shift winds up from
+// wherever the blend has the arm, and by the time the blade is live the
+// windup has carried it onto the settled stance's arc — which is the only
+// thing the hit test ever sweeps.
+constexpr float kStanceShiftRate = 5.0f; // 1/s
+
 // Segment-vs-AABB slab test.
 bool segmentHitsBox(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& center,
                     const glm::vec3& half) {
@@ -462,6 +480,22 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.riposteTime > 0.0f) {
             p.riposteTime = std::max(0.0f, p.riposteTime - dt);
         }
+        // The arm easing between carries after a stance shift.
+        m_stanceEase[i] = std::min(1.0f, m_stanceEase[i] + kStanceShiftRate * dt);
+
+        // Yielding. No gate but a live match: a fighter mid-swing, in
+        // hitstun, or lying legless on the floor can all concede, and the
+        // last of those is the classic case. Nobody dies of it — the match
+        // is handed over, the swing (if any) dies with the decision, and the
+        // blade goes down in front of them, which is what surrender looks
+        // like from across an arena.
+        if (in.surrender && m_winner < 0) {
+            m_winner = 1 - i;
+            m_surrendered = i;
+            p.attackState = AttackState::None;
+            p.attackTimer = 0.0f;
+            dropWeapon(i); // a no-op if they were already empty-handed
+        }
 
         // Open stumps keep bleeding; this can decide a match on its own.
         if (!p.dead()) {
@@ -537,6 +571,23 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             }
         }
 
+        // Shift the carry a stance at a time toward High or Low. It takes a
+        // blade (a stance is how one is held and nothing else), a body not
+        // staggering, and no swing in flight — an arc already being swept
+        // cannot be re-authored under the blade. Clamped at the ends, and
+        // both directions pressed together cancel out rather than racing.
+        // After the drop handling on purpose: throwing the sword down and
+        // shifting it are not the same tick's work.
+        const int stanceDelta = (in.stanceDown ? 1 : 0) - (in.stanceUp ? 1 : 0);
+        if (stanceDelta != 0 && !p.dead() && p.armed() && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None) {
+            const int cur = static_cast<int>(m_stance[i]);
+            const int next = std::clamp(cur + stanceDelta, 0, kStanceCount - 1);
+            if (next != cur) {
+                setStance(i, static_cast<Stance>(next));
+            }
+        }
+
         // Swinging needs a blade and an arm to hold it with; the model swaps
         // the katana to the off hand when the sword arm is gone. Throwing the
         // sword away is therefore the most expensive thing a fighter can do to
@@ -582,6 +633,37 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.bufferedKind = in.attackKind;
         } else if (p.attackBuffer > 0.0f) {
             p.attackBuffer = std::max(0.0f, p.attackBuffer - dt);
+        }
+        // Dodge: spend the riposte window on distance instead of a counter.
+        // Buffered on the attack buffer's terms — the clang that opens the
+        // window also deals blockstun, so a press made at the sound has to
+        // wait out the stagger it arrived during. It fires only from a live
+        // window: outside one the press decays into nothing, since the spring
+        // is something a catch earns, not a movement option.
+        if (in.dodge) {
+            p.dodgeBuffer = kAttackBufferTime;
+        } else if (p.dodgeBuffer > 0.0f) {
+            p.dodgeBuffer = std::max(0.0f, p.dodgeBuffer - dt);
+        }
+        if (p.dodgeBuffer > 0.0f && p.riposteTime > 0.0f && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None && !p.downed() && p.grounded) {
+            // Where the fighter is steering, or straight away from the foe —
+            // a dodge held toward the screen is how you take the depth lane
+            // out from under the next cut.
+            const Player& foe = m_players[1 - i];
+            glm::vec2 dir{p.pos.x - foe.pos.x, p.pos.z - foe.pos.z};
+            const float apart = glm::length(dir);
+            dir = apart > 1e-4f ? dir / apart : -p.forward();
+            if (glm::length(in.move) > 0.01f) {
+                dir = glm::normalize(in.move);
+            }
+            p.kbVel = dir * kDodgeSpeed;
+            // The window is spent, and it takes any queued swing with it:
+            // a fighter who asked for both meant the escape.
+            p.riposteTime = 0.0f;
+            p.dodgeBuffer = 0.0f;
+            p.attackBuffer = 0.0f;
+            m_soundCues.push_back({Sfx::Swing, p.pos.x, 0.5f});
         }
         // A press made mid-sprint is not lost, it waits: the buffer holds it
         // for kAttackBufferTime, so letting go of the run swings. A roll is the
@@ -1096,10 +1178,31 @@ void Game::collapse(Player& p) {
 void Game::equip(int i, int weapon) {
     m_players[i].weapon = weapon;
     m_weapons[i] = weapon == Player::kUnarmed ? nullptr : &weaponDef(weapon);
-    // The stance travels with the blade — take up an odachi and you hold it
-    // the way an odachi is held. Empty-handed keeps Normal as a placeholder
-    // nothing reads: there is no swing to arc and no guard to raise.
+    // The stance arrives with the blade — take up an odachi and you first
+    // hold it the way an odachi is held; it is the fighter's own to shift
+    // from there (setStance). No ease across an equip: the arm snapping to a
+    // fresh blade's carry is the same snap arming has always been, and a
+    // blend out of a stance held by a sword no longer in the hand would be
+    // the arm remembering a blade that is lying on the floor. Empty-handed
+    // keeps Normal as a placeholder nothing reads: there is no swing to arc
+    // and no guard to raise.
     m_stance[i] = m_weapons[i] ? m_weapons[i]->stance : Stance::Normal;
+    m_stancePrev[i] = m_stance[i];
+    m_stanceEase[i] = 1.0f;
+    resolveStats(i);
+}
+
+// Moves a carry one the fighter chose, as against one a blade brought with
+// it: the previous stance is kept and the ease zeroed so the pose can swing
+// the arm between the two rests instead of teleporting it.
+void Game::setStance(int i, Stance stance) {
+    m_stancePrev[i] = m_stance[i];
+    m_stance[i] = stance;
+    m_stanceEase[i] = 0.0f;
+    resolveStats(i);
+}
+
+void Game::resolveStats(int i) {
     CharacterStats st = m_defs[i]->stats;
     if (m_weapons[i]) {
         const WeaponStats& w = m_weapons[i]->stats;
@@ -1108,7 +1211,8 @@ void Game::equip(int i, int weapon) {
         st.recoveryTime *= w.swingScale;
         st.reach += w.reachBonus;
         // Both the blade's shove and the stance's, folded in here so the bot
-        // and the HUD keep reading one resolved number.
+        // and the HUD keep reading one resolved number — which is why a
+        // stance shift re-resolves, not just a change of blade.
         st.knockback *= w.knockbackScale * stanceDef(m_stance[i]).knockbackScale;
     }
     // Empty-handed leaves the bare character stats standing. Nothing scales
@@ -1311,6 +1415,7 @@ std::uint32_t Game::checksum() const {
         hs.f(p.attackWindupScale);
         hs.f(p.attackBuffer);
         hs.i(static_cast<int>(p.bufferedKind));
+        hs.f(p.dodgeBuffer);
         hs.f(p.kbVel.x);
         hs.f(p.kbVel.y);
         for (bool s : p.severed) {
@@ -1328,9 +1433,20 @@ std::uint32_t Game::checksum() const {
         // peers disagreeing about it would cut at different places.
         hs.f(p.rollSpin);
     }
+    // The stance stopped being a pure function of the blade the day it could
+    // be shifted, so it is hashed like any other thing a fighter decided —
+    // two peers holding the same sword differently would swing different
+    // arcs. The ease and the previous carry only ever pose the arm, but they
+    // are sim state advanced by update, and cheap.
+    for (int i = 0; i < 2; ++i) {
+        hs.i(static_cast<int>(m_stance[i]));
+        hs.i(static_cast<int>(m_stancePrev[i]));
+        hs.f(m_stanceEase[i]);
+    }
     hs.u(m_rng);
     hs.u(m_cosmeticRng);
     hs.i(m_winner);
+    hs.i(m_surrendered);
     hs.f(m_overTime);
     // The clock decides a match, so two peers disagreeing about it by one step
     // would end the duel differently — it is sim state, not a HUD number.

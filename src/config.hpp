@@ -36,6 +36,13 @@ enum class Action {
     Attack,
     Jab,
     Drop,
+    // Listed after the originals so the config loader's duplicate sweep, which
+    // walks in enum order and lets earlier rows win, can never let a new
+    // action steal a control an old config had already spoken for.
+    RaiseStance,
+    LowerStance,
+    Dodge,
+    Surrender,
     Count,
 };
 constexpr int kActionCount = static_cast<int>(Action::Count);

@@ -44,6 +44,18 @@ struct PlayerInput {
     // lying at your feet. Which of the two it means is the sim's to decide —
     // the input layer has no business knowing what a fighter is holding.
     bool drop = false;
+    // Edge-triggered: shift the blade's carry one stance toward High or Low
+    // (weapons/stance.hpp). Clamped at the ends rather than wrapped, so
+    // holding a direction of intent never loops past what was meant.
+    bool stanceUp = false;
+    bool stanceDown = false;
+    // Edge-triggered: spend the riposte window a caught blow opened on
+    // getting away instead of striking back. Means nothing outside that
+    // window — the spring is the guard's earning, not a free movement.
+    bool dodge = false;
+    // Edge-triggered: concede the duel. The match goes to the opponent and
+    // the blade goes down in front of the yielded fighter.
+    bool surrender = false;
 
     // Exact equality, so the replay harness can check that an input survives
     // the wire format unchanged (see quantizeAxis in input.hpp).
@@ -146,6 +158,11 @@ struct Player {
     float attackWindupScale = 1.0f; // this swing's windup scale (a riposte snaps out)
     float attackBuffer = 0.0f; // s a pressed attack waits for the fighter to be able
     AttackKind bufferedKind = AttackKind::Light; // which attack is waiting
+    // s a pressed dodge waits for the fighter to be able. It exists for the
+    // same reason attackBuffer does: the clang that opens the riposte window
+    // also deals blockstun, and a press made at the sound would otherwise be
+    // eaten by the very stagger that earned it.
+    float dodgeBuffer = 0.0f;
     glm::vec2 kbVel{0.0f};     // knockback velocity in the ground plane
     bool severed[kLimbCount] = {}; // dismembered parts stay lost for the match
 
@@ -250,13 +267,21 @@ public:
     // these, not the raw roster. An empty-handed fighter reads back their bare
     // character stats; they cannot attack at all, so nothing is scaled.
     const CharacterStats& stats(int i) const { return m_stats[i]; }
-    // The stance fighter i is holding their blade in — resolved from that
-    // blade, and so re-resolved with it whenever one changes hands. It decides
-    // the arc of every swing, which the model has to animate along, so this is
-    // read outside the sim exactly the way stats() is. An empty-handed fighter
-    // reads back Normal and it means nothing: they can neither swing nor
-    // guard, which are the only two things a stance describes.
+    // The stance fighter i is holding their blade in. Seeded by the blade —
+    // take up an odachi and you first hold it the way an odachi is held — and
+    // then the fighter's own to shift, one step at a time, with the stanceUp /
+    // stanceDown inputs. It decides the arc of every swing, which the model
+    // has to animate along, so this is read outside the sim exactly the way
+    // stats() is. An empty-handed fighter reads back Normal and it means
+    // nothing: they can neither swing nor guard, which are the only two
+    // things a stance describes.
     Stance stance(int i) const { return m_stance[i]; }
+    // The carry the arm is easing out of, and how far along it is (0..1): a
+    // stance shift is a motion, not a teleport, so the model mixes the two
+    // ready angles by this. Purely what the pose reads — the hit test always
+    // sweeps the settled stance's arcs, since a swing can't start mid-shift.
+    Stance stancePrev(int i) const { return m_stancePrev[i]; }
+    float stanceEase(int i) const { return m_stanceEase[i]; }
     // The battleground this match was built on (roster index into levels/level.hpp);
     // main draws the matching scenery.
     int level() const { return m_level; }
@@ -283,6 +308,11 @@ public:
     // Was the outcome the clock's rather than a kill? The overlay says so —
     // "left standing" is a different thing to have done than "takes the duel".
     bool timedOut() const { return m_timedOut; }
+    // Who conceded the duel, or -1 for nobody. The third way a match ends,
+    // and like the clock it kills no one: the yielded fighter is left
+    // standing, their blade thrown down in front of them, and the overlay
+    // owes them the honest word for it.
+    int surrenderedBy() const { return m_surrendered; }
 
     const std::vector<SeveredPiece>& severedPieces() const { return m_pieces; }
     // World transform of a severed piece's debris body, for rendering.
@@ -345,9 +375,19 @@ private:
         }
         return false;
     }
-    // Puts a blade (or Player::kUnarmed) in fighter i's hand and re-resolves
-    // their stats from it. The one place m_weapons/m_stats are written.
+    // Puts a blade (or Player::kUnarmed) in fighter i's hand, seeds the
+    // stance from it, and re-resolves their stats. The one place m_weapons is
+    // written.
     void equip(int i, int weapon);
+    // Moves fighter i's carry to a new stance and re-resolves their stats,
+    // since the stance's knockback scale is folded into them. The one place a
+    // stance changes without the blade changing.
+    void setStance(int i, Stance stance);
+    // Rebuilds m_stats[i] from the character, the held blade and the current
+    // stance — the shared tail of equip and setStance, so the invariant
+    // "stats are the character's with blade and stance applied" holds however
+    // either one moves.
+    void resolveStats(int i);
     // Throws fighter i's blade to the ground in front of them, where either
     // fighter can take it up again. A no-op if they have nothing to throw.
     void dropWeapon(int i);
@@ -373,10 +413,16 @@ private:
     // put one down and take up another mid-duel.
     const WeaponDef* m_weapons[2];
     CharacterStats m_stats[2];       // character stats with the weapon applied
-    // How each fighter carries what they are holding. Derived from the blade
-    // rather than stored per fighter, which is why the checksum needn't hash
-    // it: Player::weapon is hashed, and this is a pure function of it.
+    // How each fighter carries what they are holding. Seeded from the blade
+    // by equip, then genuinely per-fighter state — the stance inputs move it
+    // — so unlike the old derived value it is hashed in checksum(): two peers
+    // holding the same sword differently would swing different arcs.
     Stance m_stance[2] = {Stance::Normal, Stance::Normal};
+    // The carry each arm is easing out of and how far it has got (0..1, 1 =
+    // settled). Drawn, never swept — but sim state all the same, advanced by
+    // update and hashed with everything else it advances.
+    Stance m_stancePrev[2] = {Stance::Normal, Stance::Normal};
+    float m_stanceEase[2] = {1.0f, 1.0f};
     std::vector<SeveredPiece> m_pieces;
     std::vector<DroppedWeapon> m_dropped; // blades on the ground, free to take
     std::vector<SoundCue> m_soundCues;
@@ -393,6 +439,7 @@ private:
     };
     std::vector<WaterFootprint> m_waterXZ;
     int m_winner = -1;      // decided once; a post-match death can't flip it
+    int m_surrendered = -1; // who conceded, if that is how it was decided
     float m_overTime = 0.0f;
     float m_timeLeft = kMatchTimeLimit; // counts down only while the duel is live
     bool m_timedOut = false;            // the clock called it, not a killing blow

@@ -37,6 +37,10 @@ std::uint16_t packInput(const PlayerInput& in) {
     bits |= static_cast<std::uint16_t>((static_cast<int>(in.attackKind) & 3) << 8);
     if (in.drop) bits |= 1u << 10;
     if (in.sprint) bits |= 1u << 11;
+    if (in.stanceUp) bits |= 1u << 12;
+    if (in.stanceDown) bits |= 1u << 13;
+    if (in.dodge) bits |= 1u << 14;
+    if (in.surrender) bits |= 1u << 15;
     return bits;
 }
 
@@ -55,6 +59,10 @@ PlayerInput unpackInput(std::uint16_t bits) {
                                             : AttackKind::Light;
     in.drop = (bits & (1u << 10)) != 0;
     in.sprint = (bits & (1u << 11)) != 0;
+    in.stanceUp = (bits & (1u << 12)) != 0;
+    in.stanceDown = (bits & (1u << 13)) != 0;
+    in.dodge = (bits & (1u << 14)) != 0;
+    in.surrender = (bits & (1u << 15)) != 0;
     return in;
 }
 
@@ -65,11 +73,19 @@ void LocalInput::beginMatch(GLFWwindow* window, const Keybinds& keys) {
     // Seeded like the others so a control already down at the whistle can't
     // read as a fresh press and throw the blade away on the opening frame.
     m_dropHeld = bindHeld(window, keys[Action::Drop]);
+    m_stanceUpHeld = bindHeld(window, keys[Action::RaiseStance]);
+    m_stanceDownHeld = bindHeld(window, keys[Action::LowerStance]);
+    m_dodgeHeld = bindHeld(window, keys[Action::Dodge]);
+    m_surrenderHeld = bindHeld(window, keys[Action::Surrender]);
     m_suppressed = m_attackHeld;
     m_holdTime = 0.0f;
     m_pending = false;
     m_pendingKind = AttackKind::Light;
     m_dropPending = false;
+    m_stanceUpPending = false;
+    m_stanceDownPending = false;
+    m_dodgePending = false;
+    m_surrenderPending = false;
 }
 
 void LocalInput::poll(GLFWwindow* window, const Keybinds& keys, float frameTime) {
@@ -111,9 +127,26 @@ void LocalInput::poll(GLFWwindow* window, const Keybinds& keys, float frameTime)
     }
     m_dropHeld = drop;
 
+    // The rest of the press-fired edges, all on drop's pattern.
+    auto pressEdge = [&](Action action, bool& held, bool& pending) {
+        const bool down = bindHeld(window, keys[action]);
+        if (down && !held) {
+            pending = true;
+        }
+        held = down;
+    };
+    pressEdge(Action::RaiseStance, m_stanceUpHeld, m_stanceUpPending);
+    pressEdge(Action::LowerStance, m_stanceDownHeld, m_stanceDownPending);
+    pressEdge(Action::Dodge, m_dodgeHeld, m_dodgePending);
+    pressEdge(Action::Surrender, m_surrenderHeld, m_surrenderPending);
+
     m_input.attack = m_pending;
     m_input.attackKind = m_pendingKind;
     m_input.drop = m_dropPending;
+    m_input.stanceUp = m_stanceUpPending;
+    m_input.stanceDown = m_stanceDownPending;
+    m_input.dodge = m_dodgePending;
+    m_input.surrender = m_surrenderPending;
 }
 
 void LocalInput::consumeEdges() {
@@ -121,4 +154,12 @@ void LocalInput::consumeEdges() {
     m_input.attack = false;
     m_dropPending = false;
     m_input.drop = false;
+    m_stanceUpPending = false;
+    m_input.stanceUp = false;
+    m_stanceDownPending = false;
+    m_input.stanceDown = false;
+    m_dodgePending = false;
+    m_input.dodge = false;
+    m_surrenderPending = false;
+    m_input.surrender = false;
 }

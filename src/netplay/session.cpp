@@ -9,7 +9,7 @@ namespace {
 // Bumped whenever the packet layout or the meaning of a field changes. Two
 // builds that disagree here refuse each other at the handshake rather than
 // desyncing ten seconds in, where the cause would be much harder to see.
-constexpr std::uint32_t kProtocol = 4;
+constexpr std::uint32_t kProtocol = 5;
 
 enum class Msg : std::uint8_t {
     Hello = 0,   // client -> host: I would like a match, and here is my fighter

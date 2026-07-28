@@ -6,9 +6,10 @@
 // High holds the weapon over the head and gives the most offense, Normal holds
 // it in front pointed at the foe and is balanced, Low points it down or behind
 // and is the defensive one. Bushido Blade lets a fighter cycle all three
-// mid-match with a button; here each weapon carries exactly one, so choosing a
-// blade chooses a style — the cycling is the obvious next step and nothing
-// below assumes there is only one per weapon.
+// mid-match, and now so does this: each weapon carries the stance it *starts*
+// in — so choosing a blade still chooses a style — and the stanceUp /
+// stanceDown inputs shift the carry from there, one step at a time
+// (Game::setStance), clamped at High and Low rather than wrapped.
 //
 // Angles are about the shoulder, in the one convention game.cpp's blade sweep
 // and samurai.cpp's sword arm both already use:
