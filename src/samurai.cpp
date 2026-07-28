@@ -19,6 +19,75 @@ const glm::vec4 kLacquer{0.10f, 0.09f, 0.09f, 1.0f};
 const glm::vec4 kTsuba{0.55f, 0.45f, 0.15f, 1.0f};
 const glm::vec4 kSteel{0.78f, 0.80f, 0.85f, 1.0f};
 const glm::vec4 kStump{0.42f, 0.05f, 0.05f, 1.0f}; // cut-surface blood cap
+const glm::vec4 kBone{0.88f, 0.83f, 0.72f, 1.0f};  // horn ivory
+
+// Every piece of headgear, emitted once for both of its readers — the head on
+// the body (buildSamurai) and the head leaving it (drawSeveredLimb) — so the
+// hat a fighter wears and the hat their head flies off wearing cannot drift
+// apart. Boxes are axis-aligned in the model's local frame on purpose:
+// drawSeveredLimb re-centers them under a rigid-body transform, where a
+// baked-in rotation would have to be re-derived. `sink` takes (center, size,
+// color, detail); the severed reader ignores `detail`, the body reader hands
+// it to the shadow.
+//
+// The palette is the wearer's where it can be (a hood is cut from the same
+// cloth as the hakama) and shared constants where it is a material of its own.
+template <typename Sink>
+void headgearParts(Headgear headgear, const SamuraiColors& colors, Sink&& sink) {
+    switch (headgear) {
+        case Headgear::Kasa:
+            // Stacked slabs read as a cone. The brim is the widest thing on
+            // the fighter, so it is the one box up here with a silhouette of
+            // its own.
+            sink(glm::vec3{0.0f, 1.70f, 0.0f}, glm::vec3{0.56f, 0.06f, 0.56f}, kStraw, false);
+            sink(glm::vec3{0.0f, 1.75f, 0.0f}, glm::vec3{0.36f, 0.06f, 0.36f}, kStraw, true);
+            sink(glm::vec3{0.0f, 1.80f, 0.0f}, glm::vec3{0.18f, 0.05f, 0.18f}, kStrawDark,
+                 true);
+            break;
+        case Headgear::Bare:
+            break;
+        case Headgear::Hood: {
+            // A cowl swallowing the head, in the wearer's hakama cloth, and a
+            // darker mask across the lower face — the strip of skin left
+            // between them is the eyes.
+            glm::vec4 mask = colors.hakama * 0.7f;
+            mask.a = 1.0f;
+            sink(glm::vec3{0.0f, 1.61f, 0.0f}, glm::vec3{0.26f, 0.22f, 0.26f}, colors.hakama,
+                 false);
+            sink(glm::vec3{0.06f, 1.49f, 0.0f}, glm::vec3{0.12f, 0.09f, 0.24f}, mask, true);
+            break;
+        }
+        case Headgear::Horns:
+            // A wild dark mane instead of a hat, and the pair of horns rising
+            // off it that say what this fighter is named for. Each horn is a
+            // shaft and a narrower tip — as much taper as boxes get.
+            sink(glm::vec3{0.0f, 1.68f, 0.0f}, glm::vec3{0.24f, 0.10f, 0.24f}, kLacquer,
+                 false);
+            for (float s : {-1.0f, 1.0f}) {
+                sink(glm::vec3{0.02f, 1.77f, s * 0.10f}, glm::vec3{0.05f, 0.14f, 0.05f},
+                     kBone, true);
+                sink(glm::vec3{0.02f, 1.87f, s * 0.10f}, glm::vec3{0.035f, 0.09f, 0.035f},
+                     kBone, true);
+            }
+            break;
+        case Headgear::Eboshi:
+            // Tall lacquered court cap over a thin brow band. Narrower than
+            // the head it sits on, so the head keeps the caster job and the
+            // cap is detail.
+            sink(glm::vec3{0.0f, 1.665f, 0.0f}, glm::vec3{0.22f, 0.05f, 0.22f}, kLacquer,
+                 true);
+            sink(glm::vec3{-0.01f, 1.80f, 0.0f}, glm::vec3{0.15f, 0.26f, 0.15f}, kLacquer,
+                 true);
+            break;
+    }
+}
+
+// Whether the headgear's own caster covers the head from the sun's point of
+// view, letting the head itself drop to detail. Bare and Eboshi leave the
+// head as the widest thing up there, so it keeps the caster job.
+bool headgearShadowsHead(Headgear h) {
+    return h == Headgear::Kasa || h == Headgear::Hood || h == Headgear::Horns;
+}
 
 // The knee is no longer posed at all — it is solved from where the foot has to
 // be (see the leg block in drawSamurai). A leg is a two-bone chain rather than
@@ -281,7 +350,8 @@ namespace {
 // silhouette is made of the outermost boxes and nothing else.
 template <typename Emit>
 void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
-                  const SamuraiColors& colors, Emit&& emit) {
+                  const SamuraiLook& look, Emit&& emit) {
+    const SamuraiColors& colors = look.colors;
     glm::mat4 base =
         glm::rotate(glm::translate(glm::mat4(1.0f), feet), yaw, glm::vec3(0.0f, 1.0f, 0.0f));
     if (pose.bodyRoll != 0.0f) {
@@ -437,17 +507,21 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
         }
     }
 
-    // Head under a wide straw kasa (stacked slabs read as a cone).
+    // Head, under whatever the character wears (SamuraiLook::headgear — the
+    // geometry itself lives in headgearParts, shared with the severed head).
+    // The detail flags move with the choice: under a kasa or a hood the head
+    // sits wholly inside the hat's silhouette; bare, or under a cap narrower
+    // than itself, it *is* the topmost silhouette — a shadow with a hat on is
+    // most of what says which way a head is turned, and a bare head owes the
+    // shadow that same job itself.
     if (isSevered(pose, 4)) {
         part(upper, {0.0f, 1.46f, 0.0f}, {0.14f, 0.08f, 0.14f}, kStump, true);
     } else {
-        part(upper, {0.0f, 1.56f, 0.0f}, {0.20f, 0.20f, 0.20f}, kSkin, true);
-        // The brim is the widest thing on the fighter, so of the four boxes up
-        // here it is the only one with a silhouette of its own — a shadow with
-        // a hat on is most of what says which way a head is turned.
-        part(upper, {0.0f, 1.70f, 0.0f}, {0.56f, 0.06f, 0.56f}, kStraw);
-        part(upper, {0.0f, 1.75f, 0.0f}, {0.36f, 0.06f, 0.36f}, kStraw, true);
-        part(upper, {0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark, true);
+        part(upper, {0.0f, 1.56f, 0.0f}, {0.20f, 0.20f, 0.20f}, kSkin,
+             headgearShadowsHead(look.headgear));
+        headgearParts(look.headgear, colors,
+                      [&](glm::vec3 center, glm::vec3 size, const glm::vec4& color,
+                          bool detail) { part(upper, center, size, color, detail); });
     }
 
     // The saya worn at the hip, angled slightly downward behind, and always
@@ -462,6 +536,14 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
     glm::mat4 katana = upper * glm::translate(glm::mat4(1.0f), {0.02f, 1.00f, 0.22f}) *
                        glm::rotate(glm::mat4(1.0f), 0.30f, glm::vec3(0.0f, 0.0f, 1.0f));
     part(katana, {-0.30f, 0.0f, 0.0f}, {0.60f, 0.05f, 0.05f}, kLacquer, true); // scabbard
+
+    // The character's own dressing, last: authored in the fighter's file and
+    // emitted through the very same sink, so both consumers of this walk —
+    // the drawing and the shadow — see it without knowing it exists. The
+    // rules a hook has to keep are documented on AdornFn in samurai.hpp.
+    if (look.adorn) {
+        look.adorn(AdornContext{pose, upper}, AdornPart(part));
+    }
 }
 
 // The floor band a fighter's eleven shadow slabs are stacked in, emitted top
@@ -479,7 +561,9 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
 // jitter plus half their drawn thickness) or a fresh stain would punch holes
 // through a shadow crossing it. Eleven slabs at this step reach 0.024, so the
 // headroom is 2 mm: another caster wants a look at these three numbers rather
-// than just a flag. It costs nothing to be generous otherwise: the camera
+// than just a flag — and every non-detail box an adorn hook emits is exactly
+// such a caster, which is why the budget is called out on AdornFn in the
+// header. It costs nothing to be generous otherwise: the camera
 // looks level rather than down, so lift is a fraction of a percent of screen
 // height and not the slide across the ground it would be in a top-down game.
 constexpr float kShadowTop = 0.030f;
@@ -489,15 +573,16 @@ constexpr float kShadowSlab = 0.0004f; // under the step, so no two slabs meet
 } // namespace
 
 void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
-                 const SamuraiPose& pose, const SamuraiColors& colors) {
-    buildSamurai(feet, yaw, pose, colors,
+                 const SamuraiPose& pose, const SamuraiLook& look) {
+    buildSamurai(feet, yaw, pose, look,
                  [&](const glm::mat4& model, const glm::vec4& color, bool) {
                      renderer.drawBox(model, color);
                  });
 }
 
 void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
-                       const SamuraiPose& pose, const SunDef& sun) {
+                       const SamuraiPose& pose, const SamuraiLook& look,
+                       const SunDef& sun) {
     // Softness and darkness come from how high the *fighter* is off the floor,
     // not from each box's own height the way scenery's does. A samurai is not a
     // tree: the parts are all within arm's length of each other, and grading
@@ -517,8 +602,10 @@ void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
     const levels::ShadowSlab slab{kShadowTop, kShadowSlab, 0.035f + height * 0.07f,
                                   kShadowWeight / (1.0f + height * 0.30f)};
 
+    // The real look, not a placeholder: headgear and adornments change the
+    // outline, and the outline is the whole of what gets printed.
     int cast = 0;
-    buildSamurai(feet, yaw, pose, SamuraiColors{},
+    buildSamurai(feet, yaw, pose, look,
                  [&](const glm::mat4& model, const glm::vec4&, bool detail) {
                      if (detail) {
                          return; // inside another box's silhouette already
@@ -560,7 +647,8 @@ void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float stee
 // Same boxes the attached limb is built from, re-centered on the limb's
 // bounds so they track the debris rigid body, plus a stump cap at the cut.
 void drawSeveredLimb(Renderer& renderer, const glm::mat4& transform, int limb,
-                     const SamuraiColors& colors) {
+                     const SamuraiLook& look) {
+    const SamuraiColors& colors = look.colors;
     const glm::vec3 origin = samuraiLimbBounds(limb).center;
     auto part = [&](glm::vec3 center, glm::vec3 size, const glm::vec4& color) {
         renderer.drawBox(transform * boxAt(center - origin, size), color);
@@ -580,10 +668,13 @@ void drawSeveredLimb(Renderer& renderer, const glm::mat4& transform, int limb,
             part({0.0f, 0.82f, s * 0.12f}, {0.18f, 0.06f, 0.20f}, kStump);
             break;
         default:
+            // The head leaves wearing what the fighter wore — reading the
+            // same headgearParts buildSamurai reads is exactly why Headgear
+            // is an enum rather than adorn-hook geometry.
             part({0.0f, 1.56f, 0.0f}, {0.20f, 0.20f, 0.20f}, kSkin);
-            part({0.0f, 1.70f, 0.0f}, {0.56f, 0.06f, 0.56f}, kStraw);
-            part({0.0f, 1.75f, 0.0f}, {0.36f, 0.06f, 0.36f}, kStraw);
-            part({0.0f, 1.80f, 0.0f}, {0.18f, 0.05f, 0.18f}, kStrawDark);
+            headgearParts(look.headgear, colors,
+                          [&](glm::vec3 center, glm::vec3 size, const glm::vec4& color,
+                              bool) { part(center, size, color); });
             part({0.0f, 1.47f, 0.0f}, {0.12f, 0.06f, 0.12f}, kStump);
             break;
     }

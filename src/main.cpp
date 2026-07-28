@@ -827,7 +827,7 @@ SelectResult drawCharacterSelect(SelectScreen& s) {
                 ImGui::SameLine(0.0f, tileGap);
             }
             ImGui::PushID(i);
-            if (drawSelectTile(c.name, c.colors.kimono, tile, s.shown == i)) {
+            if (drawSelectTile(c.name, c.look.colors.kimono, tile, s.shown == i)) {
                 s.pickedCharacter = i;
             }
             ImGui::PopID();
@@ -1299,7 +1299,7 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
         const Player& p = game.player(i);
         if (sun.shadow > 0.0f) {
             drawSamuraiShadow(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time),
-                              sun);
+                              game.character(i).look, sun);
             continue;
         }
         const glm::vec2 lie = p.lieOffset();
@@ -1309,27 +1309,32 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
                 {0.0f, 0.0f, 0.0f, 0.45f});
     }
 
-    // Fighters, in their chosen character's colors; the blade's length is the
-    // resolved reach (character + weapon) and its thickness the weapon's.
+    // Fighters, in their chosen character's look; the blade's length is the
+    // resolved reach (character + weapon) and its thickness the weapon's. The
+    // look is copied so the frame's tints can write on the kimono without
+    // touching the roster's authored palette.
     for (int i = 0; i < 2; ++i) {
         const Player& p = game.player(i);
-        SamuraiColors c = game.character(i).colors;
+        SamuraiLook look = game.character(i).look;
         if (p.hitstun > 0.0f) {
-            c.kimono = glm::mix(c.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
+            look.colors.kimono =
+                glm::mix(look.colors.kimono, glm::vec4(1.0f), 0.7f * p.hitstun / 0.35f);
         }
         // The riposte window glows gold — strike now; fades as it closes.
         if (p.riposteTime > 0.0f) {
-            c.kimono = glm::mix(c.kimono, glm::vec4{0.95f, 0.78f, 0.30f, 1.0f},
-                                0.55f * std::min(1.0f, p.riposteTime / 0.25f));
+            look.colors.kimono =
+                glm::mix(look.colors.kimono, glm::vec4{0.95f, 0.78f, 0.30f, 1.0f},
+                         0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
-        drawSamurai(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time), c);
+        drawSamurai(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time), look);
     }
 
-    // Severed limbs tumbling as physics debris, in their owner's colors.
+    // Severed limbs tumbling as physics debris, in their owner's look — a
+    // head goes flying still wearing its hat.
     for (const SeveredPiece& piece : game.severedPieces()) {
         drawSeveredLimb(renderer, game.severedPieceTransform(piece),
                         static_cast<int>(piece.limb),
-                        game.character(piece.victim).colors);
+                        game.character(piece.victim).look);
     }
 
     // Blades lying where they were thrown, tumbling as debris on the same

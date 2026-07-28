@@ -131,10 +131,10 @@ void namePlate(ImDrawList* dl, ImVec2 at, float w, float h, const CharacterDef& 
     const float capW = h * 0.12f;
     if (fromLeft) {
         dl->AddQuadFilled(p0, {p0.x + capW, p0.y}, {p3.x + capW, p3.y}, p3,
-                          fade(toU32(who.colors.kimono), alpha));
+                          fade(toU32(who.look.colors.kimono), alpha));
     } else {
         dl->AddQuadFilled({p1.x - capW, p1.y}, p1, p2, {p2.x - capW, p2.y},
-                          fade(toU32(who.colors.kimono), alpha));
+                          fade(toU32(who.look.colors.kimono), alpha));
     }
 
     const float nameSize = h * 0.44f;

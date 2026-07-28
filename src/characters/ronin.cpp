@@ -24,12 +24,18 @@ const CharacterDef kDef = {
             .knockback = 8.0f,
             .weight = 1.0f,
         },
-    // Deep red kimono over near-black hakama, gold obi and grip wrap.
-    .colors =
+    // Deep red kimono over near-black hakama, gold obi and grip wrap, under
+    // the roster's original straw kasa — the baseline look the way the stats
+    // are the baseline numbers.
+    .look =
         {
-            .kimono = {0.72f, 0.13f, 0.13f, 1.0f},
-            .hakama = {0.17f, 0.15f, 0.17f, 1.0f},
-            .accent = {0.85f, 0.70f, 0.25f, 1.0f},
+            .colors =
+                {
+                    .kimono = {0.72f, 0.13f, 0.13f, 1.0f},
+                    .hakama = {0.17f, 0.15f, 0.17f, 1.0f},
+                    .accent = {0.85f, 0.70f, 0.25f, 1.0f},
+                },
+            .headgear = Headgear::Kasa,
         },
     .rSpeed = 3,
     .rPower = 3,
