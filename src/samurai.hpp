@@ -4,6 +4,8 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
+
 class Renderer;
 struct SunDef; // levels/level.hpp — one sun over every battleground
 
@@ -11,6 +13,21 @@ struct SamuraiColors {
     glm::vec4 kimono; // torso, arms, shoulder plates
     glm::vec4 hakama; // trousers, hip skirt, collar
     glm::vec4 accent; // obi belt, sword grip wrap
+};
+
+// What a fighter wears on their head. An enum the shared builder interprets,
+// rather than geometry authored through the adorn hook, for a blunt reason:
+// the head comes off. drawSeveredLimb draws the severed head from this same
+// value, so whatever is worn travels with the piece — a hat authored through
+// the hook would stay hanging over the stump. Every value must be handled in
+// both buildSamurai's head block and drawSeveredLimb's head case; variants are
+// added here as characters need them.
+enum class Headgear {
+    Kasa,   // wide straw hat — the roster's original look
+    Bare,   // nothing: the head itself becomes the topmost silhouette
+    Hood,   // close cowl over the head, a mask across the face below the eyes
+    Horns,  // a dark mane with a pair of bone horns rising off it
+    Eboshi, // tall lacquered court cap, narrower than the head it sits on
 };
 
 // Stance and stride geometry. The model's own dimensions, public because the
@@ -146,6 +163,47 @@ struct SamuraiPose {
     const bool* severed = nullptr;
 };
 
+// The bespoke-geometry seam: a character's own dressing — armor plates, a
+// mask, a back banner — authored in that character's own file
+// (characters/<name>.cpp) and emitted into the same part walk drawSamurai and
+// drawSamuraiShadow both consume, so it is drawn, shaded and shadowed exactly
+// like the shared body. The sink is the builder's own `part`: a local
+// transform (composed under the body's base, so a topple or a roll carries
+// adornments with the body), a box center and full size, a color, and the
+// `detail` flag. Three rules keep a hook honest:
+//  - Hang everything off `upper`, or a pivot built on it — never on a
+//    severable limb. Severed pieces are drawn by drawSeveredLimb from the
+//    shared list, so hook geometry on an arm or a leg would not travel with
+//    the cut (headgear is an enum for exactly that reason).
+//  - `detail = true` unless the piece genuinely widens the silhouette. Every
+//    non-detail box is one more shadow caster, and the shadow band is a
+//    budgeted stack — see the numbers over kShadowTop in samurai.cpp before
+//    spending one.
+//  - The sim cannot see any of it. Dressing that reads as body — bulk, broad
+//    pauldrons — wants to stay near the shared hurtboxes (samuraiLimbBounds),
+//    or the fighter will be missed where they visibly are.
+struct AdornContext {
+    const SamuraiPose& pose;
+    // Upper-body transform: bob, stance drop and attack lean already folded
+    // in. The torso, collar, shoulders and head all hang off this one matrix.
+    glm::mat4 upper;
+};
+using AdornPart = std::function<void(const glm::mat4& local, glm::vec3 center,
+                                     glm::vec3 size, const glm::vec4& color, bool detail)>;
+using AdornFn = void (*)(const AdornContext&, const AdornPart&);
+
+// Everything that makes one fighter look like themselves: the palette the
+// shared body wears, what sits on their head, and the bespoke hook. A
+// character authors one of these beside its stats (CharacterDef::look) and the
+// one buildSamurai consumes it — the body, its gaits and its hurtboxes stay
+// shared, because those are exactly the parts that must not drift between
+// what is drawn, what is cast on the floor, and what can be hit.
+struct SamuraiLook {
+    SamuraiColors colors;
+    Headgear headgear = Headgear::Kasa;
+    AdornFn adorn = nullptr; // optional bespoke geometry; null = nothing extra
+};
+
 // Severable body parts are indexed 0..4: 0 arm +z (sword side), 1 arm -z,
 // 2 leg +z, 3 leg -z, 4 head. Order must match game.hpp's Limb enum.
 // Bounds are the limb's tight AABB in model-local space (feet origin,
@@ -158,9 +216,11 @@ LimbBounds samuraiLimbBounds(int limb);
 
 // Draws limb `limb` as a free-flying piece (with a blood-red cut cap), with
 // its boxes centered on samuraiLimbBounds(limb).center so `transform` can be
-// a rigid-body transform for a box of those half extents.
+// a rigid-body transform for a box of those half extents. Takes the whole
+// look, not just the palette: a severed head leaves wearing what the fighter
+// wore.
 void drawSeveredLimb(Renderer& renderer, const glm::mat4& transform, int limb,
-                     const SamuraiColors& colors);
+                     const SamuraiLook& look);
 
 // A blade as a loose object rather than something in a hand — thrown down, or
 // waiting on the ground to be taken up.
@@ -181,11 +241,12 @@ void drawDroppedBlade(Renderer& renderer, const glm::mat4& transform, float stee
                       float width, const glm::vec4& grip);
 
 // Draws a samurai assembled procedurally from shaded boxes: hakama legs,
-// kimono torso, obi, sode shoulder plates, arms, head, straw kasa, an empty
-// saya at the hip, and — while armed — the drawn blade itself. `feet` is the ground point under the character; `yaw`
-// rotates about +Y (0 faces +x).
+// kimono torso, obi, sode shoulder plates, arms, head, headgear, an empty
+// saya at the hip, and — while armed — the drawn blade itself, dressed by the
+// character's `look` (palette, headgear, adorn hook). `feet` is the ground
+// point under the character; `yaw` rotates about +Y (0 faces +x).
 void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
-                 const SamuraiPose& pose, const SamuraiColors& colors);
+                 const SamuraiPose& pose, const SamuraiLook& look);
 
 // The same fighter, printed on the floor by the level's sun. Every box the
 // model is built from is cast down the sun's own line, so the shadow holds a
@@ -197,10 +258,13 @@ void drawSamurai(Renderer& renderer, const glm::vec3& feet, float yaw,
 // would be the shadow of a fighter who is not there, and would drift from this
 // one exactly the way a second copy of shuffleLeg would drift from the legs.
 //
-// `feet`, `yaw` and `pose` are the very arguments drawSamurai was given, so the
-// two calls are read as one thing. A level whose sun casts nothing (Dojo's
-// night) draws nothing here and wants main's blob instead — the blob was never
-// lighting, it is what makes depth readable in the air, and an unlit stage
-// still owes the player that.
+// `feet`, `yaw`, `pose` and `look` are the very arguments drawSamurai was
+// given, so the two calls are read as one thing — the look matters here too,
+// since what a fighter wears changes their outline and the outline is all a
+// shadow is. A level whose sun casts nothing (Dojo's night) draws nothing here
+// and wants main's blob instead — the blob was never lighting, it is what
+// makes depth readable in the air, and an unlit stage still owes the player
+// that.
 void drawSamuraiShadow(Renderer& renderer, const glm::vec3& feet, float yaw,
-                       const SamuraiPose& pose, const SunDef& sun);
+                       const SamuraiPose& pose, const SamuraiLook& look,
+                       const SunDef& sun);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "samurai.hpp" // SamuraiColors: a character owns its palette
+#include "samurai.hpp" // SamuraiLook: a character owns its whole appearance
 
 // A selectable fighter. The whole roster is compiled-in constant data, and a
 // match is fully described by two character indices — important for
@@ -42,7 +42,12 @@ struct CharacterDef {
     const char* name;
     const char* epithet; // select-screen flavor line
     CharacterStats stats;
-    SamuraiColors colors;
+    // Everything about how this fighter is drawn — palette, headgear, and the
+    // bespoke-geometry hook — authored here in the character's own file and
+    // consumed by the one shared body builder. Purely visual: the sim never
+    // reads it, so nothing in it can desync a peer (see SamuraiLook in
+    // samurai.hpp for the rules a hook has to keep).
+    SamuraiLook look;
     // Authored 0..5 select-screen ratings. Display only — gameplay reads
     // stats, the UI reads these, so a stat tweak doesn't skew the bars.
     int rSpeed;

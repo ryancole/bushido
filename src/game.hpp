@@ -367,7 +367,7 @@ private:
     float cfrand(); // 0..1, from the cosmetic stream — blood spray and splats
 
     Player m_players[2];
-    const CharacterDef* m_defs[2];   // roster entries (colors, names)
+    const CharacterDef* m_defs[2];   // roster entries (look, names)
     // The blade each fighter is currently holding, null when empty-handed.
     // Follows Player::weapon rather than the match's setup — a fighter can
     // put one down and take up another mid-duel.
