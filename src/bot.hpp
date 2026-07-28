@@ -31,4 +31,8 @@ private:
     float m_blockTimer = 0.0f;    // s left holding the guard up
     bool m_jumpQueued = false;    // one-shot hop, decided with the mode
     bool m_foeWasWinding = false; // edge-detect the foe's windup for dodging
+    bool m_hadRiposte = false;    // edge-detect the riposte window opening
+    bool m_dodgePlanned = false;  // this window is being spent on the spring
+    bool m_dashQueued = false;    // burst backward out of a defensive read
+    bool m_hurlQueued = false;    // throw the blade from mid-range, decided with the mode
 };

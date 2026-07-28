@@ -35,7 +35,8 @@
 inline constexpr int kDefaultInputDelay = 3;
 inline constexpr int kMaxInputDelay = 32;
 // Frames of input repeated in each packet. At 12, four consecutive datagrams
-// have to vanish before a stall, and the packet is still under 40 bytes. The
+// have to vanish before a stall, and the packet is still under 100 bytes
+// (u32 inputs; even the full 32-frame window stays well inside kMaxPacket). The
 // window actually sent is max(this, inputDelay): at startup a peer has seeded
 // exactly inputDelay frames and sent nothing else, so a window narrower than
 // the delay would leave the oldest frames — including frame 0 — never
@@ -205,8 +206,8 @@ private:
     std::int32_t m_peerWeapon = 0;
     std::int32_t m_peerLevel = 0;
 
-    std::uint16_t m_local[kRing] = {};
-    std::uint16_t m_remote[kRing] = {};
+    std::uint32_t m_local[kRing] = {};
+    std::uint32_t m_remote[kRing] = {};
     bool m_remoteHas[kRing] = {};
     std::uint32_t m_sums[kRing] = {};
     bool m_sumsHas[kRing] = {};

@@ -65,9 +65,21 @@ PlayerInput Bot::think(const Game& game, float dt) {
     m_attackDelay -= dt;
     m_blockTimer -= dt;
 
+    // Dirt in the eyes: the bot cannot see, so it does not read. It backs
+    // away from where the foe last was and waits for the world to come back —
+    // no attacks, no reactions, no reaching for a blade it can't find. This
+    // is the whole of what blinding a bot does, and it is enough: two seconds
+    // of a foe who won't answer is two seconds of free approach.
+    if (self.blindTime > 0.0f) {
+        PlayerInput in;
+        in.move.x = -toFoe;
+        return in;
+    }
+
     // Seeing the foe start a windup in range triggers a defensive read:
     // sometimes raise the guard and catch the blow, sometimes step out of
-    // the blade's path — and sometimes just trade.
+    // the blade's path — burst out of it when the legs are willing — and
+    // sometimes just trade.
     const bool foeWinding = foe.attackState == AttackState::Windup;
     if (foeWinding && !m_foeWasWinding && adx < foeReach + 0.7f) {
         float roll = frand();
@@ -76,9 +88,21 @@ PlayerInput Bot::think(const Game& game, float dt) {
         } else if (roll < 0.55f) {
             m_mode = Mode::Retreat;
             m_modeTimer = 0.20f + 0.20f * frand();
+            m_dashQueued = frand() < 0.4f;
         }
     }
     m_foeWasWinding = foeWinding;
+
+    // A catch opens the riposte window, and the choice of how to spend it is
+    // made once, at the clang: mostly the counter (the window bypasses the
+    // attack cooldown below), sometimes the dodge instead — sprung clear, the
+    // bot re-approaches like anything else, which is what keeps its defense
+    // from being a metronome a player can set a watch by.
+    const bool haveRiposte = self.riposteTime > 0.0f;
+    if (haveRiposte && !m_hadRiposte) {
+        m_dodgePlanned = frand() < 0.3f;
+    }
+    m_hadRiposte = haveRiposte;
 
     // Empty-handed, nothing else on this page matters: with no blade there is
     // no attack and no guard, so the only move that changes anything is
@@ -134,6 +158,12 @@ PlayerInput Bot::think(const Game& game, float dt) {
         m_strafeSign = frand() < 0.5f ? -1.0f : 1.0f;
         // The occasional closing hop, only from far enough out to land it.
         m_jumpQueued = m_mode == Mode::Approach && adx > 3.0f && frand() < 0.18f;
+        // And, rarely, the gamble: hurl the blade from mid-range — never
+        // into a raised guard, which catches it for nothing, and never from
+        // so far that the live window expires en route. Decided here rather
+        // than per step so the odds are per look, not per 120th of a second.
+        m_hurlQueued = self.armed() && !foe.blocking &&
+                       adx > st.reach + 0.8f && adx < 5.5f && frand() < 0.07f;
     }
 
     PlayerInput in;
@@ -164,6 +194,23 @@ PlayerInput Bot::think(const Game& game, float dt) {
         m_jumpQueued = false;
     }
 
+    // The queued defensive burst: a dash is the held direction made sudden,
+    // so it rides whatever retreat move the mode already set. The sim's
+    // cooldown absorbs any queue that lands too soon after the last one.
+    if (m_dashQueued && m_mode == Mode::Retreat && glm::length(in.move) > 0.01f) {
+        in.dash = true;
+        m_dashQueued = false;
+    }
+
+    // The queued throw: loosed once the depth lane lines up, since a blade
+    // flies down the lane the body faces and a miss is a gift at the foe's
+    // feet either way.
+    if (m_hurlQueued && self.armed() && self.attackState == AttackState::None &&
+        std::abs(dz) < kDepthAligned) {
+        in.hurl = true;
+        m_hurlQueued = false;
+    }
+
     // Close the long part of the gap at a run. Only while approaching, and only
     // from outside any distance a blade could answer from: a sprint turns the
     // body away from the foe and throws the guard away with it, so it is a way
@@ -175,6 +222,11 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // A caught blow drops the guard for the counter: the riposte window
     // outranks whatever the block timer had left.
     in.block = m_blockTimer > 0.0f && self.riposteTime <= 0.0f;
+
+    // Held for as long as the window it means to spend is open: the sim
+    // buffers the press through the blockstun the clang dealt, and once the
+    // spring goes off the window is gone and this drops on its own.
+    in.dodge = m_dodgePlanned && haveRiposte;
 
     // Finish what is already on the floor. The blade pivots at the shoulder,
     // so a standing swing sweeps a lane a toppled fighter lies clean under —
@@ -195,7 +247,7 @@ PlayerInput Bot::think(const Game& game, float dt) {
     // riposte, which it takes the moment it's earned. The guard wins while
     // it's up (the sim would drop the press anyway).
     if ((m_attackDelay <= 0.0f || self.riposteTime > 0.0f) && !in.block &&
-        self.attackState == AttackState::None &&
+        !in.dodge && self.attackState == AttackState::None &&
         adx < st.reach + 0.25f && std::abs(dz) < kDepthAligned) {
         in.attack = true;
         // Pick the blow: mostly the standard cut. The heavy's long windup

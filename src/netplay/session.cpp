@@ -9,7 +9,7 @@ namespace {
 // Bumped whenever the packet layout or the meaning of a field changes. Two
 // builds that disagree here refuse each other at the handshake rather than
 // desyncing ten seconds in, where the cause would be much harder to see.
-constexpr std::uint32_t kProtocol = 4;
+constexpr std::uint32_t kProtocol = 6; // v6: inputs widened to u32 on the wire
 
 enum class Msg : std::uint8_t {
     Hello = 0,   // client -> host: I would like a match, and here is my fighter
@@ -211,7 +211,7 @@ void Session::sendInputs() {
     w.u32(static_cast<std::uint32_t>(first));
     w.u8(static_cast<std::uint8_t>(last - first + 1));
     for (std::int64_t f = first; f <= last; ++f) {
-        w.u16(m_local[f % kRing]);
+        w.u32(m_local[f % kRing]);
     }
     // The last frame we simulated and what the sim looked like after it. The
     // peer compares against its own and shouts if they differ.
@@ -307,12 +307,12 @@ void Session::receiveAll() {
         std::uint32_t echoed = r.u32();
         std::int64_t first = static_cast<std::int64_t>(r.u32());
         int count = r.u8();
-        std::uint16_t bits[kMaxInputsPerPacket] = {};
+        std::uint32_t bits[kMaxInputsPerPacket] = {};
         if (count > kMaxInputsPerPacket) {
             continue; // not something this build would have sent
         }
         for (int i = 0; i < count; ++i) {
-            bits[i] = r.u16();
+            bits[i] = r.u32();
         }
         std::int64_t confirmFrame = static_cast<std::int64_t>(r.u32());
         std::uint32_t confirmSum = r.u32();
@@ -473,7 +473,7 @@ void Session::widenDelay(int frames) {
     // Fill the new gap by repeating the newest scheduled input, which is what
     // the player was doing anyway — the alternative, leaving holes, is the one
     // thing the ring must never have.
-    const std::uint16_t held = m_local[(m_localHead - 1) % kRing];
+    const std::uint32_t held = m_local[(m_localHead - 1) % kRing];
     while (m_localHead < m_frame + frames) {
         m_local[m_localHead % kRing] = held;
         ++m_localHead;

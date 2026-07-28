@@ -241,6 +241,70 @@ constexpr float kRiposteWindupScale = 0.35f;  // on the riposte swing's windup
 // without it, clicking at the clang would eat the riposte it just earned.
 constexpr float kAttackBufferTime = 0.15f;
 
+// Dodging: the other thing a catch can buy. The riposte window is a license
+// to answer while the attacker is stuck in their swing, and the dodge spends
+// it on distance instead of a counter — a spring through the ground plane,
+// riding the knockback velocity so the decay, the physics and the slide all
+// come for free. It goes where the fighter is steering, or straight away from
+// the foe if they aren't, and it consumes the window: escape and answer are
+// the same coin, and the whole choice is which side to spend.
+constexpr float kDodgeSpeed = 6.0f; // m/s at the spring's start (decays away)
+
+// Dashing: the same spring bought with timing instead of a guard. A double
+// tap of a move control (detected at the input source — the sim just gets the
+// edge) bursts the fighter a step in the held direction, riding kbVel exactly
+// as the dodge does. Weaker than the dodge, since it costs nothing to ask
+// for, and on a cooldown so mashing the tap can't stack springs into a
+// teleport. The stance is kept throughout — this is Bushido Blade's quick
+// step, not the sprint's broken-stance run.
+constexpr float kDashSpeed = 5.0f;    // m/s at the burst's start
+constexpr float kDashCooldown = 0.6f; // s between bursts
+
+// Getting up. Lying down needs no rate of its own — the topple integrator
+// pulls the body over the way it always has — but rising is new: the tilt
+// unwinds at a fixed rate (~0.45 s from flat), and the barrel roll squares
+// back up alongside it, since a body that stood up still spun about its own
+// spine would be standing at a wrong yaw the model can't mean.
+constexpr float kRiseRate = 3.0f;     // rad/s of fallTilt while getting up
+constexpr float kRiseSpinRate = 8.0f; // rad/s of rollSpin unwinding with it
+
+// Hurling the blade. The same release as throwing it down, but flat, fast,
+// and *live*: for a short window the flying steel strikes the other fighter
+// where it crosses them — blocked by crossed steel like anything else from
+// the front, never severing (a tumbling blade does not take limbs cleanly),
+// and pricing its hit like a heavy jab. The cost is the whole point: the
+// hand is empty the moment it leaves, and a miss is a sword lying at the
+// foe's feet.
+constexpr float kThrowSpeed = 9.0f;       // m/s, flat along the facing
+constexpr float kThrowLift = 1.6f;        // m/s up, so it flies at chest height
+constexpr float kThrowSpin = 14.0f;       // rad/s end over end
+constexpr float kThrowLive = 0.7f;        // s of flight in which it can strike
+constexpr float kThrowSettle = 1.0f;      // > kThrowLive: never claimable mid-flight
+constexpr float kThrowDamageScale = 2.0f; // on kTorsoHitBlood, times weapon damage
+constexpr float kThrowKnockback = 3.5f;   // flat shove, divided by weight
+constexpr float kThrowHitPad = 0.15f;     // m of forgiveness around the hurtboxes
+
+// Dirt: the empty hand's throw. Scooped only from a crouch or the floor a
+// downed fighter is already on — the reach for the ground is the telegraph —
+// and only so often. A hit to the head or chest blinds (Game::kBlindTime):
+// the sim charges nothing for it, but a human can't see and a bot won't read,
+// which against a raised guard is the whole argument.
+constexpr float kDirtSpeed = 6.5f;        // m/s toward the foe
+constexpr float kDirtLift = 1.6f;         // m/s up
+constexpr float kDirtGravity = 10.0f;     // a loose cloud falls slower than a body
+constexpr float kDirtLife = 0.8f;         // s before it falls apart mid-air
+constexpr float kDirtCooldownTime = 3.0f; // s before the ground yields another
+constexpr float kDirtHitPad = 0.25f;      // m around the head/chest that counts
+
+// How fast the arm carries the blade from one stance's rest to the next's
+// (Game::stanceEase, 0..1). Quick enough that a shift can't be watched like a
+// transition, slow enough that High to Low reads as the blade travelling.
+// Only the drawn arm rides this: a swing begun mid-shift winds up from
+// wherever the blend has the arm, and by the time the blade is live the
+// windup has carried it onto the settled stance's arc — which is the only
+// thing the hit test ever sweeps.
+constexpr float kStanceShiftRate = 5.0f; // 1/s
+
 // Segment-vs-AABB slab test.
 bool segmentHitsBox(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& center,
                     const glm::vec3& half) {
@@ -462,6 +526,31 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         if (p.riposteTime > 0.0f) {
             p.riposteTime = std::max(0.0f, p.riposteTime - dt);
         }
+        if (p.dashCooldown > 0.0f) {
+            p.dashCooldown = std::max(0.0f, p.dashCooldown - dt);
+        }
+        if (p.blindTime > 0.0f) {
+            p.blindTime = std::max(0.0f, p.blindTime - dt);
+        }
+        if (p.dirtCooldown > 0.0f) {
+            p.dirtCooldown = std::max(0.0f, p.dirtCooldown - dt);
+        }
+        // The arm easing between carries after a stance shift.
+        m_stanceEase[i] = std::min(1.0f, m_stanceEase[i] + kStanceShiftRate * dt);
+
+        // Yielding. No gate but a live match: a fighter mid-swing, in
+        // hitstun, or lying legless on the floor can all concede, and the
+        // last of those is the classic case. Nobody dies of it — the match
+        // is handed over, the swing (if any) dies with the decision, and the
+        // blade goes down in front of them, which is what surrender looks
+        // like from across an arena.
+        if (in.surrender && m_winner < 0) {
+            m_winner = 1 - i;
+            m_surrendered = i;
+            p.attackState = AttackState::None;
+            p.attackTimer = 0.0f;
+            dropWeapon(i); // a no-op if they were already empty-handed
+        }
 
         // Open stumps keep bleeding; this can decide a match on its own.
         if (!p.dead()) {
@@ -496,6 +585,23 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                     addBloodMark({chest.x, 0.0f, chest.z}, 0.30f);
                     spawnBlood({chest.x, 0.15f, chest.z}, {0.0f, 1.0f, 0.0f}, 6, 2.0f);
                 }
+            }
+            m_physics->setCharacterProne(i, p.fallTilt > kProneShapeTilt);
+        } else if (p.fallTilt > 0.0f) {
+            // Getting up: a fighter who chose the floor and chose to leave it
+            // again. The tilt unwinds at a fixed rate rather than through the
+            // pendulum — standing up is muscle, not gravity — and the barrel
+            // roll squares up alongside it, since a body upright but still
+            // spun about its own spine would stand at a yaw the model can't
+            // mean. The capsule swaps back from prone on the same threshold
+            // it swapped in on.
+            p.fallVel = 0.0f;
+            p.fallTilt = std::max(0.0f, p.fallTilt - kRiseRate * dt);
+            p.rollSpin = wrapAngle(p.rollSpin);
+            p.rollSpin -= std::clamp(p.rollSpin, -kRiseSpinRate * dt, kRiseSpinRate * dt);
+            if (p.fallTilt <= 0.0f) {
+                p.fallSide = 0.0f; // fresh side next time something fells them
+                p.rollSpin = 0.0f;
             }
             m_physics->setCharacterProne(i, p.fallTilt > kProneShapeTilt);
         }
@@ -537,6 +643,41 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             }
         }
 
+        // Shift the carry a stance at a time toward High or Low. It takes a
+        // blade (a stance is how one is held and nothing else), a body not
+        // staggering, and no swing in flight — an arc already being swept
+        // cannot be re-authored under the blade. Clamped at the ends, and
+        // both directions pressed together cancel out rather than racing.
+        // After the drop handling on purpose: throwing the sword down and
+        // shifting it are not the same tick's work.
+        const int stanceDelta = (in.stanceDown ? 1 : 0) - (in.stanceUp ? 1 : 0);
+        if (stanceDelta != 0 && !p.dead() && p.armed() && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None) {
+            const int cur = static_cast<int>(m_stance[i]);
+            const int next = std::clamp(cur + stanceDelta, 0, kStanceCount - 1);
+            if (next != cur) {
+                setStance(i, static_cast<Stance>(next));
+            }
+        }
+
+        // Lie down on purpose — or, already down by choice, get back up. One
+        // control, and which half a press means is decided here the way
+        // drop's is. Going down seeds the ordinary topple (toward the sword
+        // side, which is deliberate rather than fair: a chosen fall always
+        // reads the same way); coming up is gated on the fall having finished
+        // (no cancelling mid-tip) and on having legs — a fighter who lost
+        // both while lying there is downed now whatever they choose.
+        if (in.layDown && !p.dead() && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None) {
+            if (!p.downed() && p.grounded && p.fallTilt <= 0.0f) {
+                p.lyingDown = true;
+                p.fallSide = 1.0f;
+                p.fallVel = kToppleKick;
+            } else if (p.lyingDown && !p.legless() && p.fallTilt >= kMaxTilt) {
+                p.lyingDown = false; // the rise branch of the topple takes over
+            }
+        }
+
         // Swinging needs a blade and an arm to hold it with; the model swaps
         // the katana to the off hand when the sword arm is gone. Throwing the
         // sword away is therefore the most expensive thing a fighter can do to
@@ -562,19 +703,43 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         p.sprinting = in.sprint && p.hitstun <= 0.0f &&
                       p.attackState == AttackState::None && !p.crouching &&
                       !p.downed() && !p.hopping() && glm::length(in.move) > 0.01f;
-        // The same control on a fighter with no legs to run on: the body rolls
+        // The same control on a fighter lying on the ground: the body rolls
         // instead. Same gate, same trade, and the two can never both be set —
-        // a sprint needs legs and a roll needs both of them gone. Only once the
-        // topple has finished, for the same reason a crawl is: mid-fall there
-        // is nothing to push against.
+        // a sprint is for a body on its feet and a roll for one on the floor.
+        // Downed rather than legless since the floor stopped being only the
+        // legless fighter's place: one lying there by choice rolls on exactly
+        // the terms (Bushido Blade's side roll), and the dead give no input.
+        // Only once the topple has finished, for the same reason a crawl is:
+        // mid-fall there is nothing to push against.
         p.rolling = in.sprint && p.hitstun <= 0.0f &&
-                    p.attackState == AttackState::None && p.legless() &&
+                    p.attackState == AttackState::None && p.downed() &&
                     p.fallTilt >= kMaxTilt && glm::length(in.move) > 0.01f;
         // Guard: held while standing and not mid-swing. It takes an arm to
         // hold the blade up, and it wins over an attack press — the sword is
-        // committed to the guard. A sprint has already thrown it away.
+        // committed to the guard. A sprint has already thrown it away, and a
+        // body still unfolding off the floor (fallTilt) has no stance to
+        // guard from yet.
         p.blocking = in.block && p.attackState == AttackState::None &&
-                     !p.downed() && canSwing && !p.sprinting;
+                     !p.downed() && p.fallTilt <= 0.0f && canSwing && !p.sprinting;
+
+        // Throw what the hand holds. Armed, the blade itself goes — the same
+        // release as throwing it down, but flat, fast and live (hurlWeapon).
+        // Empty-handed and near the ground — crouched, or already lying on it
+        // — the hand scoops dirt instead (throwDirt): the duck is the
+        // telegraph, and the cooldown is why it is a trick rather than a
+        // strategy. Never out of a sprint or a roll (the body is turned
+        // wrong), and never past a raised guard — the guard is what the hand
+        // is doing.
+        if (in.hurl && !p.dead() && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None && !p.sprinting && !p.rolling &&
+            !p.blocking && hasArm) {
+            if (p.armed()) {
+                hurlWeapon(i);
+            } else if ((p.crouching || p.downed()) && p.grounded &&
+                       p.dirtCooldown <= 0.0f) {
+                throwDirt(i);
+            }
+        }
         // A fresh press (re)arms the buffer; otherwise it counts down. The
         // swing fires from the buffer the first tick the fighter is able.
         if (in.attack) {
@@ -582,6 +747,50 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.bufferedKind = in.attackKind;
         } else if (p.attackBuffer > 0.0f) {
             p.attackBuffer = std::max(0.0f, p.attackBuffer - dt);
+        }
+        // Dodge: spend the riposte window on distance instead of a counter.
+        // Buffered on the attack buffer's terms — the clang that opens the
+        // window also deals blockstun, so a press made at the sound has to
+        // wait out the stagger it arrived during. It fires only from a live
+        // window: outside one the press decays into nothing, since the spring
+        // is something a catch earns, not a movement option.
+        if (in.dodge) {
+            p.dodgeBuffer = kAttackBufferTime;
+        } else if (p.dodgeBuffer > 0.0f) {
+            p.dodgeBuffer = std::max(0.0f, p.dodgeBuffer - dt);
+        }
+        if (p.dodgeBuffer > 0.0f && p.riposteTime > 0.0f && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None && !p.downed() && p.grounded) {
+            // Where the fighter is steering, or straight away from the foe —
+            // a dodge held toward the screen is how you take the depth lane
+            // out from under the next cut.
+            const Player& foe = m_players[1 - i];
+            glm::vec2 dir{p.pos.x - foe.pos.x, p.pos.z - foe.pos.z};
+            const float apart = glm::length(dir);
+            dir = apart > 1e-4f ? dir / apart : -p.forward();
+            if (glm::length(in.move) > 0.01f) {
+                dir = glm::normalize(in.move);
+            }
+            p.kbVel = dir * kDodgeSpeed;
+            // The window is spent, and it takes any queued swing with it:
+            // a fighter who asked for both meant the escape.
+            p.riposteTime = 0.0f;
+            p.dodgeBuffer = 0.0f;
+            p.attackBuffer = 0.0f;
+            m_soundCues.push_back({Sfx::Swing, p.pos.x, 0.5f});
+        }
+        // Dash: the free sibling of the dodge — a burst step in the held
+        // direction, asked for with a double tap instead of earned with a
+        // catch, and weaker for it. The stance is kept, which is what
+        // separates it from the sprint: this closes (or opens) half a step,
+        // the sprint crosses the arena.
+        if (in.dash && p.dashCooldown <= 0.0f && p.grounded && !p.downed() &&
+            p.fallTilt <= 0.0f && p.hitstun <= 0.0f &&
+            p.attackState == AttackState::None && !p.crouching &&
+            glm::length(in.move) > 0.01f) {
+            p.kbVel = glm::normalize(in.move) * kDashSpeed;
+            p.dashCooldown = kDashCooldown;
+            m_soundCues.push_back({Sfx::Swing, p.pos.x, 0.35f});
         }
         // A press made mid-sprint is not lost, it waits: the buffer holds it
         // for kAttackBufferTime, so letting go of the run swings. A roll is the
@@ -653,6 +862,8 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                            (p.severed[static_cast<int>(Limb::ArmBack)] ? 0 : 1);
                 speedScale *= kCrawlSpeed[arms];
             }
+        } else if (p.fallTilt > 0.0f) {
+            speedScale = 0.0f; // mid-rise: the legs are busy standing up
         }
         p.moveAmount = glm::length(move) * speedScale;
 
@@ -753,8 +964,9 @@ void Game::update(const PlayerInput inputs[2], float dt) {
             p.vy = 0.0f;
             // Nothing to spring off on one leg — that leg is already spending
             // itself on the hop, which is the only leaving the ground it gets.
+            // Nor mid-rise: legs busy standing up have no spring to spare.
             if (in.jump && p.hitstun <= 0.0f && !p.downed() && !p.hopping() &&
-                !p.crouching) {
+                !p.crouching && p.fallTilt <= 0.0f) {
                 p.vy = st.jumpVelocity;
                 p.grounded = false;
             }
@@ -787,6 +999,119 @@ void Game::update(const PlayerInput inputs[2], float dt) {
                          std::clamp(0.08f + impact.speed * 0.03f, 0.10f, 0.34f));
             spawnBlood({impact.pos.x, 0.08f, impact.pos.z}, {0.0f, 1.0f, 0.0f}, 3,
                        std::min(2.5f, 0.3f * impact.speed));
+        }
+    }
+
+    // Blades in flight. A hurled sword is a debris body like any other — Jolt
+    // just moved it — but for its live window it is also an attack: where it
+    // crosses the other fighter, it strikes. Point-vs-box is enough at this
+    // rate (the blade covers ~8 cm a step, well under the pad), the boxes are
+    // the very hurtboxes the sword sweep uses, and crossed steel catches it
+    // from the front exactly as it catches a swing — a thrown blade clanging
+    // off a guard is half of why throwing one is a gamble.
+    for (DroppedWeapon& blade : m_dropped) {
+        if (blade.live <= 0.0f) {
+            continue;
+        }
+        blade.live = std::max(0.0f, blade.live - dt);
+        Player& foe = m_players[1 - blade.thrower];
+        const Player& thrower = m_players[blade.thrower];
+        const CharacterStats& foeSt = m_stats[1 - blade.thrower];
+        const glm::vec3 at = droppedWeaponPos(blade);
+        auto within = [&](const glm::vec3& center, const glm::vec3& half) {
+            return std::abs(at.x - center.x) <= half.x + kThrowHitPad &&
+                   std::abs(at.y - center.y) <= half.y + kThrowHitPad &&
+                   std::abs(at.z - center.z) <= half.z + kThrowHitPad;
+        };
+        bool hit = within(
+            modelToWorld(foe, {0.0f, kTorsoCenterY + bodyRiseY(foe), 0.0f}),
+            rollHalfExtent(foe, kTorsoHalf));
+        for (int l = 0; l < kLimbCount && !hit; ++l) {
+            if (foe.severed[l]) {
+                continue;
+            }
+            LimbBounds b = crouchedLimbBounds(foe, l);
+            hit = within(modelToWorld(foe, b.center), rollHalfExtent(foe, b.half));
+        }
+        if (!hit) {
+            continue;
+        }
+        blade.live = 0.0f; // one strike per throw; the steel clatters on
+        glm::vec2 dir{foe.pos.x - thrower.pos.x, foe.pos.z - thrower.pos.z};
+        const float dist = glm::length(dir);
+        dir = dist > 1e-4f ? dir / dist : thrower.forward();
+        if (foe.blocking &&
+            glm::dot(glm::vec2{at.x - foe.pos.x, at.z - foe.pos.z},
+                     foe.forward()) >= 0.0f) {
+            // Caught. No riposte window — the thrower is across the arena,
+            // and a counter with nobody in reach of it is not an opening.
+            foe.hitstun = kBlockstunTime;
+            foe.kbVel = dir * (kThrowKnockback * kBlockKnockbackScale / foeSt.weight);
+            m_soundCues.push_back({Sfx::Block, foe.pos.x});
+            continue;
+        }
+        // A tumbling blade pierces like a jab rather than cutting: torso-grade
+        // blood whoever it crossed, no severing, no execution.
+        const bool wasDead = foe.dead();
+        foe.hitstun = kHitstunTime;
+        foe.riposteTime = 0.0f;
+        foe.attackState = AttackState::None;
+        foe.attackTimer = 0.0f;
+        foe.kbVel = dir * (kThrowKnockback / foeSt.weight);
+        foe.vy = std::max(foe.vy, kKnockbackPop * 0.6f / foeSt.weight);
+        foe.grounded = false;
+        foe.blood = std::max(
+            0.0f, foe.blood - kTorsoHitBlood *
+                                  weaponDef(blade.weapon).stats.damage *
+                                  kThrowDamageScale);
+        const glm::vec3 wound =
+            modelToWorld(foe, {0.0f, kTorsoCenterY + bodyRiseY(foe), 0.0f});
+        spawnBlood(wound, glm::normalize(glm::vec3{dir.x, 1.2f, dir.y}),
+                   kHitBloodCount, kHitBloodSpeed);
+        m_soundCues.push_back({Sfx::Hit, foe.pos.x});
+        if (!wasDead && foe.dead()) {
+            if (m_winner < 0) {
+                m_winner = blade.thrower;
+            }
+            collapse(foe);
+        }
+    }
+
+    // Dirt in flight: its own ballistics (no Jolt — a fistful is not a body),
+    // and a hit anywhere near the foe's head or chest blinds them. There is
+    // no blocking it; being unanswerable by the guard is its entire reason to
+    // exist, and the crouch it takes to scoop is the telegraph that answers
+    // it instead.
+    for (std::size_t n = 0; n < m_dirt.size();) {
+        DirtThrow& d = m_dirt[n];
+        d.vel.y -= kDirtGravity * dt;
+        d.pos += d.vel * dt;
+        d.life -= dt;
+        Player& foe = m_players[1 - d.thrower];
+        bool hit = false;
+        if (!foe.dead()) {
+            auto within = [&](const glm::vec3& center, const glm::vec3& half) {
+                return std::abs(d.pos.x - center.x) <= half.x + kDirtHitPad &&
+                       std::abs(d.pos.y - center.y) <= half.y + kDirtHitPad &&
+                       std::abs(d.pos.z - center.z) <= half.z + kDirtHitPad;
+            };
+            const LimbBounds head =
+                crouchedLimbBounds(foe, static_cast<int>(Limb::Head));
+            hit = within(modelToWorld(foe, head.center),
+                         rollHalfExtent(foe, head.half)) ||
+                  within(modelToWorld(
+                             foe, {0.0f, kTorsoCenterY + bodyRiseY(foe), 0.0f}),
+                         rollHalfExtent(foe, kTorsoHalf));
+        }
+        if (hit) {
+            foe.blindTime = Game::kBlindTime;
+            m_soundCues.push_back({Sfx::Thud, foe.pos.x, 0.35f});
+        }
+        if (hit || d.life <= 0.0f || d.pos.y <= 0.0f) {
+            d = m_dirt.back();
+            m_dirt.pop_back();
+        } else {
+            ++n;
         }
     }
 
@@ -1008,7 +1333,10 @@ void Game::update(const PlayerInput inputs[2], float dt) {
         // side mirrors. The mirror is only ever right for a half turn, which is
         // exactly what this branch is and why it is asked for so exactly.
         if (self.yaw == 0.0f || self.yaw == kPi) {
-            if (duelYaw != self.yaw && self.downed()) {
+            // Any tilted body, not only a downed one: a fighter mid-rise is
+            // carrying the same lean, and flipping the yaw out from under it
+            // would swing the leaning body to the other side of its feet.
+            if (duelYaw != self.yaw && (self.downed() || self.fallTilt > 0.0f)) {
                 self.fallSide = -self.fallSide;
             }
             self.yaw = duelYaw;
@@ -1096,10 +1424,31 @@ void Game::collapse(Player& p) {
 void Game::equip(int i, int weapon) {
     m_players[i].weapon = weapon;
     m_weapons[i] = weapon == Player::kUnarmed ? nullptr : &weaponDef(weapon);
-    // The stance travels with the blade — take up an odachi and you hold it
-    // the way an odachi is held. Empty-handed keeps Normal as a placeholder
-    // nothing reads: there is no swing to arc and no guard to raise.
+    // The stance arrives with the blade — take up an odachi and you first
+    // hold it the way an odachi is held; it is the fighter's own to shift
+    // from there (setStance). No ease across an equip: the arm snapping to a
+    // fresh blade's carry is the same snap arming has always been, and a
+    // blend out of a stance held by a sword no longer in the hand would be
+    // the arm remembering a blade that is lying on the floor. Empty-handed
+    // keeps Normal as a placeholder nothing reads: there is no swing to arc
+    // and no guard to raise.
     m_stance[i] = m_weapons[i] ? m_weapons[i]->stance : Stance::Normal;
+    m_stancePrev[i] = m_stance[i];
+    m_stanceEase[i] = 1.0f;
+    resolveStats(i);
+}
+
+// Moves a carry one the fighter chose, as against one a blade brought with
+// it: the previous stance is kept and the ease zeroed so the pose can swing
+// the arm between the two rests instead of teleporting it.
+void Game::setStance(int i, Stance stance) {
+    m_stancePrev[i] = m_stance[i];
+    m_stance[i] = stance;
+    m_stanceEase[i] = 0.0f;
+    resolveStats(i);
+}
+
+void Game::resolveStats(int i) {
     CharacterStats st = m_defs[i]->stats;
     if (m_weapons[i]) {
         const WeaponStats& w = m_weapons[i]->stats;
@@ -1108,7 +1457,8 @@ void Game::equip(int i, int weapon) {
         st.recoveryTime *= w.swingScale;
         st.reach += w.reachBonus;
         // Both the blade's shove and the stance's, folded in here so the bot
-        // and the HUD keep reading one resolved number.
+        // and the HUD keep reading one resolved number — which is why a
+        // stance shift re-resolves, not just a change of blade.
         st.knockback *= w.knockbackScale * stanceDef(m_stance[i]).knockbackScale;
     }
     // Empty-handed leaves the bare character stats standing. Nothing scales
@@ -1116,10 +1466,12 @@ void Game::equip(int i, int weapon) {
     m_stats[i] = st;
 }
 
-// Throws the blade out of a fighter's hand and into the world as a debris
-// body, tumbling forward. From here it belongs to nobody — either fighter can
-// take it up, which is the point of being allowed to throw one away.
-void Game::dropWeapon(int i) {
+// Empties the hand and puts the blade into the world as a debris body with
+// the given send-off — the shared exit of throwing it down and hurling it at
+// somebody. From the moment it leaves it belongs to nobody: either fighter
+// can take it up, which is the point of being allowed to let go of one.
+void Game::releaseWeapon(int i, const glm::vec3& vel, const glm::vec3& angVel,
+                         float settle, float live) {
     Player& p = m_players[i];
     if (!p.armed()) {
         return;
@@ -1134,15 +1486,55 @@ void Game::dropWeapon(int i) {
     const glm::vec3 hand = modelToWorld(
         p, {0.0f, kHandHeight + bodyRiseY(p), swordSide * kShoulderSide});
     const float steel = bladeSteelLength(weaponDef(weapon).stats.reachBonus);
-    // Thrown the way the body is turned, and tumbling end over end about its
-    // own side axis, so a blade dropped mid-sprint leaves the hand along the
-    // run rather than off toward wherever the foe happens to be.
-    const glm::vec2 fwd = p.forward(), side = p.sideAxis();
-    const glm::vec3 vel{fwd.x * kDropToss, kDropLift, fwd.y * kDropToss};
-    const glm::vec3 angVel{-side.x * kDropSpin, 0.0f, -side.y * kDropSpin};
     const int id = m_physics->addDebris(hand, p.yaw, droppedBladeHalfExtent(steel),
                                         vel, angVel);
-    m_dropped.push_back({weapon, id, kDropSettle});
+    m_dropped.push_back({weapon, id, settle, i, live});
+}
+
+// Throwing the blade down: a low toss forward, never live — nobody is
+// attacked by resigning their sword. Thrown the way the body is turned, and
+// tumbling end over end about its own side axis, so a blade dropped
+// mid-sprint leaves the hand along the run rather than off toward wherever
+// the foe happens to be.
+void Game::dropWeapon(int i) {
+    const Player& p = m_players[i];
+    if (!p.armed()) {
+        return;
+    }
+    const glm::vec2 fwd = p.forward(), side = p.sideAxis();
+    releaseWeapon(i, {fwd.x * kDropToss, kDropLift, fwd.y * kDropToss},
+                  {-side.x * kDropSpin, 0.0f, -side.y * kDropSpin}, kDropSettle,
+                  0.0f);
+}
+
+// Hurling it: the same release, flat and fast along the facing, spinning hard,
+// and live — for kThrowLive the flying steel strikes the other fighter where
+// it crosses them. The settle outlasts the flight so a blade can never be
+// claimed out of the air.
+void Game::hurlWeapon(int i) {
+    const Player& p = m_players[i];
+    if (!p.armed()) {
+        return;
+    }
+    const glm::vec2 fwd = p.forward(), side = p.sideAxis();
+    releaseWeapon(i, {fwd.x * kThrowSpeed, kThrowLift, fwd.y * kThrowSpeed},
+                  {-side.x * kThrowSpin, 0.0f, -side.y * kThrowSpin},
+                  kThrowSettle, kThrowLive);
+    m_soundCues.push_back({Sfx::Swing, p.pos.x, 1.0f});
+}
+
+// A fistful of dirt, from the hand's height toward the foe's face. The
+// cooldown is charged here; the flight and the blinding live in update().
+void Game::throwDirt(int i) {
+    Player& p = m_players[i];
+    p.dirtCooldown = kDirtCooldownTime;
+    const float side = p.severed[static_cast<int>(Limb::ArmFront)] ? -1.0f : 1.0f;
+    const glm::vec3 hand = modelToWorld(
+        p, {0.15f, kHandHeight + bodyRiseY(p), side * kShoulderSide});
+    const glm::vec2 fwd = p.forward();
+    m_dirt.push_back({hand, {fwd.x * kDirtSpeed, kDirtLift, fwd.y * kDirtSpeed},
+                      i, kDirtLife, m_dirtSeed++});
+    m_soundCues.push_back({Sfx::Swing, p.pos.x, 0.4f});
 }
 
 // The nearest settled blade within reach. Nearest rather than first so two
@@ -1311,6 +1703,11 @@ std::uint32_t Game::checksum() const {
         hs.f(p.attackWindupScale);
         hs.f(p.attackBuffer);
         hs.i(static_cast<int>(p.bufferedKind));
+        hs.f(p.dodgeBuffer);
+        hs.f(p.dashCooldown);
+        hs.b(p.lyingDown);
+        hs.f(p.blindTime);
+        hs.f(p.dirtCooldown);
         hs.f(p.kbVel.x);
         hs.f(p.kbVel.y);
         for (bool s : p.severed) {
@@ -1328,9 +1725,20 @@ std::uint32_t Game::checksum() const {
         // peers disagreeing about it would cut at different places.
         hs.f(p.rollSpin);
     }
+    // The stance stopped being a pure function of the blade the day it could
+    // be shifted, so it is hashed like any other thing a fighter decided —
+    // two peers holding the same sword differently would swing different
+    // arcs. The ease and the previous carry only ever pose the arm, but they
+    // are sim state advanced by update, and cheap.
+    for (int i = 0; i < 2; ++i) {
+        hs.i(static_cast<int>(m_stance[i]));
+        hs.i(static_cast<int>(m_stancePrev[i]));
+        hs.f(m_stanceEase[i]);
+    }
     hs.u(m_rng);
     hs.u(m_cosmeticRng);
     hs.i(m_winner);
+    hs.i(m_surrendered);
     hs.f(m_overTime);
     // The clock decides a match, so two peers disagreeing about it by one step
     // would end the duel differently — it is sim state, not a HUD number.
@@ -1345,7 +1753,20 @@ std::uint32_t Game::checksum() const {
         hs.i(blade.weapon);
         hs.i(blade.debrisId);
         hs.f(blade.settle);
+        hs.i(blade.thrower);
+        hs.f(blade.live);
     }
+    // Dirt is gameplay — a hit blinds — so a fistful in flight is hashed the
+    // way a blade is.
+    hs.i(static_cast<int>(m_dirt.size()));
+    for (const DirtThrow& d : m_dirt) {
+        hs.v3(d.pos);
+        hs.v3(d.vel);
+        hs.i(d.thrower);
+        hs.f(d.life);
+        hs.i(d.seed);
+    }
+    hs.i(m_dirtSeed);
     // Debris is created only by severLimb, so two runs that agree up to here
     // have the same pieces in the same order and the lists line up index for
     // index. A piece drifting apart shows up here a long time before it can

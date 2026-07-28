@@ -157,6 +157,12 @@ constexpr ActionInfo kActions[kActionCount] = {
     {"Attack", "attack", "Tap to cut, hold and release to crush"},
     {"Jab", "jab", "A short thrust - pierces, never severs"},
     {"Drop / Take Up", "drop", "Throw your blade down - or take up the one at your feet"},
+    {"Raise Stance", "raise_stance", "Carry the blade a stance higher - heavier cuts, poorer guard"},
+    {"Lower Stance", "lower_stance", "Carry the blade a stance lower - rising cuts, better guard"},
+    {"Dodge", "dodge", "After your guard catches a blow - spring away instead of striking back"},
+    {"Surrender", "surrender", "Concede the duel"},
+    {"Lie Down", "lie_down", "Lie flat on purpose - press again to get back up"},
+    {"Throw", "throw", "Hurl your blade at the foe - or, empty-handed and crouched, blinding dirt"},
 };
 
 } // namespace
@@ -176,6 +182,16 @@ Keybinds defaultKeybinds() {
     k[Action::Attack] = mouse(GLFW_MOUSE_BUTTON_LEFT);
     k[Action::Jab] = mouse(GLFW_MOUSE_BUTTON_RIGHT);
     k[Action::Drop] = key(GLFW_KEY_E);
+    // R over F on the board, raise over lower in the hand — both a reach from
+    // WASD. Dodge on the thumb next to the space it will be pressed with;
+    // surrender out of the way where no fumble finds it.
+    k[Action::RaiseStance] = key(GLFW_KEY_R);
+    k[Action::LowerStance] = key(GLFW_KEY_F);
+    k[Action::Dodge] = key(GLFW_KEY_LEFT_ALT);
+    k[Action::Surrender] = key(GLFW_KEY_BACKSPACE);
+    // C for the floor (under the crouch key's finger), T for throw.
+    k[Action::LayDown] = key(GLFW_KEY_C);
+    k[Action::Throw] = key(GLFW_KEY_T);
     return k;
 }
 
@@ -200,6 +216,17 @@ Keybinds defaultKeybinds2() {
     k[Action::Attack] = key(GLFW_KEY_PERIOD);
     k[Action::Jab] = key(GLFW_KEY_COMMA);
     k[Action::Drop] = key(GLFW_KEY_SEMICOLON);
+    // P over L mirrors player 1's R over F, one row in from the cluster; the
+    // right alt is this side's thumb, and End sits past the arrows the way
+    // Backspace sits past WASD.
+    k[Action::RaiseStance] = key(GLFW_KEY_P);
+    k[Action::LowerStance] = key(GLFW_KEY_L);
+    k[Action::Dodge] = key(GLFW_KEY_RIGHT_ALT);
+    k[Action::Surrender] = key(GLFW_KEY_END);
+    // K beside the semicolon cluster for the floor; O beside P for the
+    // throw, a reach from the stance keys the way T is from R.
+    k[Action::LayDown] = key(GLFW_KEY_K);
+    k[Action::Throw] = key(GLFW_KEY_O);
     return k;
 }
 

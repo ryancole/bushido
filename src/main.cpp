@@ -28,6 +28,7 @@
 #include "input.hpp"
 #include "intro.hpp"
 #include "levels/level.hpp"
+#include "levels/scenery.hpp" // hash01, for the dirt clumps' stable scatter
 #include "netplay/replay.hpp"
 #include "netplay/session.hpp"
 #include "netplay/simlink.hpp"
@@ -507,7 +508,12 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
 
     const float labelW = 190.0f;
     const float fieldW = 210.0f;
-    const float contentW = labelW + fieldW;
+    // Fifteen keybind rows outgrew one column of a 720p window, so a controls
+    // section is two columns of eight; everything below (tabs, footer,
+    // buttons) spans the pair.
+    const float colW = labelW + fieldW;
+    const float colGap = 36.0f;
+    const float contentW = colW * 2.0f + colGap;
     const char* hint = nullptr; // the hovered row's hint, drawn in the footer
 
     // Section tabs. The live one wears the same crimson as a hot button, so
@@ -534,39 +540,56 @@ OptionsResult drawOptions(GLFWwindow* window, Settings& settings, OptionsScreen&
     ImGui::PopFont();
     ImGui::Dummy({0.0f, 4.0f});
 
-    // Fixed-size content area, tall enough for the longest section (the eleven
-    // keybind rows): the window is centered and auto-sized, so letting it
-    // resize per section would jump the whole panel on every tab click.
-    ImGui::BeginChild("section", {contentW, 477.0f}, ImGuiChildFlags_None,
+    // Fixed-size content area, tall enough for the longest section (nine
+    // keybind rows per column): the window is centered and auto-sized, so
+    // letting it resize per section would jump the whole panel on every tab
+    // click.
+    ImGui::BeginChild("section", {contentW, 400.0f}, ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     if (Keybinds* keys = sectionKeybinds(settings, s.section)) {
-        for (int i = 0; i < kActionCount; ++i) {
-            const Action a = static_cast<Action>(i);
-            ImGui::PushFont(nullptr, 22.0f);
-            ImGui::TextUnformatted(actionName(a));
-            ImGui::PopFont();
-            ImGui::SameLine(labelW);
+        // Enum order runs down the first column and continues down the
+        // second, so display order is still config.hpp's roster, read the way
+        // a page is read.
+        const int rows = (kActionCount + 1) / 2;
+        for (int r = 0; r < rows; ++r) {
+            for (int col = 0; col < 2; ++col) {
+                const int i = col * rows + r;
+                if (i >= kActionCount) {
+                    continue;
+                }
+                const Action a = static_cast<Action>(i);
+                const float x = col * (colW + colGap);
+                if (col > 0) {
+                    ImGui::SameLine(x);
+                }
+                ImGui::PushFont(nullptr, 22.0f);
+                ImGui::TextUnformatted(actionName(a));
+                ImGui::PopFont();
+                ImGui::SameLine(x + labelW);
 
-            ImGui::PushID(i);
-            const bool capturing = s.capturing == i;
-            if (capturing) {
-                ImGui::PushStyleColor(ImGuiCol_Button, {0.55f, 0.09f, 0.09f, 0.85f});
+                ImGui::PushID(i);
+                const bool capturing = s.capturing == i;
+                if (capturing) {
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          {0.55f, 0.09f, 0.09f, 0.85f});
+                }
+                ImGui::PushFont(nullptr, 22.0f);
+                const bool clicked =
+                    ImGui::Button(capturing ? "press a control" : bindName((*keys)[a]),
+                                  {fieldW, 0.0f});
+                ImGui::PopFont();
+                if (capturing) {
+                    ImGui::PopStyleColor();
+                }
+                if (clicked && !s.swallow) {
+                    s.capturing = capturing ? -1 : i;
+                    s.armed = false;
+                }
+                if (ImGui::IsItemHovered() && s.capturing < 0) {
+                    hint = actionHint(a);
+                }
+                ImGui::PopID();
             }
-            ImGui::PushFont(nullptr, 22.0f);
-            const bool clicked = ImGui::Button(
-                capturing ? "press a control" : bindName((*keys)[a]), {fieldW, 0.0f});
-            ImGui::PopFont();
-            if (capturing) {
-                ImGui::PopStyleColor();
-            }
-            if (clicked && !s.swallow) {
-                s.capturing = capturing ? -1 : i;
-                s.armed = false;
-            }
-            if (ImGui::IsItemHovered() && s.capturing < 0) {
-                hint = actionHint(a);
-            }
-            ImGui::PopID();
         }
     } else {
         // A level applies the moment it moves (the menu theme is playing, so
@@ -958,10 +981,19 @@ void drawBloodBars(const Game& game) {
 
         char label[64];
         // The blade can change hands mid-match, or be thrown away entirely, so
-        // the bar names what is in the hand now rather than what was picked.
+        // the bar names what is in the hand now rather than what was picked —
+        // and since the carry became the fighter's own to shift, the stance
+        // rides along: the pose says it to anyone who can read a guard, the
+        // label says it to everyone else.
         const WeaponDef* held = game.weapon(i);
-        std::snprintf(label, sizeof(label), "%s - %s", game.character(i).name,
-                      held ? held->name : "Empty-handed");
+        if (held) {
+            std::snprintf(label, sizeof(label), "%s - %s, %s",
+                          game.character(i).name, held->name,
+                          stanceDef(game.stance(i)).name);
+        } else {
+            std::snprintf(label, sizeof(label), "%s - Empty-handed",
+                          game.character(i).name);
+        }
         ImFont* font = ImGui::GetFont();
         const float nameSize = 19.0f;
         const float nameW = font->CalcTextSizeA(nameSize, 1e9f, 0.0f, label).x;
@@ -998,6 +1030,43 @@ void drawMatchClock(const Game& game) {
     dl->AddText(font, size, {(vp->Size.x - w) * 0.5f, 16.0f}, color, text);
 }
 
+// Dirt in the eyes. The sim charges nothing for a blinding because *this* is
+// the blind: the screen of whichever local player took the fistful browns
+// over, heaviest the moment it lands and thinning as it clears. Only local
+// humans' fighters count — a bot's blind is played out in bot.cpp's refusal
+// to read the foe, and painting the screen for it would blind the person
+// watching instead. (In a shared-screen versus a blinding unavoidably dims
+// both people's view; the one who threw it knows why.)
+void drawBlindOverlay(const Game& game, const InputSource sources[2]) {
+    float frac = 0.0f;
+    for (int i = 0; i < 2; ++i) {
+        if (localSlot(sources[i]) < 0) {
+            continue;
+        }
+        frac = std::max(frac, game.player(i).blindTime / Game::kBlindTime);
+    }
+    if (frac <= 0.0f) {
+        return;
+    }
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const float a = std::min(1.0f, frac * 1.25f);
+    dl->AddRectFilled({0.0f, 0.0f}, {vp->Size.x, vp->Size.y},
+                      IM_COL32(86, 66, 40, static_cast<int>(205 * a)));
+    // Heavier clods stuck across the view, fixed in place so the smear reads
+    // as something *on* the eyes rather than weather in the world.
+    constexpr float kClods[][3] = {{0.22f, 0.30f, 0.16f},
+                                   {0.60f, 0.18f, 0.20f},
+                                   {0.44f, 0.62f, 0.18f},
+                                   {0.78f, 0.55f, 0.14f},
+                                   {0.12f, 0.72f, 0.12f}};
+    for (const auto& s : kClods) {
+        dl->AddCircleFilled({vp->Size.x * s[0], vp->Size.y * s[1]},
+                            vp->Size.x * s[2],
+                            IM_COL32(56, 42, 26, static_cast<int>(180 * a)));
+    }
+}
+
 // Post-match overlay, styled after the main menu. Shown once the kill has had
 // a moment to play out; Rematch reruns the same pairing with a fresh Game.
 enum class OverAction { None, Rematch, Select, Disconnect };
@@ -1010,9 +1079,14 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
     OverAction action = OverAction::None;
     // Against the bot (or across a wire) the verdict is the reader's own; with
     // two humans at one keyboard, "VICTORY" would be true for exactly one of
-    // the people looking at the screen.
-    const char* title = versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
-                               : (game.winner() == localSlot ? "VICTORY" : "SLAIN");
+    // the people looking at the screen. A fighter who conceded was not slain,
+    // and the screen owes them the word for what they actually did.
+    const bool yielded = game.surrenderedBy() >= 0;
+    const char* title =
+        versus ? (game.winner() == 0 ? "PLAYER 1 WINS" : "PLAYER 2 WINS")
+        : game.winner() == localSlot ? "VICTORY"
+        : yielded                    ? "YIELDED"
+                                     : "SLAIN";
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
                             {0.5f, 0.5f});
@@ -1029,8 +1103,11 @@ OverAction drawWinOverlay(const Game& game, bool versus, int localSlot, bool net
     ImGui::PushFont(nullptr, 22.0f);
     // A match called on the clock was won by being in better shape, not by a
     // killing blow, and saying "takes the duel" over two fighters both still
-    // on their feet would be the screen's one dishonest line.
-    ImGui::Text(game.timedOut() ? "%s is left standing" : "%s takes the duel",
+    // on their feet would be the screen's one dishonest line. A surrender is
+    // the third ending, and the verdict names what the winner did about it.
+    ImGui::Text(yielded             ? "%s accepts the surrender"
+                : game.timedOut()   ? "%s is left standing"
+                                    : "%s takes the duel",
                 game.character(game.winner()).name);
     ImGui::PopFont();
     ImGui::PopStyleColor();
@@ -1261,6 +1338,7 @@ SamuraiPose fighterPose(const Game& game, int i, float time) {
             p.attackT, p.blocking, p.crouchAmount, p.hopping(),
             game.stats(i).reach,
             held ? held->stats.bladeWidth : 1.0f, game.stance(i),
+            game.stancePrev(i), game.stanceEase(i),
             held != nullptr, p.bodyRoll(), p.rollSpin, p.severed};
 }
 
@@ -1327,6 +1405,23 @@ void drawScene(Renderer& renderer, const Game& game, float time, const glm::vec3
                          0.55f * std::min(1.0f, p.riposteTime / 0.25f));
         }
         drawSamurai(renderer, fighterFeet(p), p.yaw, fighterPose(game, i, time), look);
+    }
+
+    // Dirt in flight: each throw draws as a loose clump of earth-colored
+    // boxes scattered about the sim's one ballistic point. The scatter hangs
+    // off the throw's own seed, so it is stable for that throw's whole flight
+    // and identical on every machine drawing it.
+    for (const DirtThrow& d : game.dirtThrows()) {
+        for (int c = 0; c < 5; ++c) {
+            const float a = levels::hash01(d.seed * 23 + c * 7);
+            const float b = levels::hash01(d.seed * 41 + c * 13);
+            const float e = levels::hash01(d.seed * 57 + c * 29);
+            const glm::vec3 off{(a - 0.5f) * 0.24f, (b - 0.5f) * 0.20f,
+                                (e - 0.5f) * 0.24f};
+            const float size = 0.035f + 0.045f * levels::hash01(d.seed * 71 + c);
+            drawBox(renderer, d.pos + off, {size, size, size},
+                    {0.36f, 0.28f, 0.18f, 0.9f});
+        }
     }
 
     // Severed limbs tumbling as physics debris, in their owner's look — a
@@ -2348,6 +2443,7 @@ int main(int argc, char** argv) {
             } else {
                 drawBloodBars(*game);
                 drawMatchClock(*game);
+                drawBlindOverlay(*game, matchSources);
                 if (session.active()) {
                     drawNetStatus(session);
                     if (session.waiting()) {

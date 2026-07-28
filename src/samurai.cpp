@@ -113,14 +113,19 @@ constexpr float kBladeTop = 0.755f;   // where the steel starts, above the hand
 constexpr float kNominalReach = 1.6f; // SamuraiPose's default — the katana baseline
 constexpr float kGripLength = 0.26f;  // grip + guard, behind the steel
 
-float swordArmAngle(Stance stance, int attackState, int attackKind, float t) {
-    const StanceDef& s = stanceDef(stance);
+// `readyAngle` is passed in rather than read off the stance because a fighter
+// mid-shift rests the arm *between* two stances' carries (the pose's
+// stancePrev/stanceBlend): the windup then rises from wherever the arm
+// actually is, and the arc itself is always the settled stance's — the very
+// angles the hit test sweeps.
+float swordArmAngle(const StanceDef& s, float readyAngle, int attackState,
+                    int attackKind, float t) {
     const StanceArc& arc = s.arcs[attackKind];
     switch (attackState) {
-        case 1: return glm::mix(s.readyAngle, arc.start, t * t * (3.0f - 2.0f * t));
+        case 1: return glm::mix(readyAngle, arc.start, t * t * (3.0f - 2.0f * t));
         case 2: return glm::mix(arc.start, arc.end, t);
-        case 3: return glm::mix(arc.end, s.readyAngle, t);
-        default: return s.readyAngle;
+        case 3: return glm::mix(arc.end, readyAngle, t);
+        default: return readyAngle;
     }
 }
 
@@ -475,8 +480,16 @@ void buildSamurai(const glm::vec3& feet, float yaw, const SamuraiPose& pose,
         const bool swordArm = s == swordSide && pose.armed;
         float swing;
         if (swordArm) {
-            swing = guarding ? stanceDef(pose.stance).guardAngle
-                             : swordArmAngle(pose.stance, pose.attackState,
+            // Mid-shift the rest and guard angles mix between the two
+            // carries, smoothstepped so the blade leaves one and settles
+            // into the other rather than moving at one rate throughout.
+            const StanceDef& sd = stanceDef(pose.stance);
+            const StanceDef& sp = stanceDef(pose.stancePrev);
+            const float shift =
+                pose.stanceBlend * pose.stanceBlend * (3.0f - 2.0f * pose.stanceBlend);
+            const float ready = glm::mix(sp.readyAngle, sd.readyAngle, shift);
+            swing = guarding ? glm::mix(sp.guardAngle, sd.guardAngle, shift)
+                             : swordArmAngle(sd, ready, pose.attackState,
                                              pose.attackKind, pose.attackT);
         } else if (pose.grounded) {
             swing = std::sin(pose.walkPhase + (s > 0.0f ? pi : 0.0f)) * 0.45f * pose.moveAmount;

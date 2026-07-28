@@ -136,11 +136,19 @@ struct SamuraiPose {
     float reach = 1.6f;
     float bladeWidth = 1.0f;
     // How the blade is carried: where the guard holds it, where a swing
-    // settles back to, and the arc of the swing itself. Comes from the weapon
-    // (via Game::stance), and is the one thing that makes an odachi's cleave
-    // and a wakizashi's rising cut look like different swings — the sim sweeps
-    // the very same angles, so this is not a rendering choice.
+    // settles back to, and the arc of the swing itself. Seeded by the weapon
+    // and shifted by the fighter (via Game::stance), and is the one thing
+    // that makes an odachi's cleave and a wakizashi's rising cut look like
+    // different swings — the sim sweeps the very same angles, so this is not
+    // a rendering choice.
     Stance stance = Stance::Normal;
+    // A shift mid-match is a motion, not a teleport: the arm mixes the
+    // previous carry's rest and guard angles into the new one's by
+    // stanceBlend (0..1, 1 = settled — Game::stancePrev / stanceEase). Only
+    // the rest and guard mix; an attack's arc is always the settled stance's,
+    // which the windup carries the arm onto from wherever the blend has it.
+    Stance stancePrev = Stance::Normal;
+    float stanceBlend = 1.0f;
     // Is there a blade in hand at all? An armed fighter carries theirs drawn
     // for the whole match — held at the stance's ready angle when they are
     // doing nothing else with it — so this is what puts a sword on screen or
